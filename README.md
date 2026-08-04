@@ -1,5 +1,5 @@
 
-# The modded web interface for the GPON ONU M2-2050-G40 (RTL9607C)
+# The modded web interface for the PGN6401V (RTL9607C)
 ****
 ## Licensing
 
