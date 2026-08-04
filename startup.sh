@@ -4,31 +4,11 @@
     while [ ! -w "/lmepisowifi" ]; do
         sleep 2
     done
-    # --- STEP 1.1: Save MAC Address and SN ---
-    [ ! -d /lmepisowifi/httpd/configdefault ] && mkdir -p /lmepisowifi//httpd/configdefault
-    [ ! -f /lmepisowifi/httpd/configdefault/mac.txt ] && flash get ELAN_MAC_ADDR | awk -F'=' '{print $2}' > /lmepisowifi/httpd/configdefault/mac.txt
-    [ ! -f /lmepisowifi/httpd/configdefault/sn.txt ] && flash get GPON_SN | awk -F'=' '{print $2}' > /lmepisowifi//httpd/configdefault/sn.txt
-    [ ! -f /lmepisowifi/httpd/configdefault/version.txt ] && cp /etc/version /lmepisowifi/httpd/configdefault/version.txt
     # neutralize the aclblock and ipfilter causing www2 & hotspot issues in pgn6401v
     iptables -t filter -F aclblock
 iptables -t filter -A aclblock -j ACCEPT
 iptables -t filter -F ipfilter
 iptables -t filter -A ipfilter -j ACCEPT
-
-    # --- STEP 1.2: Run custom admin scripts ---
-    if [ -f /lmepisowifi/httpd/run_admin.sh ]; then
-        chmod +x /lmepisowifi/httpd/run_admin.sh
-        /lmepisowifi/httpd/run_admin.sh
-    fi
-    if [ -f /lmepisowifi/httpd/run_adminhidden.sh ]; then
-        chmod +x /lmepisowifi/httpd/run_adminhidden.sh
-        /lmepisowifi/httpd/run_adminhidden.sh
-    fi
-
-    # --- STEP 1.3: Restore version.txt bind mount if modified ---
-    if [ -f /lmepisowifi/httpd/version.txt ]; then
-        grep -q '/etc/version' /proc/mounts || mount --bind /lmepisowifi/httpd/version.txt /etc/version
-    fi
 
     # --- STEP 1.4: Block HTTP from WAN ---
     iptables -I INPUT ! -i br0 -p tcp --dport 80 -j DROP 2>/dev/null

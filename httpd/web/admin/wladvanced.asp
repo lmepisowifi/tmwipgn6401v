@@ -1,1 +1,0 @@
-/config/httpd/web/wladvanced.asp

@@ -1,1 +1,0 @@
-/home/httpd/web/url_blocking.asp

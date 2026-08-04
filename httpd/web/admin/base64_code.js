@@ -1,1 +1,0 @@
-/home/httpd/web/base64_code.js
