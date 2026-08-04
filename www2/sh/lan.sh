@@ -13,8 +13,10 @@ elif [ -n "$1" ]; then
     case "$1" in
         1) PORT=1; INDEX=0 ;;
         2) PORT=2; INDEX=1 ;;
+        3) PORT=3; INDEX=2 ;;
+        4) PORT=4; INDEX=3 ;;
         *)
-            echo "ERROR=\"Expected port (1|2) or 'status', got: '$1'\""
+            echo "ERROR=\"Expected port (1|2|3|4) or 'status', got: '$1'\""
             exit 1
             ;;
     esac
@@ -60,8 +62,8 @@ if [ "$ACTION" = "status" ]; then
     RAW_PWR=$(diag port get phy-force-power-down port all)
     RESULT=""
 
-    for i in 0 1; do
-        PORT_NUM=$((i + 1))   # FIX: output as PORT1_/PORT2_ to match user-facing port numbers
+    for i in 0 1 2 3; do
+        PORT_NUM=$((i + 1))   # FIX: output as PORT1_/PORT2_/PORT3_/PORT4_ to match user-facing port numbers
 
         # Power state: "phy-force-power-down = Disable" means power-down is OFF → port is UP
         if echo "$RAW_PWR" | grep -Ei "port:$i[[:space:]]+Disable" >/dev/null 2>&1; then

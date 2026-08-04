@@ -206,6 +206,48 @@
                 </div>
             </div>
 
+            <!-- LAN 3 card -->
+            <div class="col-md-5">
+                <div class="card">
+                    <div class="card-header d-flex align-items-center justify-content-between">
+                        <span>eth0.4.0 <span class="text-secondary" style="font-size:0.85em">(lan3)</span></span>
+                        <div id="toggle-3" class="lan-toggle" onclick="localToggle(3)"
+                             role="switch" aria-checked="false" title="Enable / Disable port">
+                            <div class="lan-toggle-knob"></div>
+                        </div>
+                    </div>
+                    <div class="card-body">
+                        <div class="mb-3">
+                            <label for="speed-3" class="form-label">Link Speed Negotiation</label>
+                            <select class="form-select" id="speed-3" name="speed-3"></select>
+                        </div>
+                        <button type="button" class="btn btn-primary w-100"
+                                id="save-btn-3" onclick="savePort(3)">Save</button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- LAN 4 card -->
+            <div class="col-md-5">
+                <div class="card">
+                    <div class="card-header d-flex align-items-center justify-content-between">
+                        <span>eth0.5.0 <span class="text-secondary" style="font-size:0.85em">(lan4)</span></span>
+                        <div id="toggle-4" class="lan-toggle" onclick="localToggle(4)"
+                             role="switch" aria-checked="false" title="Enable / Disable port">
+                            <div class="lan-toggle-knob"></div>
+                        </div>
+                    </div>
+                    <div class="card-body">
+                        <div class="mb-3">
+                            <label for="speed-4" class="form-label">Link Speed Negotiation</label>
+                            <select class="form-select" id="speed-4" name="speed-4"></select>
+                        </div>
+                        <button type="button" class="btn btn-primary w-100"
+                                id="save-btn-4" onclick="savePort(4)">Save</button>
+                    </div>
+                </div>
+            </div>
+
         </div>
     </div>
 
@@ -288,8 +330,8 @@
             document.getElementById('toggle-'   + portNum).classList.remove('disabled-ui');
         }
 
-        function lockAll()   { lockPort(1); lockPort(2); }
-        function unlockAll() { unlockPort(1); unlockPort(2); }
+        function lockAll()   { lockPort(1); lockPort(2); lockPort(3); lockPort(4); }
+        function unlockAll() { unlockPort(1); unlockPort(2); unlockPort(3); unlockPort(4); }
 
         // --------------------------------------------------------
         // Overlay helpers
@@ -352,8 +394,12 @@
         function applyStatus(data) {
             setToggle(1, data.port1_pwr === 'enabled');
             setToggle(2, data.port2_pwr === 'enabled');
+            setToggle(3, data.port3_pwr === 'enabled');
+            setToggle(4, data.port4_pwr === 'enabled');
             buildSpeedSelect(1, data.port1_speed);
             buildSpeedSelect(2, data.port2_speed);
+            buildSpeedSelect(3, data.port3_speed);
+            buildSpeedSelect(4, data.port4_speed);
         }
 
         function localToggle(portNum) {

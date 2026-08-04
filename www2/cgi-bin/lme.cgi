@@ -57,13 +57,15 @@ DATA_DIR=/lmepisowifi/www2/data
 LAYOUT_FILE="$DATA_DIR/dashboard_layout.json"
 
 # update_startup_speed <port> <speed_abilities>
-#   port           : 1 or 2 (user-facing, matches lan.sh convention)
+#   port           : 1-4 (user-facing, matches lan.sh convention)
 #   speed_abilities: space-separated ability tokens already in canonical order
 #                    (e.g. "100f", "10h 10f 100h 100f 1000f"), OR empty to
 #                    remove the entry for that port (used when reverting to auto).
 #
 # Interface mapping: LAN1 = port 1 = eth0.2 = diag index 0
 #                    LAN2 = port 2 = eth0.3 = diag index 1
+#                    LAN3 = port 3 = eth0.4 = diag index 2
+#                    LAN4 = port 4 = eth0.5 = diag index 3
 #
 # Each managed entry in startup.sh is a single line of the form:
 #   ( wait_for_iface <iface> && diag port set auto-nego port <idx> ability <speeds> ) &
@@ -74,13 +76,12 @@ update_startup_speed() {
 
     [ ! -f "$STARTUP_SH" ] && return
 
-    if [ "$_UPD_PORT" = "1" ]; then
-        _UPD_IFACE="eth0.2"
-        _UPD_IDX="0"
-    else
-        _UPD_IFACE="eth0.3"
-        _UPD_IDX="1"
-    fi
+    case "$_UPD_PORT" in
+        1) _UPD_IFACE="eth0.2"; _UPD_IDX="0" ;;
+        2) _UPD_IFACE="eth0.3"; _UPD_IDX="1" ;;
+        3) _UPD_IFACE="eth0.4"; _UPD_IDX="2" ;;
+        4) _UPD_IFACE="eth0.5"; _UPD_IDX="3" ;;
+    esac
 
     _UPD_REMOVE=0
     [ -z "$_UPD_SPEED" ] && _UPD_REMOVE=1
@@ -315,6 +316,10 @@ if [ "$REQUEST_METHOD" = "GET" ]; then
         P1_SPD=$(echo "$RAW" | busybox sed -n 's/.*PORT1_SPEED="\([^"]*\)".*/\1/p')
         P2_PWR=$(echo "$RAW" | busybox sed -n 's/.*PORT2_PWR="\([^"]*\)".*/\1/p')
         P2_SPD=$(echo "$RAW" | busybox sed -n 's/.*PORT2_SPEED="\([^"]*\)".*/\1/p')
+        P3_PWR=$(echo "$RAW" | busybox sed -n 's/.*PORT3_PWR="\([^"]*\)".*/\1/p')
+        P3_SPD=$(echo "$RAW" | busybox sed -n 's/.*PORT3_SPEED="\([^"]*\)".*/\1/p')
+        P4_PWR=$(echo "$RAW" | busybox sed -n 's/.*PORT4_PWR="\([^"]*\)".*/\1/p')
+        P4_SPD=$(echo "$RAW" | busybox sed -n 's/.*PORT4_SPEED="\([^"]*\)".*/\1/p')
 
         if ! echo "$RAW" | busybox grep -q 'STATUS="SUCCESS"'; then
             printf "Status: 500 Internal Server Error\r\n"
@@ -338,8 +343,8 @@ if [ "$REQUEST_METHOD" = "GET" ]; then
 
         printf "Status: 200 OK\r\n"
         printf "Content-Type: application/json\r\n\r\n"
-        printf '{"port1_pwr":"%s","port1_speed":"%s","port2_pwr":"%s","port2_speed":"%s","pending":%s,"remaining":%d}' \
-            "$P1_PWR" "$P1_SPD" "$P2_PWR" "$P2_SPD" "$LAN_PENDING" "$LAN_REMAINING"
+        printf '{"port1_pwr":"%s","port1_speed":"%s","port2_pwr":"%s","port2_speed":"%s","port3_pwr":"%s","port3_speed":"%s","port4_pwr":"%s","port4_speed":"%s","pending":%s,"remaining":%d}' \
+            "$P1_PWR" "$P1_SPD" "$P2_PWR" "$P2_SPD" "$P3_PWR" "$P3_SPD" "$P4_PWR" "$P4_SPD" "$LAN_PENDING" "$LAN_REMAINING"
         exit 0
     fi
 
@@ -911,11 +916,14 @@ END {
     fi
 
     # --- action=lan_link_status: physical link state from diag port get status ---
-    # Returns speed/duplex/status for both LAN ports as reported by the switch.
-    # Port 0 = LAN 1 (eth0.2), Port 1 = LAN 2 (eth0.3).
+    # Returns speed/duplex/status for all 4 LAN ports as reported by the switch.
+    # Port 0 = LAN 1 (eth0.2), Port 1 = LAN 2 (eth0.3),
+    # Port 2 = LAN 3 (eth0.4), Port 3 = LAN 4 (eth0.5).
     if echo "$QUERY_STRING" | busybox grep -q "action=lan_link_status"; then
         RAW0=$(diag port get status port 0 2>/dev/null)
         RAW1=$(diag port get status port 1 2>/dev/null)
+        RAW2=$(diag port get status port 2 2>/dev/null)
+        RAW3=$(diag port get status port 3 2>/dev/null)
 
         # Each diag call returns a block like:
         #   Port Status Speed    Duplex TX_FC RX_FC
@@ -930,18 +938,34 @@ END {
         P1_SPEED=$( echo "$RAW1" | busybox awk '/^[[:space:]]*1[[:space:]]/{print $3; exit}' | busybox tr -d '\r\n')
         P1_DUPLEX=$(echo "$RAW1" | busybox awk '/^[[:space:]]*1[[:space:]]/{print $4; exit}' | busybox tr -d '\r\n')
 
+        P2_STATUS=$(echo "$RAW2" | busybox awk '/^[[:space:]]*2[[:space:]]/{print $2; exit}' | busybox tr -d '\r\n')
+        P2_SPEED=$( echo "$RAW2" | busybox awk '/^[[:space:]]*2[[:space:]]/{print $3; exit}' | busybox tr -d '\r\n')
+        P2_DUPLEX=$(echo "$RAW2" | busybox awk '/^[[:space:]]*2[[:space:]]/{print $4; exit}' | busybox tr -d '\r\n')
+
+        P3_STATUS=$(echo "$RAW3" | busybox awk '/^[[:space:]]*3[[:space:]]/{print $2; exit}' | busybox tr -d '\r\n')
+        P3_SPEED=$( echo "$RAW3" | busybox awk '/^[[:space:]]*3[[:space:]]/{print $3; exit}' | busybox tr -d '\r\n')
+        P3_DUPLEX=$(echo "$RAW3" | busybox awk '/^[[:space:]]*3[[:space:]]/{print $4; exit}' | busybox tr -d '\r\n')
+
         [ -z "$P0_STATUS" ] && P0_STATUS="Unknown"
         [ -z "$P0_SPEED"  ] && P0_SPEED="-"
         [ -z "$P0_DUPLEX" ] && P0_DUPLEX="-"
         [ -z "$P1_STATUS" ] && P1_STATUS="Unknown"
         [ -z "$P1_SPEED"  ] && P1_SPEED="-"
         [ -z "$P1_DUPLEX" ] && P1_DUPLEX="-"
+        [ -z "$P2_STATUS" ] && P2_STATUS="Unknown"
+        [ -z "$P2_SPEED"  ] && P2_SPEED="-"
+        [ -z "$P2_DUPLEX" ] && P2_DUPLEX="-"
+        [ -z "$P3_STATUS" ] && P3_STATUS="Unknown"
+        [ -z "$P3_SPEED"  ] && P3_SPEED="-"
+        [ -z "$P3_DUPLEX" ] && P3_DUPLEX="-"
 
         printf "Status: 200 OK\r\n"
         printf "Content-Type: application/json\r\n\r\n"
-        printf '{"port0":{"status":"%s","speed":"%s","duplex":"%s"},"port1":{"status":"%s","speed":"%s","duplex":"%s"}}' \
+        printf '{"port0":{"status":"%s","speed":"%s","duplex":"%s"},"port1":{"status":"%s","speed":"%s","duplex":"%s"},"port2":{"status":"%s","speed":"%s","duplex":"%s"},"port3":{"status":"%s","speed":"%s","duplex":"%s"}}' \
             "$P0_STATUS" "$P0_SPEED" "$P0_DUPLEX" \
-            "$P1_STATUS" "$P1_SPEED" "$P1_DUPLEX"
+            "$P1_STATUS" "$P1_SPEED" "$P1_DUPLEX" \
+            "$P2_STATUS" "$P2_SPEED" "$P2_DUPLEX" \
+            "$P3_STATUS" "$P3_SPEED" "$P3_DUPLEX"
         exit 0
     fi
 
@@ -1822,7 +1846,7 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
 
         # Validate port
         case "$PORT" in
-            1|2) ;;
+            1|2|3|4) ;;
             *)
                 printf "Status: 400 Bad Request\r\n"
                 printf "Content-Type: text/plain\r\n\r\n"
@@ -1844,13 +1868,8 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
 
         # Read current port state for rollback
         STATUS_RAW=$(sh "$LAN_SH" status 2>&1)
-        if [ "$PORT" = "1" ]; then
-            OLD_PWR_VAL=$(echo "$STATUS_RAW" | busybox sed -n 's/.*PORT1_PWR="\([^"]*\)".*/\1/p')
-            OLD_SPD=$(echo "$STATUS_RAW" | busybox sed -n 's/.*PORT1_SPEED="\([^"]*\)".*/\1/p')
-        else
-            OLD_PWR_VAL=$(echo "$STATUS_RAW" | busybox sed -n 's/.*PORT2_PWR="\([^"]*\)".*/\1/p')
-            OLD_SPD=$(echo "$STATUS_RAW" | busybox sed -n 's/.*PORT2_SPEED="\([^"]*\)".*/\1/p')
-        fi
+        OLD_PWR_VAL=$(echo "$STATUS_RAW" | busybox sed -n "s/.*PORT${PORT}_PWR=\"\([^\"]*\)\".*/\1/p")
+        OLD_SPD=$(echo "$STATUS_RAW" | busybox sed -n "s/.*PORT${PORT}_SPEED=\"\([^\"]*\)\".*/\1/p")
         case "$OLD_PWR_VAL" in
             enabled)  OLD_POWER=enable  ;;
             disabled) OLD_POWER=disable ;;

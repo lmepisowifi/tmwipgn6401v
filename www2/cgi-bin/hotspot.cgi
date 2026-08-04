@@ -1799,7 +1799,7 @@ if echo "$QS" | $BB grep -q "action=ifaces_get"; then
             lo|br*|sit*|ip6*|ppp*|tunl*|gre*|dummy*|mon.*|nas*|eth0|pwlan0) continue ;;
             eth0.*)
                 case "$iface" in
-                    eth0.2.0|eth0.3.0) ;;
+                    eth0.2.0|eth0.3.0|eth0.4.0|eth0.5.0) ;;
                     *) continue ;;
                 esac
                 ;;

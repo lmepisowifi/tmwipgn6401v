@@ -31,7 +31,8 @@ wait_for_iface() {
 #   ( wait_for_iface <iface> && diag port set auto-nego port <idx> ability <speeds> ) &
 #
 # Entries run in the background so this script returns immediately.
-# Interfaces: LAN 1 = eth0.2 (diag port 0), LAN 2 = eth0.3 (diag port 1)
+# Interfaces: LAN 1 = eth0.2 (diag port 0), LAN 2 = eth0.3 (diag port 1),
+#             LAN 3 = eth0.4 (diag port 2), LAN 4 = eth0.5 (diag port 3)
 # ---------------------------------------------------------------------------
 # --- BEGIN_LAN_SPEEDS ---
 # --- END_LAN_SPEEDS ---

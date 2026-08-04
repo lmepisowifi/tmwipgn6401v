@@ -95,11 +95,29 @@ NTP_EVENT="/lmepisowifi/hotspot/ntp_event.sh"
 # devices automatically gain it (with its default) in their preserved
 # globals.env and it shows up pre-filled in the admin UI. It never overwrites a
 # key the user already set, and is idempotent (safe to run on every boot).
+#
+# Exception — primary NodeMCU identity (NODEMCU_IP/NODEMCU_MAC/COIN_PSK): on a
+# box that already has a globals.env (i.e. this isn't its very first-ever
+# boot), these three being ABSENT means "no primary configured" just as much
+# as hotspot.cgi's nodemcu_del explicitly blanking them to "" does (see
+# NID=1 handling in hotspot.cgi) — it's simply a box that never had a primary
+# set up (e.g. a hotspot-only/Orange Pi build using only extra units) rather
+# than one that had it deleted. Auto-seeding defaults.env's placeholder IP/MAC/
+# PSK into globals.env in that case silently manufactures a primary the admin
+# never configured, and it comes back on every OTA even after being deleted
+# via the old (pre-blanking) delete behavior. So these three are only ever
+# seeded on a device's true first boot, when globals.env doesn't exist yet and
+# the defaults really do represent factory-shipped values.
 seed_globals() {
     _def="/lmepisowifi/defaults.env"
     _glob="/lmepisowifi/globals.env"
     [ -f "$_def" ] || return 0
-    [ -f "$_glob" ] || : > "$_glob"   # create empty file if it doesn't exist yet
+    if [ -f "$_glob" ]; then
+        _glob_is_new=0
+    else
+        _glob_is_new=1
+        : > "$_glob"   # create empty file if it doesn't exist yet
+    fi
     while IFS= read -r _line || [ -n "$_line" ]; do
         case "$_line" in
             ''|\#*) continue ;;               # skip blank lines and comments
@@ -108,6 +126,11 @@ seed_globals() {
         case "$_key" in
             ''|*[!A-Za-z0-9_]*) continue ;;   # skip lines that aren't KEY=value
         esac
+        if [ "$_glob_is_new" != "1" ]; then
+            case "$_key" in
+                NODEMCU_IP|NODEMCU_MAC|COIN_PSK) continue ;;
+            esac
+        fi
         # append only if globals.env has no assignment for this key yet
         grep -q "^${_key}=" "$_glob" 2>/dev/null || printf '%s\n' "$_line" >> "$_glob"
     done < "$_def"

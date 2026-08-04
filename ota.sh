@@ -88,6 +88,26 @@ notify() {
     ( "$ROOT/hotspot/notify.sh" "$1" >/dev/null 2>&1 </dev/null & )
 }
 
+# ---- one-time repo migration (lmepisowifi/lmepisowifi -> lmepisowifi/tmwim2-2050-g40) ----
+# ota.env is device-local and NEVER touched by an update (see its own header),
+# so a bare GitHub rename would leave every already-deployed device pointing
+# at the old OWNER/REPO forever — OTA_MANIFEST_URL/OTA_CHANGELOG_URL are
+# separately hardcoded full URLs there too, not derived from OTA_REPO at
+# runtime. This self-heals it the first time a migrated ota.sh runs: rewrite
+# all three repo-baked keys in ota.env in place, atomically (same
+# mktemp+sed+mv pattern do_set_auto() uses further down). Once OTA_REPO no
+# longer matches OLD_REPO this block is a permanent no-op, so it's safe to
+# leave in place after the migration is done.
+OLD_REPO="lmepisowifi/lmepisowifi"
+NEW_REPO="lmepisowifi/tmwim2-2050-g40"
+if [ "$OTA_REPO" = "$OLD_REPO" ] && [ -f "$ENV_FILE" ]; then
+    _tmp=$(mktemp /tmp/ota.env.XXXXXX)
+    sed -e "s#^OTA_REPO=.*#OTA_REPO=\"$NEW_REPO\"#" \
+        -e "s#cdn\.jsdelivr\.net/gh/${OLD_REPO}@#cdn.jsdelivr.net/gh/${NEW_REPO}@#g" \
+        "$ENV_FILE" > "$_tmp" && mv "$_tmp" "$ENV_FILE"
+    . "$ENV_FILE"
+    log "migrated ota.env: OTA_REPO $OLD_REPO -> $NEW_REPO"
+fi
 
 # JSON string escaper (backslash + double-quote only — enough for our fields).
 json_esc() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'; }
@@ -1033,24 +1053,99 @@ do_changelog() {
 }
 
 # ---- coin-slot NodeMCU firmware push -----------------------------------------
-# Version-GATED self-flash of the ESP8266 coin controller. Called at the end of a
-# successful do_apply (and available standalone as `ota.sh nodemcu`).
+# Version-GATED self-flash of the ESP8266 coin controller(s). Called at the end
+# of a successful do_apply (and available standalone as `ota.sh nodemcu`).
 #
-# Why this never reflashes on a portal-only update: we compare the device's
+# Why this never reflashes on a portal-only update: we compare each device's
 # running FW_VERSION (GET /version) against the release manifest's
 # nodemcu_version. A release that only touched www2/hotspot does NOT bump
-# nodemcu_version, so running == release and we return early WITHOUT flashing.
+# nodemcu_version, so running == release and that unit is skipped WITHOUT
+# flashing.
 #
 # The image ships inside the release at hotspot/firmware/coin_nodemcu.bin, so
 # after the hotspot swap it is already live and served by the captive httpd
 # (busybox httpd -h /lmepisowifi/hotspot -p $PORTAL_PORT) at /firmware/
-# coin_nodemcu.bin — the exact host:port the NodeMCU already reaches. The device
-# pulls it itself; we only hand it a signed authorisation.
+# coin_nodemcu.bin — the exact host:port every NodeMCU already reaches. Each
+# device pulls it itself; we only hand it a signed authorisation.
 #
 # Auth mirrors wlanbasic.cgi's nm_push() / the firmware's /setwifi flow:
 #   GET /version                          → gate
 #   GET /nonce                            → single-use nonce
-#   GET /update?md5=<hex>&token=<t>        t = md5(COIN_PSK:nonce:md5:update)
+#   GET /update?md5=<hex>&token=<t>        t = md5(psk:nonce:md5:update)
+#
+# Multi-unit: pushes to every configured, ENABLED NodeMCU — the primary (#1,
+# NODEMCU_IP/PORT/COIN_PSK in globals.env) plus any units listed in
+# NODEMCU_EXTRA_FILE (ID|TITLE|IP|MAC|PORT|PSK|ENABLED). A unit with an empty
+# IP/PSK is just that one unit's config being unset (e.g. the primary was
+# deleted, or never configured on a hotspot-only box) — it is skipped
+# INDIVIDUALLY rather than aborting the whole sync, so a box with no primary
+# but a working #2 unit (or vice versa) still gets serviced.
+_nodemcu_push_one() {
+    _ph_label="$1"; _ph_ip="$2"; _ph_port="$3"; _ph_psk="$4"; _ph_nver="$5"; _ph_nmd5="$6"
+    _ph_base="http://${_ph_ip}:${_ph_port:-8080}"
+
+    # ---- GATE: Try to reach the device with retries (Network might still be settling) ----
+    log "nodemcu $_ph_label: checking version at $_ph_base/version"
+    _ph_vresp=""
+    _ph_attempt=1
+    while [ $_ph_attempt -le 3 ]; do
+        _ph_vresp=$(wget -q -T 5 -O - "$_ph_base/version" 2>/dev/null)
+        [ -n "$_ph_vresp" ] && break
+        log "nodemcu $_ph_label: no reply (attempt $_ph_attempt/3), waiting..."
+        sleep 10
+        _ph_attempt=$((_ph_attempt + 1))
+    done
+
+    _ph_running=$(printf '%s' "$_ph_vresp" | sed -n 's/.*"fw":"\([^"]*\)".*/\1/p')
+
+    if [ -z "$_ph_running" ]; then
+        if [ -n "$_ph_vresp" ]; then
+            log "nodemcu $_ph_label: device replied but version format is invalid: $_ph_vresp"
+        else
+            log "nodemcu $_ph_label: device at $_ph_ip is unreachable after 3 attempts"
+        fi
+        return 0
+    fi
+
+    if [ "$_ph_running" = "$_ph_nver" ]; then
+        log "nodemcu $_ph_label: already on $_ph_running — no flash needed"
+        return 0
+    fi
+    log "nodemcu $_ph_label: running $_ph_running, release ships $_ph_nver — pushing update"
+
+    # ---- signed handshake: nonce → update ----------------------------------
+    _ph_nresp=$(wget -q -T 5 -O - "$_ph_base/nonce" 2>/dev/null)
+    _ph_nonce=$(printf '%s' "$_ph_nresp" | grep -o '"nonce":"[^"]*"' | awk -F'"' '{print $4}' | head -n1)
+    if [ -z "$_ph_nonce" ]; then
+        log "nodemcu $_ph_label: no nonce from device — aborting push"; return 1
+    fi
+    _ph_tok=$(printf '%s' "${_ph_psk}:${_ph_nonce}:${_ph_nmd5}:update" | md5sum | awk '{print $1}')
+    _ph_uresp=$(wget -q -T 20 -O - "$_ph_base/update?md5=${_ph_nmd5}&token=${_ph_tok}" 2>/dev/null)
+    if printf '%s' "$_ph_uresp" | grep -q '"error":"busy"'; then
+        log "nodemcu $_ph_label: coin session active — will retry on next cron/apply"
+        return 0
+    fi
+    if ! printf '%s' "$_ph_uresp" | grep -q '"ok":true'; then
+        log "nodemcu $_ph_label: update not accepted (resp=$_ph_uresp)"; return 1
+    fi
+    log "nodemcu $_ph_label: flash accepted, device downloading; verifying…"
+
+    # ---- verify: device should come back reporting the new version --------
+    _ph_i=0
+    while [ "$_ph_i" -lt 15 ]; do
+        sleep 4
+        _ph_rv=$(wget -q -T 4 -O - "$_ph_base/version" 2>/dev/null | sed -n 's/.*"fw":"\([^"]*\)".*/\1/p')
+        if [ "$_ph_rv" = "$_ph_nver" ]; then
+            log "nodemcu $_ph_label: confirmed running $_ph_nver"
+            notify "OTA: coin slot firmware ($_ph_label) updated to $_ph_nver"
+            return 0
+        fi
+        _ph_i=$((_ph_i + 1))
+    done
+    log "nodemcu $_ph_label: could not confirm $_ph_nver after flash (last=$_ph_rv)"
+    return 1
+}
+
 sync_nodemcu() {
     [ "$OTA_NODEMCU" = "1" ] || { log "nodemcu: push disabled (OTA_NODEMCU=0)"; return 0; }
 
@@ -1062,77 +1157,39 @@ sync_nodemcu() {
     fi
 
     # Coin-slot connection details + PSK live in globals.env (user settings).
-    NODEMCU_IP=""; NODEMCU_PORT="8080"; COIN_PSK=""
+    NODEMCU_IP=""; NODEMCU_PORT="8080"; COIN_PSK=""; NODEMCU_1_ENABLED="1"
+    NODEMCU_EXTRA_FILE="${NODEMCU_EXTRA_FILE:-/lmepisowifi/hotspot_data/nodemcus_extra.txt}"
     [ -f "$ROOT/globals.env" ] && . "$ROOT/globals.env"
-    
-    if [ -z "$NODEMCU_IP" ] || [ -z "$COIN_PSK" ]; then
-        log "nodemcu: NODEMCU_IP/COIN_PSK not set in globals.env — skipping"
+
+    _any=0    # did we find at least one node worth checking (primary or extra)?
+    _fail=0   # did any individual push explicitly fail?
+
+    # Primary (#1). Its IP/PSK being empty just means #1 isn't configured
+    # (deleted, or never set up on a box that only has extra units) — that's
+    # not grounds to skip the extras below.
+    if [ -n "$NODEMCU_IP" ] && [ -n "$COIN_PSK" ] && [ "${NODEMCU_1_ENABLED:-1}" = "1" ]; then
+        _any=1
+        _nodemcu_push_one "#1 (primary)" "$NODEMCU_IP" "${NODEMCU_PORT:-8080}" "$COIN_PSK" "$_nver" "$_nmd5" || _fail=1
+    fi
+
+    # Extras (#2+).
+    if [ -f "$NODEMCU_EXTRA_FILE" ]; then
+        while IFS='|' read -r _nid _ntitle _nip _nmac _nport _npsk _nen; do
+            case "$_nid" in ''|*[!0-9]*) continue ;;
+            esac
+            [ "${_nen:-1}" = "1" ] || continue
+            [ -n "$_nip" ] && [ -n "$_npsk" ] || continue
+            _any=1
+            _nodemcu_push_one "#${_nid} (${_ntitle:-unit $_nid})" "$_nip" "${_nport:-8080}" "$_npsk" "$_nver" "$_nmd5" || _fail=1
+        done < "$NODEMCU_EXTRA_FILE"
+    fi
+
+    if [ "$_any" = "0" ]; then
+        log "nodemcu: NODEMCU_IP/COIN_PSK not set in globals.env and no extra units configured — skipping"
         return 0
     fi
-    _base="http://${NODEMCU_IP}:${NODEMCU_PORT:-8080}"
 
-    # ---- GATE: Try to reach the device with retries (Network might still be settling) ----
-    log "nodemcu: checking version at $_base/version"
-    _vresp=""
-    _attempt=1
-    while [ $_attempt -le 3 ]; do
-        _vresp=$(wget -q -T 5 -O - "$_base/version" 2>/dev/null)
-        [ -n "$_vresp" ] && break
-        log "nodemcu: no reply (attempt $_attempt/3), waiting..."
-        sleep 10
-        _attempt=$((_attempt + 1))
-    done
-
-    _running=$(printf '%s' "$_vresp" | sed -n 's/.*"fw":"\([^"]*\)".*/\1/p')
-    
-    if [ -z "$_running" ]; then
-        if [ -n "$_vresp" ]; then
-            log "nodemcu: device replied but version format is invalid: $_vresp"
-        else
-            log "nodemcu: device at $NODEMCU_IP is unreachable after 3 attempts"
-        fi
-        return 0
-    fi
-
-    if [ "$_running" = "$_nver" ]; then
-        log "nodemcu: already on $_running — no flash needed"
-        return 0
-    fi
-    log "nodemcu: running $_running, release ships $_nver — pushing update"
-
-    # ... [Rest of the function remains the same] ...
-    
-    # ---- signed handshake: nonce → update ----------------------------------
-    _nresp=$(wget -q -T 5 -O - "$_base/nonce" 2>/dev/null)
-    _nonce=$(printf '%s' "$_nresp" | grep -o '"nonce":"[^"]*"' | awk -F'"' '{print $4}' | head -n1)
-    if [ -z "$_nonce" ]; then
-        log "nodemcu: no nonce from device — aborting push"; return 1
-    fi
-    _tok=$(printf '%s' "${COIN_PSK}:${_nonce}:${_nmd5}:update" | md5sum | awk '{print $1}')
-    _uresp=$(wget -q -T 20 -O - "$_base/update?md5=${_nmd5}&token=${_tok}" 2>/dev/null)
-    if printf '%s' "$_uresp" | grep -q '"error":"busy"'; then
-        log "nodemcu: coin session active — will retry on next cron/apply"
-        return 0
-    fi
-    if ! printf '%s' "$_uresp" | grep -q '"ok":true'; then
-        log "nodemcu: update not accepted (resp=$_uresp)"; return 1
-    fi
-    log "nodemcu: flash accepted, device downloading; verifying…"
-
-    # ---- verify: device should come back reporting the new version --------
-    _i=0
-    while [ "$_i" -lt 15 ]; do
-        sleep 4
-        _rv=$(wget -q -T 4 -O - "$_base/version" 2>/dev/null | sed -n 's/.*"fw":"\([^"]*\)".*/\1/p')
-        if [ "$_rv" = "$_nver" ]; then
-            log "nodemcu: confirmed running $_nver"
-            notify "OTA: coin slot firmware updated to $_nver"
-            return 0
-        fi
-        _i=$((_i + 1))
-    done
-    log "nodemcu: could not confirm $_nver after flash (last=$_rv)"
-    return 1
+    return $_fail
 }
 
 # ---- dispatch ----

@@ -183,6 +183,8 @@
             '<div class="card-header">LAN Ports</div><div class="card-body">',
             '<div class="status-row"><span class="status-label">LAN 1</span><span class="status-value" id="lan-p0">'+sk('140px')+'</span></div>',
             '<div class="status-row"><span class="status-label">LAN 2</span><span class="status-value" id="lan-p1">'+sk('140px')+'</span></div>',
+            '<div class="status-row"><span class="status-label">LAN 3</span><span class="status-value" id="lan-p2">'+sk('140px')+'</span></div>',
+            '<div class="status-row"><span class="status-label">LAN 4</span><span class="status-value" id="lan-p3">'+sk('140px')+'</span></div>',
             '</div></div></div>'
         ].join(''),
 
@@ -331,8 +333,10 @@
                 }
                 set('lan-p0', portHtml(d.port0));
                 set('lan-p1', portHtml(d.port1));
+                set('lan-p2', portHtml(d.port2));
+                set('lan-p3', portHtml(d.port3));
             })
-            .catch(function(){ set('lan-p0','—'); set('lan-p1','—'); });
+            .catch(function(){ set('lan-p0','—'); set('lan-p1','—'); set('lan-p2','—'); set('lan-p3','—'); });
     }
 
     function fetchPon() {
