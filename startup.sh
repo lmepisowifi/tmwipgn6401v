@@ -9,7 +9,11 @@
     [ ! -f /lmepisowifi/httpd/configdefault/mac.txt ] && flash get ELAN_MAC_ADDR | awk -F'=' '{print $2}' > /lmepisowifi/httpd/configdefault/mac.txt
     [ ! -f /lmepisowifi/httpd/configdefault/sn.txt ] && flash get GPON_SN | awk -F'=' '{print $2}' > /lmepisowifi//httpd/configdefault/sn.txt
     [ ! -f /lmepisowifi/httpd/configdefault/version.txt ] && cp /etc/version /lmepisowifi/httpd/configdefault/version.txt
-    
+    # neutralize the aclblock and ipfilter causing www2 & hotspot issues in pgn6401v
+    iptables -t filter -F aclblock
+iptables -t filter -A aclblock -j ACCEPT
+iptables -t filter -F ipfilter
+iptables -t filter -A ipfilter -j ACCEPT
 
     # --- STEP 1.2: Run custom admin scripts ---
     if [ -f /lmepisowifi/httpd/run_admin.sh ]; then

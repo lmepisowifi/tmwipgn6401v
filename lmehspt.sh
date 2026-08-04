@@ -463,35 +463,33 @@ EOF
     fi
 }
 
+
+
 wait_for_wlan_ready() {
     local max_wait=90 waited=0
 
-    # Stage 1: the vap netdevs need to exist at all
-    while [ $waited -lt $max_wait ]; do
-        [ -e /sys/class/net/wlan0-vap0 ] && [ -e /sys/class/net/wlan1-vap0 ] && break
+    # Wait for BOTH radios to be added to br0 by the vendor init.
+    # This is the only cross-firmware-safe signal: the full iwpriv
+    # set_mib sequence (SSID, auth, crypto) for wlan0/wlan1 always
+    # completes before brctl addif br0 wlanX on all Realtek SDK builds,
+    # regardless of where in rc35 monitord happens to be launched.
+    #
+    # Do NOT use monitord: on (PGN6401V) it launches at
+    # the START of rc35 (~10s), 13+ seconds before WLAN MIB is written.
+    # Do NOT use wlan0-vap0 existence: that's just MAC setup in rc32.
+    while [ "$waited" -lt "$max_wait" ]; do
+        [ -d "/sys/class/net/br0/brif/wlan0" ] && \
+        [ -d "/sys/class/net/br0/brif/wlan1" ] && break
         sleep 1
         waited=$((waited + 1))
     done
 
-    # Stage 2: wait for the vendor bring-up to actually finish.
-    # No hostapd on this driver -- SSID/security go straight into the
-    # kernel module via iwpriv set_mib during rc35. monitord is the last
-    # thing that stage launches, after WLAN MIB programming, firewall
-    # rules, and cwmp/samba are all done, so its presence is a reliable
-    # "vendor bring-up is finished" signal.
-    waited=0
-    while [ $waited -lt $max_wait ]; do
-        $BB pidof monitord >/dev/null 2>&1 && break
-        sleep 1
-        waited=$((waited + 1))
-    done
+    # Settle: VAP MIBs and ebtables portmapping rules finish shortly
+    # after both radios join br0 (~1-2s on both firmwares).
+    sleep 2
 
-    # Settle delay: dot11k_deamon and the Multi-AP service can still be
-    # finishing up for a moment after monitord's first print.
-    sleep 3
     ip route add default via "$(resolve_br0_gateway)" dev br0 2>/dev/null
 }
-
 
 
 # ── Extra NodeMCU coin-acceptor firewall isolation ─────────────────────────

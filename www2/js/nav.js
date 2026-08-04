@@ -19,7 +19,7 @@ setInterval(function () {
     // ================================================================
     // SITE META — singular favicon + title prefix for every page
     // ================================================================
-    var SITE_TITLE  = 'M2-2050-G40';
+    var SITE_TITLE  = 'PGN6401V';
     var FAVICON_URL = '/img/logo.png'; // change to .png if needed
 
     // Inject or replace favicon
@@ -144,7 +144,7 @@ setInterval(function () {
             '    <a class="navbar-brand d-flex align-items-center" href="/index.html">',
             '      <img src="/img/logo.png" alt="Icon" class="header-icon">',
             '      <div class="header-divider"></div>',
-            '      <span class="brand-text">M2-2050-G40</span>',
+            '      <span class="brand-text">PGN6401V</span>',
             '    </a>',
             '    <button class="navbar-toggler" type="button"',
             '            data-bs-toggle="collapse" data-bs-target="#navbarNav">',

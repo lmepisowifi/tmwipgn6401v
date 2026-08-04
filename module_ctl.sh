@@ -39,7 +39,7 @@ TS_CTL="$ROOT/tailscale/tailscale_ctl.sh"
 
 MODULES="hotspot tailscale"
 
-OTA_REPO="lmepisowifi/tmwim2-2050-g40"
+OTA_REPO="lmepisowifi/tmwipgn6401v"
 OTA_BRANCH="main"
 OTA_MANIFEST_URL=""
 OTA_CACERT="$ROOT/cacert.pem"

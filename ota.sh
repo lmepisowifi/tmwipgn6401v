@@ -88,26 +88,6 @@ notify() {
     ( "$ROOT/hotspot/notify.sh" "$1" >/dev/null 2>&1 </dev/null & )
 }
 
-# ---- one-time repo migration (lmepisowifi/lmepisowifi -> lmepisowifi/tmwim2-2050-g40) ----
-# ota.env is device-local and NEVER touched by an update (see its own header),
-# so a bare GitHub rename would leave every already-deployed device pointing
-# at the old OWNER/REPO forever — OTA_MANIFEST_URL/OTA_CHANGELOG_URL are
-# separately hardcoded full URLs there too, not derived from OTA_REPO at
-# runtime. This self-heals it the first time a migrated ota.sh runs: rewrite
-# all three repo-baked keys in ota.env in place, atomically (same
-# mktemp+sed+mv pattern do_set_auto() uses further down). Once OTA_REPO no
-# longer matches OLD_REPO this block is a permanent no-op, so it's safe to
-# leave in place after the migration is done.
-OLD_REPO="lmepisowifi/lmepisowifi"
-NEW_REPO="lmepisowifi/tmwim2-2050-g40"
-if [ "$OTA_REPO" = "$OLD_REPO" ] && [ -f "$ENV_FILE" ]; then
-    _tmp=$(mktemp /tmp/ota.env.XXXXXX)
-    sed -e "s#^OTA_REPO=.*#OTA_REPO=\"$NEW_REPO\"#" \
-        -e "s#cdn\.jsdelivr\.net/gh/${OLD_REPO}@#cdn.jsdelivr.net/gh/${NEW_REPO}@#g" \
-        "$ENV_FILE" > "$_tmp" && mv "$_tmp" "$ENV_FILE"
-    . "$ENV_FILE"
-    log "migrated ota.env: OTA_REPO $OLD_REPO -> $NEW_REPO"
-fi
 
 # JSON string escaper (backslash + double-quote only — enough for our fields).
 json_esc() { printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'; }
