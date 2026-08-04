@@ -166,6 +166,8 @@ _kick_udhcpc() {
 # ── Helper: wait for target interface to be ready ────────────────────────────
 _wait_for_interface_ready() {
     local max_wait=90 waited=0
+    # Define your bridge name here (br0 or br1)
+    local target_bridge="br0" 
 
     # Stage 1: Wait for the interface to exist in the filesystem
     while [ $waited -lt $max_wait ]; do
@@ -174,14 +176,15 @@ _wait_for_interface_ready() {
         waited=$((waited + 1))
     done
 
-    # Stage 2: Wait for monitord (vendor hardware bring-up finished signal)
+    # Stage 2: Wait for it to be bound to the bridge
     waited=0
     while [ $waited -lt $max_wait ]; do
-        busybox pidof monitord >/dev/null 2>&1 && break
+        # Replaced hardcoded wlan0 with $TARGET_IFACE
+        [ -e "/sys/class/net/$target_bridge/brif/$TARGET_IFACE" ] && break
         busybox sleep 1
         waited=$((waited + 1))
     done
-
+    
     # Settle delay
     busybox sleep 3
 }

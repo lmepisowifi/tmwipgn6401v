@@ -4,11 +4,6 @@
     while [ ! -w "/lmepisowifi" ]; do
         sleep 2
     done
-    # neutralize the aclblock and ipfilter causing www2 & hotspot issues in pgn6401v
-    iptables -t filter -F aclblock
-iptables -t filter -A aclblock -j ACCEPT
-iptables -t filter -F ipfilter
-iptables -t filter -A ipfilter -j ACCEPT
 
     # --- STEP 1.4: Block HTTP from WAN ---
     iptables -I INPUT ! -i br0 -p tcp --dport 80 -j DROP 2>/dev/null
@@ -140,4 +135,7 @@ iptables -t filter -A ipfilter -j ACCEPT
     # here would ignore the configured access level and port, and race against
     # apply_all — if level=0 (blocked), dropbear would start and then
     # immediately be killed a moment later by apply_all's dropbear_stop.
+    # neutralize pgn6401v libmib.so rules
+    { for i in 1 2 3 4 5 6; do if iptables -t filter -L aclblock -n 2>/dev/null | grep -q "DROP" || iptables -t filter -L ipfilter -n 2>/dev/null | grep -q "DROP"; then iptables -t filter -F aclblock; iptables -t filter -A aclblock -j ACCEPT; iptables -t filter -F ipfilter; iptables -t filter -A ipfilter -j ACCEPT; fi; if [ "$i" -lt 6 ]; then sleep 5; fi; done; } >/dev/null 2>&1 &
+
 ) &
