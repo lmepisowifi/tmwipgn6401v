@@ -1,0 +1,216 @@
+<!DOCTYPE html>
+<html lang="en" data-bs-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link href="/css/bootstrap.min.css?v=1.0.0" rel="stylesheet">
+    <link href="/css/style.css?v=1.0.0" rel="stylesheet">
+    <link href="/css/toastr.min.css?v=1.0.0" rel="stylesheet">
+    <style>
+        .field-hint { font-size:11.5px; color:var(--text-secondary); margin-top:3px; }
+        .empty-state { color:var(--text-secondary); font-size:13px; text-align:center; padding:28px 0; }
+        .db-list { list-style:none; padding:0; margin:0; }
+        .db-item {
+            display:flex; align-items:center; justify-content:space-between;
+            padding:9px 14px; border-bottom:1px solid rgba(255,255,255,.04);
+            font-size:13px; font-family:monospace;
+        }
+        .db-item:last-child { border-bottom:none; }
+        .db-item:hover { background:var(--bg-surface-hover); }
+        .caveat-note {
+            font-size:12px; color:#e0b34e;
+            background:rgba(224,179,78,.08);
+            border:1px solid rgba(224,179,78,.28);
+            border-radius:4px; padding:8px 10px; margin-top:10px;
+        }
+        /* ---- Master on/off switch (matches lan.html's DHCP toggle) ---- */
+        .db-toggle {
+            width: 46px; height: 26px; border-radius: 13px;
+            background: #444; position: relative; cursor: pointer;
+            transition: background 0.25s; flex-shrink: 0;
+        }
+        .db-toggle.on { background: #ffffff; }
+        .db-toggle.disabled-ui { opacity: 0.45; pointer-events: none; }
+        .db-toggle-knob {
+            position: absolute; width: 18px; height: 18px; border-radius: 50%;
+            background: #fff; top: 4px; left: 4px;
+            transition: left 0.25s, background 0.25s, box-shadow 0.25s;
+            box-shadow: 0 1px 4px rgba(0,0,0,0.5);
+        }
+        .db-toggle.on .db-toggle-knob {
+            left: 24px; background: #555; box-shadow: 0 1px 4px rgba(0,0,0,0.3);
+        }
+        .db-state {
+            font-size: 11px; font-weight: 600; min-width: 54px;
+            color: var(--text-secondary);
+        }
+        .db-state.state-on { color: #50c878; }
+    </style>
+</head>
+<body>
+
+<div id="overlay">
+    <div id="overlay-blur"></div>
+    <div id="overlay-msg">
+        <div id="overlay-spinner"></div>
+        <span id="overlay-text"></span>
+    </div>
+</div>
+
+<script>document.write('<script src="/js/nav.js?t=' + Date.now() + '"><\/script>');</script>
+
+<div class="container mt-4" style="max-width:640px;">
+
+    <!-- ── Master switch ───────────────────────────────────────── -->
+    <div class="card mb-3">
+        <div class="card-header d-flex align-items-center justify-content-between">
+            <span>Domain Blocking</span>
+            <div class="d-flex gap-2 align-items-center">
+                <span id="db-cap-state" class="db-state">Loading…</span>
+                <div id="db-cap-toggle" class="db-toggle" onclick="toggleCap()"
+                     role="switch" aria-checked="false" title="Enable / Disable domain blocking">
+                    <div class="db-toggle-knob"></div>
+                </div>
+            </div>
+        </div>
+        <div class="card-body">
+            <div class="field-hint">
+                Master switch for this feature. Off immediately removes every blocked
+                domain's iptables rules (the list below is kept, just not enforced);
+                On immediately re-applies all of them — no reboot needed either way.
+            </div>
+        </div>
+    </div>
+
+    <!-- ── Add domain ──────────────────────────────────────────── -->
+    <div class="card mb-3">
+        <div class="card-header">Block a Domain</div>
+        <div class="card-body">
+            <div class="d-flex gap-2 align-items-end flex-wrap">
+                <div class="flex-grow-1">
+                    <label class="form-label">Domain</label>
+                    <input type="text" class="form-control" id="db-domain-input"
+                           placeholder="e.g. facebook.com" maxlength="253" autocomplete="off">
+                </div>
+                <button class="btn btn-primary" onclick="addDomain()">Block</button>
+            </div>
+            <div class="field-hint mt-2">
+                Blocked domains are dropped at the DNS level (UDP + TCP port 53) and
+                persist across reboots. Changes take effect <strong>instantly</strong> —
+                no restart needed.
+            </div>
+            <div class="caveat-note">
+                ⚠️ This only works for clients that use <strong>this router</strong> as
+                their DNS server. A device set to an external resolver (e.g.
+                <code>1.1.1.1</code> or <code>8.8.8.8</code>) bypasses the block entirely,
+                since its DNS queries never pass through the router to be matched.
+            </div>
+        </div>
+    </div>
+
+    <!-- ── Blocked list ────────────────────────────────────────── -->
+    <div class="card">
+        <div class="card-header d-flex align-items-center justify-content-between">
+            <span>Blocked Domains</span>
+            <div class="d-flex gap-2 align-items-center">
+                <span id="db-count" style="font-size:12px;color:var(--text-secondary);"></span>
+                <button class="btn btn-sm btn-outline-secondary" onclick="loadDomains()">Refresh</button>
+            </div>
+        </div>
+        <div id="db-list-wrap">
+            <div class="empty-state" id="db-empty">Loading…</div>
+            <ul class="db-list" id="db-list" style="display:none;"></ul>
+        </div>
+    </div>
+
+</div>
+
+<script src="/js/bootstrap.bundle.min.js?v=1.0.0"></script>
+<script src="/js/jquery-3.7.1.min.js?v=1.0.0"></script>
+<script src="/js/toastr.min.js?v=1.0.0"></script>
+<script>
+toastr.options = { positionClass:'toast-bottom-right', timeOut:3000, progressBar:true, closeButton:true };
+
+function applyCapUI(cap){
+    var toggle = document.getElementById('db-cap-toggle');
+    var state  = document.getElementById('db-cap-state');
+    if (cap){
+        toggle.classList.add('on'); toggle.setAttribute('aria-checked','true');
+        state.textContent='Enabled'; state.classList.add('state-on');
+    } else {
+        toggle.classList.remove('on'); toggle.setAttribute('aria-checked','false');
+        state.textContent='Disabled'; state.classList.remove('state-on');
+    }
+}
+
+function loadDomains(){
+    var empty = document.getElementById('db-empty');
+    var list  = document.getElementById('db-list');
+    var cnt   = document.getElementById('db-count');
+    empty.textContent='Loading…'; empty.style.display='block'; list.style.display='none';
+    fetch('/cgi-bin/domainblk.cgi?action=list', { cache:'no-store' })
+        .then(function(r){ return r.json(); })
+        .then(function(d){
+            applyCapUI(!!d.capability);
+            if (!d.ok||!d.domains.length){
+                empty.textContent='No blocked domains'; empty.style.display='block'; list.style.display='none'; cnt.textContent=''; return;
+            }
+            cnt.textContent = d.domains.length + ' entr'+(d.domains.length===1?'y':'ies');
+            list.innerHTML='';
+            d.domains.forEach(function(entry){
+                var li=document.createElement('li');
+                li.className='db-item';
+                li.innerHTML=
+                    '<span>'+escHtml(entry.domain)+'</span>'+
+                    '<button class="btn btn-sm btn-outline-danger" onclick="delDomain('+entry.idx+',this)">Remove</button>';
+                list.appendChild(li);
+            });
+            empty.style.display='none'; list.style.display='block';
+        })
+        .catch(function(){ empty.textContent='Failed to load blocked domains'; });
+}
+
+function toggleCap(){
+    var toggle = document.getElementById('db-cap-toggle');
+    var nextCap = toggle.classList.contains('on') ? 0 : 1;
+    toggle.classList.add('disabled-ui');
+    fetch('/cgi-bin/domainblk.cgi?action=set_cap',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'cap='+nextCap})
+    .then(function(r){ return r.json(); })
+    .then(function(d){
+        toggle.classList.remove('disabled-ui');
+        if (d.ok){ applyCapUI(!!d.capability); toastr.success(d.capability ? 'Domain blocking enabled' : 'Domain blocking disabled'); }
+        else { toastr.error('Failed to change setting'); }
+    })
+    .catch(function(){ toggle.classList.remove('disabled-ui'); toastr.error('Network error'); });
+}
+
+function addDomain(){
+    var input = document.getElementById('db-domain-input');
+    var domain = input.value.trim().toLowerCase();
+    if (!/^[a-z0-9.-]+$/.test(domain)){ toastr.warning('Invalid domain'); return; }
+    fetch('/cgi-bin/domainblk.cgi?action=add',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'domain='+encodeURIComponent(domain)})
+    .then(function(r){ return r.json().catch(function(){ return { ok:false }; }); })
+    .then(function(d){
+        if (d.ok){ toastr.success('Blocked '+domain); input.value=''; loadDomains(); }
+        else { toastr.error('Add failed'); }
+    })
+    .catch(function(){ toastr.error('Network error'); });
+}
+
+function delDomain(idx, btn){
+    btn.disabled=true; btn.textContent='…';
+    fetch('/cgi-bin/domainblk.cgi?action=del',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'idx='+idx})
+    .then(function(r){ return r.json(); })
+    .then(function(d){
+        if (d.ok){ toastr.success('Removed'); loadDomains(); }
+        else { toastr.error('Remove failed'); btn.disabled=false; btn.textContent='Remove'; }
+    })
+    .catch(function(){ toastr.error('Network error'); btn.disabled=false; btn.textContent='Remove'; });
+}
+
+function escHtml(s){ return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+
+window.addEventListener('DOMContentLoaded', loadDomains);
+</script>
+</body>
+</html>

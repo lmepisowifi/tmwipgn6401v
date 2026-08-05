@@ -44,11 +44,10 @@ setInterval(function () {
             { label: 'Advanced',      href: '/wlanadvanced.html'  },
             { label: 'Site Survey',   href: '/sitesurvey.html'    },
             { label: 'MAC Filter',    href: '/wlanmac.html'       },
-            { label: 'Access Limit',  href: '/wlanlimit.html'     },
             { label: 'STA Info',  href: '/wlansta.html'     },
         ]},
         { label: 'LAN',     href: '/lan.html' },
-        { label: 'IP ACL',  href: '/ipacl.html' },
+        { label: 'Domain Blocking', href: '/domainblk.html' },
         { label: 'Hotspot', module: 'hotspot', children: [
             { label: 'Overview',        href: '/hotspot.html',           hotspot: 'always'  },
             { label: 'Interfaces',      href: '/hotspot-ifaces.html',    hotspot: 'always'  },

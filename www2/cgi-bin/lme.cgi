@@ -348,17 +348,6 @@ if [ "$REQUEST_METHOD" = "GET" ]; then
         exit 0
     fi
 
-    # --- action=devicelimit: return current max STA as JSON ---
-    if echo "$QUERY_STRING" | busybox grep -q "action=devicelimit"; then
-        MAX_STA=$(mib get WLAN_TOTAL_MAX_STA \
-            | busybox grep "=" \
-            | busybox cut -d'=' -f2- \
-            | busybox tr -d '\r\n')
-        printf "Status: 200 OK\r\n"
-        printf "Content-Type: application/json\r\n\r\n"
-        printf '{"maxsta":%s}' "$MAX_STA"
-        exit 0
-    fi
 
     # --- action=system_status: return HW serial, MAC, PON mode and auto flag ---
     if echo "$QUERY_STRING" | busybox grep -q "action=system_status"; then
@@ -1813,28 +1802,6 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
         exit 0
     fi
 
-    # --- action=devicelimit: set WLAN_TOTAL_MAX_STA ---
-    if echo "$QUERY_STRING" | busybox grep -q "action=devicelimit"; then
-        FORM_MAXSTA=$(echo "$POST_DATA" \
-            | busybox sed -n 's/.*maxsta=\([^&]*\).*/\1/p' \
-            | busybox tr -d '\r\n')
-        case "$FORM_MAXSTA" in
-            ''|*[!0-9]*) FORM_MAXSTA="" ;;
-        esac
-        if [ -n "$FORM_MAXSTA" ] && [ "$FORM_MAXSTA" -le 64 ]; then
-            mib set WLAN_TOTAL_MAX_STA "$FORM_MAXSTA"
-            mib commit
-            printf "Status: 200 OK\r\n"
-            printf "Content-Type: text/plain\r\n\r\n"
-            printf "OK"
-            ( wlan_apply restart ) &
-        else
-            printf "Status: 400 Bad Request\r\n"
-            printf "Content-Type: text/plain\r\n\r\n"
-            printf "Invalid value"
-        fi
-        exit 0
-    fi
 
     # --- LAN port set: detected by presence of 'port=' in POST data ---
     if echo "$POST_DATA" | busybox grep -q "port="; then

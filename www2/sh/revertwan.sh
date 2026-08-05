@@ -37,9 +37,31 @@ fi
 # Belt-and-suspenders: kill any stray udhcpc referencing this interface
 busybox pkill -f "udhcpc.*${TARGET_IFACE}" 2>/dev/null || true
 
+# ── 2b. Stop the event-driven re-enslavement watcher (ip monitor link) ────────
+# This is a separate background process from the watchdog itself (started
+# with its own `&` in repurposeaswan.sh), so killing WD_PID above does not
+# reap it — it must be stopped explicitly or it's left running as an orphan.
+MONITOR_PID_FILE="/tmp/repurpose_${TARGET_IFACE}.monitor.pid"
+if [ -f "$MONITOR_PID_FILE" ]; then
+    MPID=$(busybox tr -d '\r\n' < "$MONITOR_PID_FILE" 2>/dev/null)
+    [ -n "$MPID" ] && kill "$MPID" 2>/dev/null
+    rm -f "$MONITOR_PID_FILE"
+fi
+
 # ── 3. Remove iptables NAT masquerade rule ────────────────────────────────────
 iptables -t nat -D POSTROUTING -o "$TARGET_IFACE" -j MASQUERADE 2>/dev/null
 printf 'Removed NAT MASQUERADE for %s\n' "$TARGET_IFACE"
+
+# ── 3a. Remove DHCP anti-leak rules ───────────────────────────────────────────
+if ebtables --version >/dev/null 2>&1 || busybox ebtables --version >/dev/null 2>&1; then
+    ebtables -D FORWARD -o "$TARGET_IFACE" -p ipv4 --ip-proto udp --ip-sport 67 -j DROP 2>/dev/null
+    ebtables -D FORWARD -i "$TARGET_IFACE" -p ipv4 --ip-proto udp --ip-dport 67 -j DROP 2>/dev/null
+    ebtables -D INPUT -i "$TARGET_IFACE" -p ipv4 --ip-proto udp --ip-dport 67 -j DROP 2>/dev/null
+fi
+iptables -t filter -D FORWARD -m physdev --physdev-out "$TARGET_IFACE" -p udp --sport 67 -j DROP 2>/dev/null
+iptables -t filter -D FORWARD -m physdev --physdev-in "$TARGET_IFACE" -p udp --dport 67 -j DROP 2>/dev/null
+iptables -t filter -D INPUT -i "$TARGET_IFACE" -p udp --dport 67 -j DROP 2>/dev/null
+printf 'Removed DHCP anti-leak rules for %s\n' "$TARGET_IFACE"
 
 # ── 3b. Remove LAN isolation rules ────────────────────────────────────────
 iptables -t filter -D FORWARD -i "$TARGET_IFACE" -o br0 -j DROP 2>/dev/null

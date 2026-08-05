@@ -135,7 +135,17 @@
     # here would ignore the configured access level and port, and race against
     # apply_all — if level=0 (blocked), dropbear would start and then
     # immediately be killed a moment later by apply_all's dropbear_stop.
-    # neutralize pgn6401v libmib.so rules
-    { for i in 1 2 3 4 5 6; do if iptables -t filter -L aclblock -n 2>/dev/null | grep -q "DROP" || iptables -t filter -L ipfilter -n 2>/dev/null | grep -q "DROP"; then iptables -t filter -F aclblock; iptables -t filter -A aclblock -j ACCEPT; iptables -t filter -F ipfilter; iptables -t filter -A ipfilter -j ACCEPT; fi; if [ "$i" -lt 6 ]; then sleep 5; fi; done; } >/dev/null 2>&1 &
-
+# neutralize pgn6401v libmib.so rules — aclblock/ipfilter only, leave
+# every other vendor chain (cwmp_aclblock, tr069, parental_ctrl, etc.)
+# fully intact and still evaluated
+{ for i in 1 2 3 4 5 6; do
+    if iptables -t filter -L aclblock -n 2>/dev/null | grep -q "DROP" \
+       || iptables -t filter -L ipfilter -n 2>/dev/null | grep -q "DROP"; then
+        iptables -t filter -F aclblock
+        iptables -t filter -A aclblock -j RETURN
+        iptables -t filter -F ipfilter
+        iptables -t filter -A ipfilter -j RETURN
+    fi
+    if [ "$i" -lt 6 ]; then sleep 5; fi
+done; } >/dev/null 2>&1 &
 ) &
