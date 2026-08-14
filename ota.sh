@@ -598,31 +598,46 @@ self_heal() {
             log "self-heal: recovered $_SH_NAME from www2.ota_old (lost by a pre-fix OTA run)"
             notify "OTA: recovered a $_SH_NAME setting a previous update had reset — please double-check it"
 
-            # For WAN_REPURPOSE specifically: if the daemon was absent (device
+            # For WAN_REPURPOSE specifically: if a daemon was absent (device
             # rebooted after the broken apply before self_heal got to run), the
             # fixed startup.sh is now on disk but nothing re-executes it until
-            # the next reboot. Parse the interface name from the recovered line
-            # and launch repurposeaswan.sh right now so the setting takes effect
-            # immediately — no second reboot required.
-            # Line format produced by wan-repurpose.cgi:
-            #   ( sh /lmepisowifi/www2/sh/repurposeaswan.sh IFACE ) &
-            # Fields:  1:(  2:sh  3:/path  4:IFACE  5:)  6:&  → NF-2 = IFACE
+            # the next reboot. Parse EVERY interface (the block can now hold
+            # one launch line per configured interface, not just one) and
+            # launch repurposeaswan.sh for each that isn't already running,
+            # so the setting takes effect immediately — no second reboot
+            # required.
+            # Line formats produced by wan-repurpose.cgi, both handled here:
+            #   ( sh /lmepisowifi/www2/sh/repurposeaswan.sh IFACE ) &            (older, single-interface)
+            #   ( sh /lmepisowifi/www2/sh/repurposeaswan.sh IFACE DEFROUTE ) &   (current)
+            # Located by field position relative to the "repurposeaswan.sh"
+            # token itself (not a fixed NF offset), so both forms parse
+            # correctly and multiple lines in the block are each handled.
             if [ "$_SH_NAME" = "WAN_REPURPOSE" ]; then
-                _SH_IFACE=$(awk \
+                awk \
                     -v beg="# --- BEGIN_WAN_REPURPOSE ---" \
                     -v end="# --- END_WAN_REPURPOSE ---" \
-                    '$0==beg{s=1;next} $0==end{s=0;next} s && /repurposeaswan\.sh/{print $(NF-2); exit}' \
-                    "$_SH_NEW_S" | busybox tr -d '\r\n')
-                if [ -n "$_SH_IFACE" ]; then
+                    '$0==beg{s=1;next} $0==end{s=0;next}
+                     s && /repurposeaswan\.sh/{
+                         for (i=1;i<=NF;i++) {
+                             if ($i ~ /repurposeaswan\.sh$/) {
+                                 iface=$(i+1)
+                                 defr=(($(i+2)==")")? "" : $(i+2))
+                                 print iface "|" defr
+                             }
+                         }
+                     }' \
+                    "$_SH_NEW_S" | busybox tr -d '\r' \
+                | while IFS='|' read -r _SH_IFACE _SH_DEFR; do
+                    [ -z "$_SH_IFACE" ] && continue
                     if [ ! -f "/tmp/repurpose_${_SH_IFACE}.pid" ] || \
                        ! kill -0 "$(busybox tr -d '\r\n' < "/tmp/repurpose_${_SH_IFACE}.pid" 2>/dev/null)" 2>/dev/null; then
-                        ( sh "$ROOT/www2/sh/repurposeaswan.sh" "$_SH_IFACE" ) &
+                        ( sh "$ROOT/www2/sh/repurposeaswan.sh" "$_SH_IFACE" "$_SH_DEFR" ) &
                         log "self-heal: launched repurposeaswan.sh $_SH_IFACE immediately (was not running after OTA reboot)"
                         notify "OTA: WAN-repurpose on $_SH_IFACE re-started — no reboot needed"
                     else
                         log "self-heal: repurposeaswan.sh $_SH_IFACE already running — startup.sh fix will take effect on next reboot"
                     fi
-                fi
+                done
             fi
         done
     fi

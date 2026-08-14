@@ -1,10 +1,31 @@
 #!/bin/sh
-# wan-repurpose.cgi — Repurpose LAN / WiFi interface as DHCP WAN
+# wan-repurpose.cgi — DHCP Client interfaces (repurpose LAN / WiFi as WAN)
 #
-# GET  ?action=iface_list  → enumerate eligible interfaces (JSON)
-# GET  ?action=status      → quick watchdog/IP poll (JSON)
-# POST ?action=apply       → start repurpose watchdog daemon
-# POST ?action=revert      → revert interface back to br0
+# GET  ?action=iface_list  → enumerate eligible + configured interfaces (JSON)
+# GET  ?action=status      → quick watchdog/IP poll for every configured
+#                             interface (JSON array)
+# POST ?action=apply       → add/re-apply an interface as a DHCP client,
+#                             body: iface=<iface>&default_route=1|0
+# POST ?action=revert      → remove a configured interface, body: iface=<iface>
+# POST ?action=set_default → flip the default-route switch on an already
+#                             -configured interface, body:
+#                             iface=<iface>&default_route=1|0
+#
+# Multiple interfaces can be configured as DHCP clients at once — each runs
+# its own repurposeaswan.sh watchdog (namespaced entirely by interface name).
+# At most one of them is ever flagged default_route=1 at a time (enforced
+# here, since only one interface can meaningfully hold the kernel default
+# route) — see /tmp/repurpose_defroute_<iface>.
+#
+# The set of configured interfaces + their default-route flags is
+# persisted in the BEGIN_WAN_REPURPOSE…END_WAN_REPURPOSE block of
+# startup.sh, one line per interface:
+#   ( sh /lmepisowifi/www2/sh/repurposeaswan.sh <iface> <default_route> ) &
+# Older, pre-multi-interface entries in that block
+# (`( sh .../repurposeaswan.sh <iface> ) &`, no third field) are left
+# untouched until the user next touches that interface from this page —
+# repurposeaswan.sh treats an omitted default_route argument as "1", which
+# matches exactly what those older single-interface entries always did.
 #
 # WLAN eligibility (wlanbasic.cgi conventions):
 #   5GHz  wlan0 → WLAN_MBSSIB_TBL.0.{wlanDisabled,wlanMode}
@@ -14,8 +35,6 @@
 # LAN eligibility:
 #   eth0.2.0 (LAN1 / port 0) — only if PORT1_PWR=enabled from lan.sh
 #   eth0.3.0 (LAN2 / port 1) — only if PORT2_PWR=enabled from lan.sh
-#   eth0.4.0 (LAN3 / port 2) — only if PORT3_PWR=enabled from lan.sh
-#   eth0.5.0 (LAN4 / port 3) — only if PORT4_PWR=enabled from lan.sh
 
 SESSION_TIMEOUT=600
 
@@ -53,40 +72,45 @@ LAN_SH="/lmepisowifi/www2/sh/lan.sh"
 STATE_FILE="/tmp/repurpose_active"
 STARTUP_SH="/lmepisowifi/www2/sh/startup.sh"
 
-# ── update_startup_repurpose <iface|""> ───────────────────────────────────────
-# Rewrites the BEGIN_WAN_REPURPOSE … END_WAN_REPURPOSE section of startup.sh.
-# Pass the interface name to persist it, or "" to clear the section (revert).
-# Uses the same atomic awk+mv pattern as update_startup_speed in lme.cgi.
-update_startup_repurpose() {
-    _USR_IFACE="$1"
+# ── update_startup_repurpose_all ──────────────────────────────────────────────
+# Rewrites the whole BEGIN_WAN_REPURPOSE … END_WAN_REPURPOSE section of
+# startup.sh from the CURRENT live registry (STATE_FILE + each interface's
+# own /tmp/repurpose_defroute_<iface> flag) — one launch line per configured
+# interface, so every currently-configured DHCP-client interface (not just
+# the one just touched) survives a reboot. Uses the same
+# getline-from-contentfile awk idiom ota.sh's self-heal already uses for
+# splicing a marker section, for consistency.
+update_startup_repurpose_all() {
     [ ! -f "$STARTUP_SH" ] && return
 
-    _USR_TMP="/tmp/startup_sh_repurpose_$$.tmp"
+    _USR_CONTENT="/tmp/startup_sh_repurpose_content_$$.tmp"
+    : > "$_USR_CONTENT"
+    if [ -f "$STATE_FILE" ]; then
+        while IFS= read -r _usr_if; do
+            [ -z "$_usr_if" ] && continue
+            _usr_flag=$(busybox cat "/tmp/repurpose_defroute_${_usr_if}" 2>/dev/null | busybox tr -d '\r\n')
+            _usr_flag="${_usr_flag:-1}"
+            printf '( sh %s %s %s ) &\n' "$REPURPOSE_SH" "$_usr_if" "$_usr_flag" >> "$_USR_CONTENT"
+        done < "$STATE_FILE"
+    fi
 
+    _USR_TMP="/tmp/startup_sh_repurpose_$$.tmp"
     busybox awk \
-        -v iface="$_USR_IFACE" \
-        -v repurpose_sh="$REPURPOSE_SH" \
+        -v contentfile="$_USR_CONTENT" \
         'BEGIN { in_sec=0 }
-         /^# --- BEGIN_WAN_REPURPOSE ---/ { print; in_sec=1; next }
-         /^# --- END_WAN_REPURPOSE ---/ {
-             if (iface != "") {
-                 # No wait_for_iface gate here: repurposeaswan.sh already waits
-                 # for the interface to appear in sysfs and for monitord (vendor
-                 # hardware bring-up signal) internally, with a longer timeout
-                 # and its own logging. Gating on wait_for_iface (60s, ifconfig-
-                 # based) too was a second, stricter, unlogged point of failure —
-                 # if it timed out first on a slow boot, the && short-circuited
-                 # and repurposeaswan.sh never launched at all for that boot,
-                 # silently leaving the admin UI showing "select interface".
-                 print "( sh " repurpose_sh " " iface " ) &"
-             }
-             in_sec=0; print; next
+         /^# --- BEGIN_WAN_REPURPOSE ---/ {
+             print; in_sec=1
+             while ((getline line < contentfile) > 0) print line
+             close(contentfile)
+             next
          }
+         /^# --- END_WAN_REPURPOSE ---/ { in_sec=0; print; next }
          in_sec { next }
          { print }' \
         "$STARTUP_SH" > "$_USR_TMP" \
     && busybox mv "$_USR_TMP" "$STARTUP_SH" \
     && busybox chmod 755 "$STARTUP_SH"
+    rm -f "$_USR_CONTENT"
 }
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -99,10 +123,59 @@ mib_field() {
         | busybox tr -d '\r\n'
 }
 
-get_active() {
-    [ -f "$STATE_FILE" ] \
-        && busybox tr -d '\r\n' < "$STATE_FILE" 2>/dev/null \
-        || printf ''
+# True if $1 is currently a configured (applied) DHCP-client interface —
+# i.e. it has its own line in the shared state registry.
+iface_configured() {
+    [ -f "$STATE_FILE" ] && busybox grep -qx "$1" "$STATE_FILE" 2>/dev/null
+}
+
+# Space this interface's configured-interface list, one per line.
+configured_ifaces() {
+    [ -f "$STATE_FILE" ] && busybox grep -v '^[[:space:]]*$' "$STATE_FILE" 2>/dev/null
+}
+
+# This interface's default-route flag ("1" or "0"). Missing flag file = "1"
+# (matches pre-multi-interface behaviour for older single-entry configs).
+get_defroute() {
+    _gd=$(busybox cat "/tmp/repurpose_defroute_${1}" 2>/dev/null | busybox tr -d '\r\n')
+    printf '%s' "${_gd:-1}"
+}
+
+# Clear the default-route flag (and live route/masquerade) from every
+# CONFIGURED interface except $1. Only one interface should ever carry the
+# real kernel default route.
+_clear_other_defaults() {
+    _KEEP="$1"
+    [ -f "$STATE_FILE" ] || return
+    while IFS= read -r _oi; do
+        [ -z "$_oi" ] && continue
+        [ "$_oi" = "$_KEEP" ] && continue
+        [ "$(get_defroute "$_oi")" = "1" ] || continue
+        printf '0' > "/tmp/repurpose_defroute_${_oi}"
+        _ocd=$(ip route show default 2>/dev/null | head -1)
+        case "$_ocd" in *"dev $_oi"*) ip route del default dev "$_oi" 2>/dev/null ;; esac
+        iptables -t nat -D POSTROUTING -o "$_oi" -j MASQUERADE 2>/dev/null
+        rm -f "/tmp/repurpose_gw_${_oi}"
+    done < "$STATE_FILE"
+}
+
+# Immediately point the kernel default route + NAT masquerade at $1, using
+# whatever gateway is already known for it (live route table, else its
+# saved gw file). No-op (besides setting the flag) if no gateway is known
+# yet — the udhcpc handler will finish the job itself once DHCP completes,
+# since it re-reads this same flag file on every bound/renew.
+_apply_default_now() {
+    _TGT="$1"
+    printf '1' > "/tmp/repurpose_defroute_${_TGT}"
+    _TGW=$(get_iface_gw "$_TGT")
+    [ -z "$_TGW" ] && _TGW=$(busybox cat "/tmp/repurpose_gw_${_TGT}" 2>/dev/null | busybox tr -d '\r\n')
+    if [ -n "$_TGW" ]; then
+        while ip route del default 2>/dev/null; do :; done
+        ip route add default via "$_TGW" dev "$_TGT" 2>/dev/null
+        printf '%s' "$_TGW" > "/tmp/repurpose_gw_${_TGT}"
+        iptables -t nat -D POSTROUTING -o "$_TGT" -j MASQUERADE 2>/dev/null
+        iptables -t nat -A POSTROUTING -o "$_TGT" -j MASQUERADE 2>/dev/null
+    fi
 }
 
 watchdog_alive() {
@@ -175,65 +248,78 @@ if [ "$REQUEST_METHOD" = "GET" ]; then
         | busybox sed -n 's/.*action=\([^&]*\).*/\1/p' \
         | busybox tr -d '\r\n')
 
-    # ── action=status: quick poll for active WAN state ────────────────────────
+    # ── action=status: quick poll for every configured interface ──────────────
     if [ "$ACTION" = "status" ]; then
-        ACTIVE=$(get_active)
+        JSON="["
+        FIRST=1
+        for ACTIVE in $(configured_ifaces); do
+            WD=false; DC=false; IN_BR0=false; UP=false
+            IFACE_IP=""; IFACE_GW=""
 
-        WD=false; DC=false; IN_BR0=false; UP=false
-        IFACE_IP=""; IFACE_GW=""
-
-        if [ -n "$ACTIVE" ]; then
             watchdog_alive "$ACTIVE" && WD=true
             udhcpc_alive   "$ACTIVE" && DC=true
             iface_in_br0   "$ACTIVE" && IN_BR0=true
             iface_is_up    "$ACTIVE" && UP=true
             IFACE_IP=$(get_iface_ip "$ACTIVE")
             IFACE_GW=$(get_iface_gw "$ACTIVE")
-        fi
+            DEFROUTE=$(get_defroute "$ACTIVE")
+            [ "$DEFROUTE" = "1" ] && DEFROUTE=true || DEFROUTE=false
+
+            [ "$FIRST" = "1" ] && FIRST=0 || JSON="${JSON},"
+            JSON="${JSON}{\"iface\":\"$(json_esc "$ACTIVE")\""
+            JSON="${JSON},\"ip\":\"$(json_esc "$IFACE_IP")\""
+            JSON="${JSON},\"gateway\":\"$(json_esc "$IFACE_GW")\""
+            JSON="${JSON},\"default_route\":${DEFROUTE}"
+            JSON="${JSON},\"watchdog_running\":${WD}"
+            JSON="${JSON},\"udhcpc_running\":${DC}"
+            JSON="${JSON},\"in_br0\":${IN_BR0}"
+            JSON="${JSON},\"iface_up\":${UP}}"
+        done
+        JSON="${JSON}]"
 
         printf "Status: 200 OK\r\n"
         printf "Content-Type: application/json\r\n\r\n"
-        printf '{"active_iface":"%s","ip":"%s","gateway":"%s","watchdog_running":%s,"udhcpc_running":%s,"in_br0":%s,"iface_up":%s}' \
-            "$(json_esc "$ACTIVE")" "$(json_esc "$IFACE_IP")" \
-            "$(json_esc "$IFACE_GW")" "$WD" "$DC" "$IN_BR0" "$UP"
+        printf '{"interfaces":%s}' "$JSON"
         exit 0
     fi
 
     # ── action=iface_list: discover eligible LAN + WLAN interfaces ────────────
     if [ "$ACTION" = "iface_list" ]; then
-        ACTIVE=$(get_active)
 
         # Get LAN port power state once (costly, so run only once)
         LAN_RAW=$(sh "$LAN_SH" status 2>&1)
         LAN_OK=0
         echo "$LAN_RAW" | busybox grep -q 'STATUS="SUCCESS"' && LAN_OK=1
 
-        # Fetch diag port link status for all 4 LAN ports (for display)
+        # Fetch diag port link status for both LAN ports (for display)
         P0_RAW=$(diag port get status port 0 2>/dev/null)
         P1_RAW=$(diag port get status port 1 2>/dev/null)
-        P2_RAW=$(diag port get status port 2 2>/dev/null)
-        P3_RAW=$(diag port get status port 3 2>/dev/null)
 
         JSON="["
         FIRST=1
 
         # ── LAN interfaces ────────────────────────────────────────────────────
-        for LAN_IFACE in eth0.2.0 eth0.3.0 eth0.4.0 eth0.5.0; do
+        for LAN_IFACE in eth0.2.0 eth0.3.0; do
             case "$LAN_IFACE" in
                 eth0.2.0) PORT=1; DIAG_IDX=0; DIAG_RAW="$P0_RAW" ;;
                 eth0.3.0) PORT=2; DIAG_IDX=1; DIAG_RAW="$P1_RAW" ;;
-                eth0.4.0) PORT=3; DIAG_IDX=2; DIAG_RAW="$P2_RAW" ;;
-                eth0.5.0) PORT=4; DIAG_IDX=3; DIAG_RAW="$P3_RAW" ;;
             esac
 
-            # Check port power via lan.sh (skip if disabled)
-            if [ "$LAN_OK" = "1" ]; then
-                PORT_PWR=$(echo "$LAN_RAW" \
-                    | busybox sed -n "s/.*PORT${PORT}_PWR=\"\([^\"]*\)\".*/\1/p")
-                [ "$PORT_PWR" = "enabled" ] || continue
-            else
-                # lan.sh unavailable; fall back to kernel interface existence
-                ip link show "$LAN_IFACE" >/dev/null 2>&1 || continue
+            CONFIGURED=0
+            iface_configured "$LAN_IFACE" && CONFIGURED=1
+
+            # Check port power via lan.sh (skip if disabled) — unless already
+            # configured, in which case always show it (a configured
+            # interface may have had its port power toggled off since).
+            if [ "$CONFIGURED" != "1" ]; then
+                if [ "$LAN_OK" = "1" ]; then
+                    PORT_PWR=$(echo "$LAN_RAW" \
+                        | busybox sed -n "s/.*PORT${PORT}_PWR=\"\([^\"]*\)\".*/\1/p")
+                    [ "$PORT_PWR" = "enabled" ] || continue
+                else
+                    # lan.sh unavailable; fall back to kernel interface existence
+                    ip link show "$LAN_IFACE" >/dev/null 2>&1 || continue
+                fi
             fi
 
             # Double-check interface actually exists in the kernel
@@ -242,10 +328,10 @@ if [ "$REQUEST_METHOD" = "GET" ]; then
             # Skip if currently enslaved to any bridge.
             # A port in br0/br1 is actively serving hotspot clients; pulling it
             # out as WAN mid-traffic causes routing conflicts.
-            # Exception: the currently-active repurposed interface was already
-            # removed from its bridge by repurposeaswan.sh (nomaster), so
+            # Exception: an already-configured interface was already removed
+            # from its bridge by repurposeaswan.sh (nomaster), so
             # iface_has_master returns false for it and it passes through.
-            if [ "$LAN_IFACE" != "$ACTIVE" ]; then
+            if [ "$CONFIGURED" != "1" ]; then
                 iface_has_master "$LAN_IFACE" && continue
             fi
 
@@ -259,11 +345,17 @@ if [ "$REQUEST_METHOD" = "GET" ]; then
             [ -z "$LNK" ] && LNK="Unknown"
             [ -z "$SPD" ] && SPD="-"
 
-            # IP + GW only if this iface is the active WAN
-            IFACE_IP=""; IFACE_GW=""
-            if [ "$ACTIVE" = "$LAN_IFACE" ]; then
+            # IP + GW + default-route flag only if this iface is configured
+            IFACE_IP=""; IFACE_GW=""; DEFROUTE="false"
+            WD="false"; DC="false"; IN_BR0="false"; UP="false"
+            if [ "$CONFIGURED" = "1" ]; then
                 IFACE_IP=$(get_iface_ip "$LAN_IFACE")
                 IFACE_GW=$(get_iface_gw "$LAN_IFACE")
+                [ "$(get_defroute "$LAN_IFACE")" = "1" ] && DEFROUTE="true"
+                watchdog_alive "$LAN_IFACE" && WD="true"
+                udhcpc_alive   "$LAN_IFACE" && DC="true"
+                iface_in_br0   "$LAN_IFACE" && IN_BR0="true"
+                iface_is_up    "$LAN_IFACE" && UP="true"
             fi
 
             [ "$FIRST" = "1" ] && FIRST=0 || JSON="${JSON},"
@@ -273,6 +365,12 @@ if [ "$REQUEST_METHOD" = "GET" ]; then
             JSON="${JSON},\"port\":${PORT}"
             JSON="${JSON},\"link_status\":\"$(json_esc "$LNK")\""
             JSON="${JSON},\"link_speed\":\"$(json_esc "$SPD")\""
+            JSON="${JSON},\"configured\":$([ "$CONFIGURED" = "1" ] && echo true || echo false)"
+            JSON="${JSON},\"default_route\":${DEFROUTE}"
+            JSON="${JSON},\"watchdog_running\":${WD}"
+            JSON="${JSON},\"udhcpc_running\":${DC}"
+            JSON="${JSON},\"in_br0\":${IN_BR0}"
+            JSON="${JSON},\"iface_up\":${UP}"
             JSON="${JSON},\"ip\":\"$(json_esc "$IFACE_IP")\""
             JSON="${JSON},\"gateway\":\"$(json_esc "$IFACE_GW")\"}"
         done
@@ -284,6 +382,9 @@ if [ "$REQUEST_METHOD" = "GET" ]; then
                 wlan1) BAND_LABEL="2.4GHz" ;;
             esac
 
+            CONFIGURED=0
+            iface_configured "$WLAN_IF" && CONFIGURED=1
+
             # Interface must exist in the kernel
             ip link show "$WLAN_IF" >/dev/null 2>&1 || continue
 
@@ -294,20 +395,29 @@ if [ "$REQUEST_METHOD" = "GET" ]; then
             # ── Enabled check (same MIB key wlanbasic.cgi reads) ─────────────
             DIS=$(mib_field "${TBL}.0.wlanDisabled")
             # wlanDisabled=1 means OFF; anything else (0 or empty) means ON.
-            [ "${DIS:-0}" = "1" ] && continue
+            if [ "$CONFIGURED" != "1" ]; then
+                [ "${DIS:-0}" = "1" ] && continue
+            fi
 
             # ── Client mode check (wlanMode=1 means infrastructure client) ────
             WMODE=$(mib_field "${TBL}.0.wlanMode")
-            [ "${WMODE:-0}" = "1" ] || continue
+            if [ "$CONFIGURED" != "1" ]; then
+                [ "${WMODE:-0}" = "1" ] || continue
+            fi
 
             # Configured target SSID (filled in when client mode is set up)
             SSID=$(mib_field "${TBL}.0.ssid")
 
-            # IP + GW only if active
-            IFACE_IP=""; IFACE_GW=""
-            if [ "$ACTIVE" = "$WLAN_IF" ]; then
+            IFACE_IP=""; IFACE_GW=""; DEFROUTE="false"
+            WD="false"; DC="false"; IN_BR0="false"; UP="false"
+            if [ "$CONFIGURED" = "1" ]; then
                 IFACE_IP=$(get_iface_ip "$WLAN_IF")
                 IFACE_GW=$(get_iface_gw "$WLAN_IF")
+                [ "$(get_defroute "$WLAN_IF")" = "1" ] && DEFROUTE="true"
+                watchdog_alive "$WLAN_IF" && WD="true"
+                udhcpc_alive   "$WLAN_IF" && DC="true"
+                iface_in_br0   "$WLAN_IF" && IN_BR0="true"
+                iface_is_up    "$WLAN_IF" && UP="true"
             fi
 
             [ "$FIRST" = "1" ] && FIRST=0 || JSON="${JSON},"
@@ -316,6 +426,12 @@ if [ "$REQUEST_METHOD" = "GET" ]; then
             JSON="${JSON},\"label\":\"WiFi ${BAND_LABEL} (${WLAN_IF})\""
             JSON="${JSON},\"band\":\"$(json_esc "$BAND_LABEL")\""
             JSON="${JSON},\"assoc_ssid\":\"$(json_esc "$SSID")\""
+            JSON="${JSON},\"configured\":$([ "$CONFIGURED" = "1" ] && echo true || echo false)"
+            JSON="${JSON},\"default_route\":${DEFROUTE}"
+            JSON="${JSON},\"watchdog_running\":${WD}"
+            JSON="${JSON},\"udhcpc_running\":${DC}"
+            JSON="${JSON},\"in_br0\":${IN_BR0}"
+            JSON="${JSON},\"iface_up\":${UP}"
             JSON="${JSON},\"ip\":\"$(json_esc "$IFACE_IP")\""
             JSON="${JSON},\"gateway\":\"$(json_esc "$IFACE_GW")\"}"
         done
@@ -330,6 +446,9 @@ if [ "$REQUEST_METHOD" = "GET" ]; then
                 wlan1-vxd) BAND_LABEL="2.4GHz" ;;
             esac
 
+            CONFIGURED=0
+            iface_configured "$VXD_IF" && CONFIGURED=1
+
             # Interface must be present in the kernel
             ip link show "$VXD_IF" >/dev/null 2>&1 || continue
 
@@ -338,15 +457,23 @@ if [ "$REQUEST_METHOD" = "GET" ]; then
 
             # VXD is MIB index 5 (wlanbasic.cgi: TY="vxd" when I=5)
             VXD_DIS=$(mib_field "${TBL}.5.wlanDisabled")
-            [ "${VXD_DIS:-0}" = "1" ] && continue
+            if [ "$CONFIGURED" != "1" ]; then
+                [ "${VXD_DIS:-0}" = "1" ] && continue
+            fi
 
             # SSID stored in slot 5
             SSID=$(mib_field "${TBL}.5.ssid")
 
-            IFACE_IP=""; IFACE_GW=""
-            if [ "$ACTIVE" = "$VXD_IF" ]; then
+            IFACE_IP=""; IFACE_GW=""; DEFROUTE="false"
+            WD="false"; DC="false"; IN_BR0="false"; UP="false"
+            if [ "$CONFIGURED" = "1" ]; then
                 IFACE_IP=$(get_iface_ip "$VXD_IF")
                 IFACE_GW=$(get_iface_gw "$VXD_IF")
+                [ "$(get_defroute "$VXD_IF")" = "1" ] && DEFROUTE="true"
+                watchdog_alive "$VXD_IF" && WD="true"
+                udhcpc_alive   "$VXD_IF" && DC="true"
+                iface_in_br0   "$VXD_IF" && IN_BR0="true"
+                iface_is_up    "$VXD_IF" && UP="true"
             fi
 
             [ "$FIRST" = "1" ] && FIRST=0 || JSON="${JSON},"
@@ -355,6 +482,12 @@ if [ "$REQUEST_METHOD" = "GET" ]; then
             JSON="${JSON},\"label\":\"WiFi ${BAND_LABEL} VXD (${VXD_IF})\""
             JSON="${JSON},\"band\":\"$(json_esc "$BAND_LABEL")\""
             JSON="${JSON},\"assoc_ssid\":\"$(json_esc "$SSID")\""
+            JSON="${JSON},\"configured\":$([ "$CONFIGURED" = "1" ] && echo true || echo false)"
+            JSON="${JSON},\"default_route\":${DEFROUTE}"
+            JSON="${JSON},\"watchdog_running\":${WD}"
+            JSON="${JSON},\"udhcpc_running\":${DC}"
+            JSON="${JSON},\"in_br0\":${IN_BR0}"
+            JSON="${JSON},\"iface_up\":${UP}"
             JSON="${JSON},\"ip\":\"$(json_esc "$IFACE_IP")\""
             JSON="${JSON},\"gateway\":\"$(json_esc "$IFACE_GW")\"}"
         done
@@ -363,8 +496,7 @@ if [ "$REQUEST_METHOD" = "GET" ]; then
 
         printf "Status: 200 OK\r\n"
         printf "Content-Type: application/json\r\n\r\n"
-        printf '{"interfaces":%s,"active_iface":"%s"}' \
-            "$JSON" "$(json_esc "$ACTIVE")"
+        printf '{"interfaces":%s}' "$JSON"
         exit 0
     fi
 
@@ -388,7 +520,7 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
         | busybox sed -n 's/.*action=\([^&]*\).*/\1/p' \
         | busybox tr -d '\r\n')
 
-    # ── action=apply: start repurpose watchdog for chosen interface ───────────
+    # ── action=apply: add (or re-apply) an interface as a DHCP client ─────────
     if [ "$ACTION" = "apply" ]; then
         FORM_IFACE=$(echo "$POST_DATA" \
             | busybox sed -n 's/.*iface=\([^&]*\).*/\1/p' \
@@ -396,9 +528,14 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
         FORM_IFACE=$(busybox httpd -d "$FORM_IFACE" \
             | busybox tr -d '\r\n')
 
-        # Whitelist: only the eight supported interfaces
+        FORM_DEFROUTE=$(echo "$POST_DATA" \
+            | busybox sed -n 's/.*default_route=\([^&]*\).*/\1/p' \
+            | busybox tr -d '\r\n')
+        case "$FORM_DEFROUTE" in 1) FORM_DEFROUTE=1 ;; *) FORM_DEFROUTE=0 ;; esac
+
+        # Whitelist: only the six supported interfaces
         case "$FORM_IFACE" in
-            eth0.2.0|eth0.3.0|eth0.4.0|eth0.5.0|wlan0|wlan1|wlan0-vxd|wlan1-vxd) ;;
+            eth0.2.0|eth0.3.0|wlan0|wlan1|wlan0-vxd|wlan1-vxd) ;;
             *)
                 printf "Status: 400 Bad Request\r\n"
                 printf "Content-Type: text/plain\r\n\r\n"
@@ -415,15 +552,30 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
             exit 0
         fi
 
-        # If a different interface is currently active, revert it first
-        CURRENTLY=$(get_active)
-        if [ -n "$CURRENTLY" ] && [ "$CURRENTLY" != "$FORM_IFACE" ]; then
-            sh "$REVERT_SH" "$CURRENTLY" >/dev/null 2>&1
+        # If this SAME interface is already configured, cleanly stop its
+        # existing daemon first (this is a re-apply / restart), so we never
+        # end up with two watchdogs running for one interface. Other
+        # configured interfaces are left running — repurposing one
+        # interface no longer reverts every other one.
+        if iface_configured "$FORM_IFACE"; then
+            sh "$REVERT_SH" "$FORM_IFACE" >/dev/null 2>&1
             busybox sleep 1
         fi
 
-        # Persist to startup.sh so the repurpose survives a reboot
-        update_startup_repurpose "$FORM_IFACE"
+        # Register in the shared state registry + default-route flag
+        # synchronously (before backgrounding the daemon below) so the
+        # table/startup.sh reflect this immediately rather than racing the
+        # daemon's own startup.
+        busybox grep -qx "$FORM_IFACE" "$STATE_FILE" 2>/dev/null \
+            || printf '%s\n' "$FORM_IFACE" >> "$STATE_FILE"
+        printf '%s' "$FORM_DEFROUTE" > "/tmp/repurpose_defroute_${FORM_IFACE}"
+
+        # Only one interface may hold the real default route.
+        [ "$FORM_DEFROUTE" = "1" ] && _clear_other_defaults "$FORM_IFACE"
+
+        # Persist every currently-configured interface (this one included)
+        # to startup.sh so it survives a reboot.
+        update_startup_repurpose_all
 
         # Respond immediately (so the browser doesn't time out while udhcpc negotiates)
         printf "Status: 200 OK\r\nContent-Type: text/plain\r\n\r\n"
@@ -435,12 +587,12 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
         # daemon process (which runs an infinite watchdog loop) would stall the
         # fetch() call indefinitely.  Redirecting to /dev/null closes the
         # inherited fd so httpd gets EOF the moment the CGI script exits.
-        sh "$REPURPOSE_SH" "$FORM_IFACE" >/dev/null 2>&1 &
+        sh "$REPURPOSE_SH" "$FORM_IFACE" "$FORM_DEFROUTE" >/dev/null 2>&1 &
 
         exit 0
     fi
 
-    # ── action=revert: restore interface to br0 ───────────────────────────────
+    # ── action=revert: remove a configured interface, restore it to br0 ───────
     if [ "$ACTION" = "revert" ]; then
         FORM_IFACE=$(echo "$POST_DATA" \
             | busybox sed -n 's/.*iface=\([^&]*\).*/\1/p' \
@@ -448,22 +600,81 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
         FORM_IFACE=$(busybox httpd -d "$FORM_IFACE" \
             | busybox tr -d '\r\n')
 
-        # If iface not specified or not in whitelist, fall back to active
         case "$FORM_IFACE" in
-            eth0.2.0|eth0.3.0|eth0.4.0|eth0.5.0|wlan0|wlan1|wlan0-vxd|wlan1-vxd) ;;
-            *) FORM_IFACE=$(get_active) ;;
+            eth0.2.0|eth0.3.0|wlan0|wlan1|wlan0-vxd|wlan1-vxd) ;;
+            *)
+                printf "Status: 400 Bad Request\r\nContent-Type: text/plain\r\n\r\n"
+                printf "Invalid interface"
+                exit 0
+                ;;
         esac
 
-        if [ -z "$FORM_IFACE" ]; then
+        if ! iface_configured "$FORM_IFACE"; then
             printf "Status: 400 Bad Request\r\nContent-Type: text/plain\r\n\r\n"
-            printf "No active interface to revert"
+            printf "Interface is not configured"
             exit 0
         fi
 
         sh "$REVERT_SH" "$FORM_IFACE" >/dev/null 2>&1
+        # Belt-and-suspenders — revertwan.sh already does this, but the CGI
+        # doesn't wait for it to finish, so clear these here too.
+        rm -f "/tmp/repurpose_defroute_${FORM_IFACE}" "/tmp/repurpose_gw_${FORM_IFACE}"
+        if [ -f "$STATE_FILE" ]; then
+            _REV_TMP="/tmp/repurpose_active.cgi.$$.tmp"
+            busybox grep -vx "$FORM_IFACE" "$STATE_FILE" > "$_REV_TMP" 2>/dev/null
+            busybox mv "$_REV_TMP" "$STATE_FILE"
+            [ -s "$STATE_FILE" ] || rm -f "$STATE_FILE"
+        fi
 
-        # Clear the startup.sh entry so it doesn't run again on reboot
-        update_startup_repurpose ""
+        # Update startup.sh so it isn't relaunched on next reboot.
+        update_startup_repurpose_all
+
+        printf "Status: 200 OK\r\nContent-Type: text/plain\r\n\r\n"
+        printf "OK"
+        exit 0
+    fi
+
+    # ── action=set_default: flip the default-route switch for a configured
+    #    interface without restarting its watchdog daemon ──────────────────────
+    if [ "$ACTION" = "set_default" ]; then
+        FORM_IFACE=$(echo "$POST_DATA" \
+            | busybox sed -n 's/.*iface=\([^&]*\).*/\1/p' \
+            | busybox tr -d '\r\n')
+        FORM_IFACE=$(busybox httpd -d "$FORM_IFACE" \
+            | busybox tr -d '\r\n')
+
+        FORM_VAL=$(echo "$POST_DATA" \
+            | busybox sed -n 's/.*default_route=\([^&]*\).*/\1/p' \
+            | busybox tr -d '\r\n')
+        case "$FORM_VAL" in 1) FORM_VAL=1 ;; *) FORM_VAL=0 ;; esac
+
+        case "$FORM_IFACE" in
+            eth0.2.0|eth0.3.0|wlan0|wlan1|wlan0-vxd|wlan1-vxd) ;;
+            *)
+                printf "Status: 400 Bad Request\r\nContent-Type: text/plain\r\n\r\n"
+                printf "Invalid interface"
+                exit 0
+                ;;
+        esac
+
+        if ! iface_configured "$FORM_IFACE"; then
+            printf "Status: 400 Bad Request\r\nContent-Type: text/plain\r\n\r\n"
+            printf "Interface is not configured"
+            exit 0
+        fi
+
+        if [ "$FORM_VAL" = "1" ]; then
+            _clear_other_defaults "$FORM_IFACE"
+            _apply_default_now "$FORM_IFACE"
+        else
+            printf '0' > "/tmp/repurpose_defroute_${FORM_IFACE}"
+            _cd=$(ip route show default 2>/dev/null | head -1)
+            case "$_cd" in *"dev $FORM_IFACE"*) ip route del default dev "$FORM_IFACE" 2>/dev/null ;; esac
+            iptables -t nat -D POSTROUTING -o "$FORM_IFACE" -j MASQUERADE 2>/dev/null
+            rm -f "/tmp/repurpose_gw_${FORM_IFACE}"
+        fi
+
+        update_startup_repurpose_all
 
         printf "Status: 200 OK\r\nContent-Type: text/plain\r\n\r\n"
         printf "OK"

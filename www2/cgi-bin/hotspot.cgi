@@ -303,8 +303,25 @@ GLOBALS_ENV="/lmepisowifi/globals.env"
 ok_json()  { printf "Status: 200 OK\r\nContent-Type: application/json\r\n\r\n%s" "$1"; exit 0; }
 err_json() { printf "Status: 200 OK\r\nContent-Type: application/json\r\n\r\n{\"ok\":false,\"error\":\"%s\"}" "$1"; exit 0; }
 
-# Read a var from lmehspt.sh config (top-of-file assignments)
+# Read a var, preferring globals.env (persistent, PRESERVED across OTA) over
+# lmehspt.sh's top-of-file hardcoded default (a COMPONENT wholesale-replaced
+# by every OTA — see ota.sh's COMPONENTS list). globals.env is checked first
+# and used whenever the key exists there at all, even set to "" — an empty
+# value there means the admin deliberately cleared it (e.g. nodemcu_del
+# blanking NODEMCU_IP/NODEMCU_MAC/COIN_PSK) and must NOT be second-guessed by
+# falling back to lmehspt.sh's shipped default, or an OTA that refreshes
+# lmehspt.sh would silently resurrect the deleted primary NodeMCU with
+# GitHub's default IP/MAC/PSK. lmehspt.sh is only consulted when the key has
+# never been written to globals.env at all (pre-first-seed, or a key with no
+# default.env entry).
 read_lmehspt_var() {
+    if $BB grep -q "^$1=" "$GLOBALS_ENV" 2>/dev/null; then
+        $BB grep -m1 "^$1=" "$GLOBALS_ENV" 2>/dev/null \
+            | $BB sed 's/^[^=]*="\(.*\)"/\1/' \
+            | $BB sed "s/^[^=]*='\(.*\)'/\1/" \
+            | $BB sed 's/^[^=]*=\(.*\)/\1/'
+        return
+    fi
     $BB grep -m1 "^$1=" "$LMEHSPT" 2>/dev/null \
         | $BB sed 's/^[^=]*="\(.*\)"/\1/' \
         | $BB sed "s/^[^=]*='\(.*\)'/\1/" \
@@ -1658,8 +1675,11 @@ if echo "$QS" | $BB grep -q "action=lan_isolate_set"; then
     HBR="${HOTSPOT_BR:-$(read_lmehspt_var HOTSPOT_BR)}"
     HBR="${HBR:-br1}"
     _W2P="8080"
-    # Resolve repurposed WAN interface (empty when feature is not active)
-    _RWAN=$(cat /tmp/repurpose_active 2>/dev/null | $BB tr -cd 'a-z0-9._-')
+    # Resolve repurposed WAN interface(s) — /tmp/repurpose_active is a
+    # shared registry, one interface per line, since multiple interfaces
+    # can be repurposed as DHCP-client WAN at once (empty when the feature
+    # is not active for any interface).
+    _RWAN_LIST=$($BB cat /tmp/repurpose_active 2>/dev/null | $BB grep -E '^[a-z0-9._-]+$')
     if [ "$VAL" = "1" ]; then
         # ── Enable: apply hotspot isolation ──────────────────────────────────
         _old_lan=$(cat /tmp/hotspot_lan_isolate.mark 2>/dev/null)
@@ -1671,12 +1691,15 @@ if echo "$QS" | $BB grep -q "action=lan_isolate_set"; then
         printf '%s\n' "$_lan_subnet" > /tmp/hotspot_lan_isolate.mark
         iptables -t filter -D INPUT -i "$HBR" -p tcp --dport "$_W2P" -j ACCEPT 2>/dev/null
         iptables -t filter -I INPUT 1 -i "$HBR" -p tcp --dport "$_W2P" -j ACCEPT
-        # ── Enable: apply repurposed WAN isolation (if active) ────────────────
-        if [ -n "$_RWAN" ]; then
-            iptables -t filter -D FORWARD -i "$_RWAN" -o br0 -j DROP 2>/dev/null
-            iptables -t filter -I FORWARD 1 -i "$_RWAN" -o br0 -j DROP
-            iptables -t filter -D INPUT -i "$_RWAN" -p tcp --dport "$_W2P" -j ACCEPT 2>/dev/null
-            iptables -t filter -I INPUT 1 -i "$_RWAN" -p tcp --dport "$_W2P" -j ACCEPT
+        # ── Enable: apply repurposed WAN isolation (for every active iface) ───
+        if [ -n "$_RWAN_LIST" ]; then
+            echo "$_RWAN_LIST" | while IFS= read -r _rwan; do
+                [ -z "$_rwan" ] && continue
+                iptables -t filter -D FORWARD -i "$_rwan" -o br0 -j DROP 2>/dev/null
+                iptables -t filter -I FORWARD 1 -i "$_rwan" -o br0 -j DROP
+                iptables -t filter -D INPUT -i "$_rwan" -p tcp --dport "$_W2P" -j ACCEPT 2>/dev/null
+                iptables -t filter -I INPUT 1 -i "$_rwan" -p tcp --dport "$_W2P" -j ACCEPT
+            done
         fi
         save_coin_env_var "LAN_ISOLATE" "1"
         set_lmehspt_var   "LAN_ISOLATE" "1"
@@ -1688,10 +1711,13 @@ if echo "$QS" | $BB grep -q "action=lan_isolate_set"; then
         [ -n "$_old_lan" ] && iptables -t filter -D FORWARD -i "$HBR" -d "$_old_lan" -j DROP 2>/dev/null
         rm -f /tmp/hotspot_lan_isolate.mark
         iptables -t filter -D INPUT -i "$HBR" -p tcp --dport "$_W2P" -j ACCEPT 2>/dev/null
-        # ── Disable: remove repurposed WAN isolation (if active) ─────────────
-        if [ -n "$_RWAN" ]; then
-            iptables -t filter -D FORWARD -i "$_RWAN" -o br0 -j DROP 2>/dev/null
-            iptables -t filter -D INPUT -i "$_RWAN" -p tcp --dport "$_W2P" -j ACCEPT 2>/dev/null
+        # ── Disable: remove repurposed WAN isolation (for every active iface) ─
+        if [ -n "$_RWAN_LIST" ]; then
+            echo "$_RWAN_LIST" | while IFS= read -r _rwan; do
+                [ -z "$_rwan" ] && continue
+                iptables -t filter -D FORWARD -i "$_rwan" -o br0 -j DROP 2>/dev/null
+                iptables -t filter -D INPUT -i "$_rwan" -p tcp --dport "$_W2P" -j ACCEPT 2>/dev/null
+            done
         fi
         save_coin_env_var "LAN_ISOLATE" "0"
         set_lmehspt_var   "LAN_ISOLATE" "0"
@@ -1799,7 +1825,7 @@ if echo "$QS" | $BB grep -q "action=ifaces_get"; then
             lo|br*|sit*|ip6*|ppp*|tunl*|gre*|dummy*|mon.*|nas*|eth0|pwlan0) continue ;;
             eth0.*)
                 case "$iface" in
-                    eth0.2.0|eth0.3.0|eth0.4.0|eth0.5.0) ;;
+                    eth0.2.0|eth0.3.0) ;;
                     *) continue ;;
                 esac
                 ;;

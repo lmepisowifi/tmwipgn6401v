@@ -13,20 +13,6 @@
             margin-top: 3px;
         }
 
-        /* ── Info rows shared by iface detail + status card ── */
-        .info-row {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            padding: 9px 0;
-            border-bottom: 1px solid var(--border-color);
-            font-size: 13px;
-            gap: 12px;
-        }
-        .info-row:last-child { border-bottom: none; }
-        .info-label { color: var(--text-secondary); flex-shrink: 0; }
-        .info-value { color: var(--text-primary); font-weight: 500; text-align: right; }
-
         /* ── Type badges ── */
         .type-badge {
             display: inline-block;
@@ -52,11 +38,6 @@
         .sdot-warn { background: #ffc107; }
         .sdot-err  { background: #dc3545; }
 
-        /* ── Link state text colours ── */
-        .link-up      { color: #28a745; font-weight: 600; }
-        .link-down    { color: #dc3545; }
-        .link-unknown { color: var(--text-secondary); }
-
         /* ── "Obtaining…" spinner (inline) ── */
         .spin-sm {
             display: inline-block;
@@ -70,7 +51,6 @@
         }
         @keyframes rspin { to { transform: rotate(360deg); } }
 
-
         /* ── Empty / no-iface message ── */
         .no-iface-msg {
             color: var(--text-secondary);
@@ -78,6 +58,30 @@
             padding: 14px 0 6px;
             text-align: center;
         }
+
+        /* ── Configured-interfaces table ── */
+        #iface-table {
+            font-size: 13px;
+            margin-bottom: 0;
+        }
+        #iface-table th {
+            font-size: 11px;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            color: var(--text-secondary);
+            font-weight: 600;
+            border-bottom-width: 1px;
+            white-space: nowrap;
+        }
+        #iface-table td { vertical-align: middle; }
+        .iface-cell-main { font-weight: 600; }
+        .iface-cell-sub  { font-size: 11px; color: var(--text-secondary); }
+        .mono-ip { font-family: var(--bs-font-monospace, monospace); font-size: 12.5px; }
+        .status-cell { display: flex; align-items: center; white-space: nowrap; }
+        .default-route-switch .form-check-input { cursor: pointer; }
+        .default-route-switch .form-check-input:disabled { cursor: not-allowed; }
+        .remove-btn { white-space: nowrap; }
+        .table-responsive-wrap { overflow-x: auto; }
     </style>
 </head>
 <body>
@@ -94,11 +98,11 @@
 
     <div class="container mt-5">
         <div class="row justify-content-center">
-            <div class="col-md-7">
+            <div class="col-md-9">
 
-                <!-- ── Interface selector card ──────────────────────────── -->
+                <!-- ── Add interface card ──────────────────────────────────── -->
                 <div class="card mb-3">
-                    <div class="card-header">Repurpose LAN / WiFi as WAN</div>
+                    <div class="card-header">Add DHCP Client Interface</div>
                     <div class="card-body">
 
                         <div class="mb-3">
@@ -110,32 +114,60 @@
                                 Shows enabled LAN ports that are not currently bound to the hotspot bridge,
                                 and WiFi interfaces configured in client mode.
                                 LAN ports still in the bridge won't appear — free them in the LAN settings first.
+                                Already-added interfaces appear in the table below instead.
                             </div>
                         </div>
 
                         <!-- Interface detail rows (populated by JS) -->
-                        <div id="iface-detail" style="display:none" class="mb-1"></div>
+                        <div id="iface-detail" style="display:none" class="mb-3"></div>
 
-                        <div class="d-flex gap-2 mt-4">
+                        <div class="form-check form-switch mb-3" id="add-defroute-wrap" style="display:none">
+                            <input class="form-check-input" type="checkbox" id="add-defroute-chk">
+                            <label class="form-check-label" for="add-defroute-chk">
+                                Use as default route
+                            </label>
+                            <div class="field-hint">
+                                Only one interface can carry the default route at a time. Turning this on
+                                will switch it off for any other DHCP client interface currently using it.
+                                Leave it off to add this as a plain DHCP client (gets an IP, no routing change).
+                            </div>
+                        </div>
+
+                        <div class="d-flex gap-2">
                             <button class="btn btn-primary flex-grow-1"
                                     id="apply-btn" onclick="doApply()" disabled>
-                                Apply
-                            </button>
-                            <button class="btn btn-outline-secondary flex-grow-1"
-                                    id="revert-btn" onclick="doRevert()" style="display:none">
-                                Revert to Bridge
+                                Add Interface
                             </button>
                         </div>
 
                     </div>
                 </div>
 
-                <!-- ── Status card (visible only when an iface is active) ─ -->
-                <div class="card" id="status-card" style="display:none">
+                <!-- ── Configured interfaces table ─────────────────────────── -->
+                <div class="card">
                     <div class="card-header d-flex align-items-center justify-content-between">
-                        <span>WAN Status</span>
+                        <span>DHCP Client Interfaces</span>
                     </div>
-                    <div class="card-body" id="status-body"></div>
+                    <div class="card-body p-0">
+                        <div class="table-responsive-wrap">
+                            <table class="table table-hover align-middle mb-0" id="iface-table">
+                                <thead>
+                                    <tr>
+                                        <th>Interface</th>
+                                        <th>IP Address</th>
+                                        <th>Gateway</th>
+                                        <th>Default Route</th>
+                                        <th>Status</th>
+                                        <th></th>
+                                    </tr>
+                                </thead>
+                                <tbody id="iface-table-body"></tbody>
+                            </table>
+                        </div>
+                        <div class="no-iface-msg" id="no-configured-msg" style="display:none">
+                            No DHCP client interfaces configured yet — add one above.
+                        </div>
+                    </div>
                 </div>
 
             </div>
@@ -147,9 +179,10 @@
 'use strict';
 
 // ── State ─────────────────────────────────────────────────────────────────────
-var ifaceList   = [];   // [{iface, type, label, port?, band?, assoc_ssid?, link_status?, link_speed?, ip?, gateway?}]
-var activeIface = '';   // currently repurposed interface ('' = none)
-var pollTimer   = null;
+var ifaceList     = [];   // full list from iface_list: [{iface,type,label,configured,default_route,ip,gateway,...}]
+var availableList = [];   // ifaceList filtered to configured===false (candidates for Add dropdown)
+var configuredMap = {};   // iface -> row data, kept in sync by status polling
+var pollTimer     = null;
 
 // ── Overlay ───────────────────────────────────────────────────────────────────
 var _ov  = document.getElementById('overlay');
@@ -172,26 +205,26 @@ function esc(s) {
                           .replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
 
-// ── Build an info row HTML string ─────────────────────────────────────────────
+// ── Build an info row HTML string (used in the "add interface" detail box) ────
 function infoRow(label, valueHtml) {
-    return '<div class="info-row">'
-         + '<span class="info-label">' + esc(label) + '</span>'
-         + '<span class="info-value">'  + valueHtml  + '</span>'
+    return '<div class="d-flex justify-content-between align-items-center py-1" style="font-size:13px;border-bottom:1px solid var(--border-color)">'
+         + '<span class="text-secondary">' + esc(label) + '</span>'
+         + '<span class="fw-medium">'  + valueHtml  + '</span>'
          + '</div>';
 }
 
-// ── Load interface list from CGI ──────────────────────────────────────────────
+// ── Load interface list from CGI, then refresh live status ────────────────────
 function loadList() {
     showOv('Loading interfaces\u2026');
     fetch('/cgi-bin/wan-repurpose.cgi?action=iface_list', { cache: 'no-store' })
         .then(function(r) { return r.json(); })
         .then(function(d) {
-            ifaceList   = d.interfaces  || [];
-            activeIface = d.active_iface || '';
+            ifaceList = d.interfaces || [];
+            availableList = ifaceList.filter(function(i) { return !i.configured; });
             buildDropdown();
+            buildTable();
             hideOv();
-            if (activeIface) {
-                document.getElementById('status-card').style.display = '';
+            if (ifaceList.some(function(i){ return i.configured; })) {
                 startPoll();
                 pollNow();
             }
@@ -202,15 +235,17 @@ function loadList() {
         });
 }
 
-// ── Populate <select> from ifaceList ─────────────────────────────────────────
+// ── Populate <select> from availableList ──────────────────────────────────────
 function buildDropdown() {
     var sel = document.getElementById('iface-sel');
     sel.innerHTML = '';
 
-    if (ifaceList.length === 0) {
+    if (availableList.length === 0) {
         sel.innerHTML = '<option value="">— No eligible interfaces —</option>';
         sel.disabled = true;
         document.getElementById('apply-btn').disabled = true;
+        document.getElementById('add-defroute-wrap').style.display = 'none';
+        document.getElementById('iface-detail').style.display = 'none';
         return;
     }
     sel.disabled = false;
@@ -220,51 +255,46 @@ function buildDropdown() {
     ph.textContent = '\u2014 Select interface \u2014';
     sel.appendChild(ph);
 
-    ifaceList.forEach(function(d) {
+    availableList.forEach(function(d) {
         var opt = document.createElement('option');
         opt.value = d.iface;
         var lbl = d.label;
         if (d.type === 'wlan' && d.assoc_ssid) lbl += ' \u00b7 ' + d.assoc_ssid;
-        if (d.iface === activeIface)            lbl += ' [ACTIVE]';
         opt.textContent = lbl;
-        if (d.iface === activeIface) opt.selected = true;
         sel.appendChild(opt);
     });
 
     onIfaceSel();
 }
 
-// ── Handle dropdown change ────────────────────────────────────────────────────
+// ── Handle "add interface" dropdown change ────────────────────────────────────
 function onIfaceSel() {
     var sel      = document.getElementById('iface-sel');
     var val      = sel.value;
     var applyBtn = document.getElementById('apply-btn');
-    var revertBtn= document.getElementById('revert-btn');
     var detail   = document.getElementById('iface-detail');
+    var drWrap   = document.getElementById('add-defroute-wrap');
 
     if (!val) {
         detail.style.display = 'none';
+        drWrap.style.display = 'none';
         applyBtn.disabled = true;
-        // Keep Revert visible if something is still active
-        revertBtn.style.display = activeIface ? '' : 'none';
         return;
     }
 
-    // Find matching entry
     var d = null;
-    for (var i = 0; i < ifaceList.length; i++) {
-        if (ifaceList[i].iface === val) { d = ifaceList[i]; break; }
+    for (var i = 0; i < availableList.length; i++) {
+        if (availableList[i].iface === val) { d = availableList[i]; break; }
     }
     if (!d) { detail.style.display = 'none'; return; }
 
-    // Build detail rows
     var html = '';
     if (d.type === 'lan') {
         html += infoRow('Type', '<span class="type-badge badge-lan">LAN</span>');
         html += infoRow('Port', 'LAN ' + d.port);
-        var lnkCls = d.link_status === 'Up'   ? 'link-up'
-                   : d.link_status === 'Down'  ? 'link-down'
-                   : 'link-unknown';
+        var lnkCls = d.link_status === 'Up'   ? 'text-success fw-bold'
+                   : d.link_status === 'Down'  ? 'text-danger'
+                   : 'text-secondary';
         html += infoRow('Link', '<span class="' + lnkCls + '">' + esc(d.link_status) + '</span>');
         if (d.link_status === 'Up' && d.link_speed && d.link_speed !== '-') {
             html += infoRow('Speed', esc(d.link_speed));
@@ -276,59 +306,33 @@ function onIfaceSel() {
             html += infoRow('Client SSID', '<strong>' + esc(d.assoc_ssid) + '</strong>');
         }
     }
-
-    // Show IP/GW if this is the active iface and values are known
-    if (val === activeIface) {
-        if (d.ip)      html += infoRow('IP Address', esc(d.ip));
-        if (d.gateway) html += infoRow('Gateway',    esc(d.gateway));
-    }
-
     detail.innerHTML = html;
     detail.style.display = '';
-
-    // Button state
+    drWrap.style.display = '';
     applyBtn.disabled = false;
-    applyBtn.textContent = (val === activeIface) ? 'Re-apply' : 'Apply';
-    revertBtn.style.display = activeIface ? '' : 'none';
 }
 
-// ── Apply ─────────────────────────────────────────────────────────────────────
+// ── Add / apply ───────────────────────────────────────────────────────────────
 function doApply() {
     var val = document.getElementById('iface-sel').value;
     if (!val) return;
+    var useDefault = document.getElementById('add-defroute-chk').checked ? '1' : '0';
 
-    showOv('Applying\u2026');
+    showOv('Adding\u2026');
     lockForm(true);
 
     fetch('/cgi-bin/wan-repurpose.cgi?action=apply', {
         method: 'POST',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body: 'iface=' + encodeURIComponent(val)
+        body: 'iface=' + encodeURIComponent(val) + '&default_route=' + useDefault
     })
     .then(function(r) { return r.text().then(function(t) { return {ok:r.ok,t:t}; }); })
     .then(function(res) {
         if (res.ok && res.t.trim() === 'OK') {
-            activeIface = val;
             hideOv(function() {
                 lockForm(false);
-                toastr['success'](
-                    val + ' repurposed — DHCP in progress\u2026',
-                    'Applied'
-                );
-                document.getElementById('status-card').style.display = '';
-                // Update dropdown labels in-place instead of calling loadList().
-                // loadList() would re-open the overlay and fire a fetch that can
-                // hang indefinitely while repurposeaswan.sh is reconfiguring the
-                // interface, leaving the overlay stuck with no timeout to recover.
-                var sel = document.getElementById('iface-sel');
-                for (var i = 0; i < sel.options.length; i++) {
-                    sel.options[i].textContent = sel.options[i].textContent.replace(/ \[ACTIVE\]$/, '');
-                    if (sel.options[i].value === val) sel.options[i].textContent += ' [ACTIVE]';
-                }
-                document.getElementById('apply-btn').textContent = 'Re-apply';
-                document.getElementById('revert-btn').style.display = '';
-                startPoll();
-                pollNow();
+                toastr['success'](val + ' added — DHCP in progress\u2026', 'Added');
+                loadList();
             });
         } else {
             hideOv(function() { lockForm(false); });
@@ -341,33 +345,28 @@ function doApply() {
     });
 }
 
-// ── Revert ────────────────────────────────────────────────────────────────────
-function doRevert() {
-    var target = activeIface || document.getElementById('iface-sel').value;
-    if (!target) return;
-
-    showOv('Reverting ' + target + '\u2026');
+// ── Remove / revert ───────────────────────────────────────────────────────────
+function doRemove(iface) {
+    showOv('Removing ' + iface + '\u2026');
     lockForm(true);
 
     fetch('/cgi-bin/wan-repurpose.cgi?action=revert', {
         method: 'POST',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body: 'iface=' + encodeURIComponent(target)
+        body: 'iface=' + encodeURIComponent(iface)
     })
     .then(function(r) { return r.text(); })
     .then(function(t) {
         if (t.trim() === 'OK') {
-            activeIface = '';
             stopPoll();
-            document.getElementById('status-card').style.display = 'none';
             hideOv(function() {
                 lockForm(false);
-                toastr['success'](target + ' returned to bridge.', 'Reverted');
+                toastr['success'](iface + ' removed \u2014 returned to bridge.', 'Removed');
                 loadList();
             });
         } else {
             hideOv(function() { lockForm(false); });
-            toastr['warning']('Revert failed: ' + t, 'Error');
+            toastr['warning']('Remove failed: ' + t, 'Error');
         }
     })
     .catch(function() {
@@ -376,79 +375,165 @@ function doRevert() {
     });
 }
 
+// ── Default-route switch toggle (per table row) ────────────────────────────────
+function doSetDefault(iface, checked) {
+    var sw = document.getElementById('dr-switch-' + cssId(iface));
+    if (sw) sw.disabled = true;
+
+    fetch('/cgi-bin/wan-repurpose.cgi?action=set_default', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: 'iface=' + encodeURIComponent(iface) + '&default_route=' + (checked ? '1' : '0')
+    })
+    .then(function(r) { return r.text(); })
+    .then(function(t) {
+        if (t.trim() === 'OK') {
+            toastr['success'](
+                checked ? (iface + ' is now the default route.') : (iface + ' is no longer the default route.'),
+                'Updated'
+            );
+            pollNow();
+        } else {
+            toastr['warning']('Failed to update: ' + t, 'Error');
+            if (sw) sw.checked = !checked; // revert UI on failure
+        }
+    })
+    .catch(function() {
+        toastr['warning']('Request failed.', 'Error');
+        if (sw) sw.checked = !checked;
+    })
+    .then(function() { if (sw) sw.disabled = false; });
+}
+
+// ── Build the configured-interfaces table (initial render, from iface_list) ───
+function buildTable() {
+    configuredMap = {};
+    var configured = ifaceList.filter(function(i) { return i.configured; });
+    var tbody = document.getElementById('iface-table-body');
+    var noMsg = document.getElementById('no-configured-msg');
+    tbody.innerHTML = '';
+
+    if (configured.length === 0) {
+        noMsg.style.display = '';
+        return;
+    }
+    noMsg.style.display = 'none';
+
+    configured.forEach(function(d) {
+        configuredMap[d.iface] = d;
+        tbody.insertAdjacentHTML('beforeend', renderRow(d));
+    });
+}
+
+// ── Render a single <tr> for a configured interface ────────────────────────────
+function renderRow(d) {
+    var id = cssId(d.iface);
+    var typeBadge = d.type === 'wlan'
+        ? '<span class="type-badge badge-wlan">WiFi</span>'
+        : '<span class="type-badge badge-lan">LAN</span>';
+    var sub = d.type === 'wlan'
+        ? esc(d.band || '') + (d.assoc_ssid ? ' \u00b7 ' + esc(d.assoc_ssid) : '')
+        : ('Port ' + esc(d.port || ''));
+
+    var ipHtml = d.ip
+        ? '<span class="mono-ip">' + esc(d.ip) + '</span>'
+        : '<span class="text-secondary">Obtaining\u2026<span class="spin-sm"></span></span>';
+    var gwHtml = d.gateway
+        ? '<span class="mono-ip">' + esc(d.gateway) + '</span>'
+        : '<span class="text-secondary">\u2014</span>';
+
+    var st = rowStatus(d);
+
+    return '<tr id="row-' + id + '">'
+        + '<td>'
+        +   '<div class="iface-cell-main">' + typeBadge + ' ' + esc(d.iface) + '</div>'
+        +   '<div class="iface-cell-sub">' + sub + '</div>'
+        + '</td>'
+        + '<td id="ip-' + id + '">' + ipHtml + '</td>'
+        + '<td id="gw-' + id + '">' + gwHtml + '</td>'
+        + '<td>'
+        +   '<div class="form-check form-switch default-route-switch mb-0">'
+        +     '<input class="form-check-input" type="checkbox" id="dr-switch-' + id + '"'
+        +       (d.default_route ? ' checked' : '') + ' onchange="doSetDefault(\'' + esc(d.iface) + '\', this.checked)">'
+        +   '</div>'
+        + '</td>'
+        + '<td id="status-' + id + '">'
+        +   '<span class="status-cell"><span class="sdot ' + st.cls + '"></span>' + esc(st.text) + '</span>'
+        + '</td>'
+        + '<td class="text-end">'
+        +   '<button class="btn btn-sm btn-outline-secondary remove-btn" onclick="doRemove(\'' + esc(d.iface) + '\')">Remove</button>'
+        + '</td>'
+        + '</tr>';
+}
+
+// ── Derive a compact overall status from the four live checks ─────────────────
+function rowStatus(d) {
+    if (!d.watchdog_running) return { cls: 'sdot-err',  text: 'Watchdog stopped' };
+    if (d.in_br0)            return { cls: 'sdot-warn', text: 'Fixing bridge\u2026' };
+    if (!d.iface_up)         return { cls: 'sdot-warn', text: 'Link down' };
+    if (!d.udhcpc_running)   return { cls: 'sdot-err',  text: 'DHCP client stopped' };
+    if (!d.ip)               return { cls: 'sdot-warn', text: 'Obtaining IP\u2026' };
+    return { cls: 'sdot-ok', text: 'Connected' };
+}
+
+// ── Turn an interface name into a safe DOM id fragment ─────────────────────────
+function cssId(iface) { return String(iface).replace(/[^a-zA-Z0-9]/g, '_'); }
+
 // ── Status polling ────────────────────────────────────────────────────────────
 function startPoll() { stopPoll(); pollTimer = setInterval(pollNow, 10000); }
 function stopPoll()  { if (pollTimer) { clearInterval(pollTimer); pollTimer = null; } }
 
 function pollNow() {
-    if (!activeIface) return;
+    if (Object.keys(configuredMap).length === 0) return;
     fetch('/cgi-bin/wan-repurpose.cgi?action=status', { cache: 'no-store' })
         .then(function(r) { return r.json(); })
-        .then(function(d) {
-            renderStatus(d);
-        })
+        .then(function(d) { renderStatus(d.interfaces || []); });
 }
 
+// ── Merge a status poll into the existing table rows in place ─────────────────
+function renderStatus(rows) {
+    var seen = {};
+    rows.forEach(function(r) {
+        seen[r.iface] = true;
+        var existing = configuredMap[r.iface];
+        if (!existing) return; // table hasn't been (re)built with this row yet
+        // Merge live fields into our local copy
+        existing.ip = r.ip;
+        existing.gateway = r.gateway;
+        existing.default_route = r.default_route;
+        existing.watchdog_running = r.watchdog_running;
+        existing.udhcpc_running = r.udhcpc_running;
+        existing.in_br0 = r.in_br0;
+        existing.iface_up = r.iface_up;
 
-// ── Render status card ────────────────────────────────────────────────────────
-function renderStatus(d) {
-    var card = document.getElementById('status-card');
-    var body = document.getElementById('status-body');
+        var id = cssId(r.iface);
+        var ipCell = document.getElementById('ip-' + id);
+        var gwCell = document.getElementById('gw-' + id);
+        var stCell = document.getElementById('status-' + id);
+        var drSwitch = document.getElementById('dr-switch-' + id);
+        if (ipCell) ipCell.innerHTML = r.ip
+            ? '<span class="mono-ip">' + esc(r.ip) + '</span>'
+            : '<span class="text-secondary">Obtaining\u2026<span class="spin-sm"></span></span>';
+        if (gwCell) gwCell.innerHTML = r.gateway
+            ? '<span class="mono-ip">' + esc(r.gateway) + '</span>'
+            : '<span class="text-secondary">\u2014</span>';
+        if (stCell) {
+            var st = rowStatus(existing);
+            stCell.innerHTML = '<span class="status-cell"><span class="sdot ' + st.cls + '"></span>' + esc(st.text) + '</span>';
+        }
+        if (drSwitch && document.activeElement !== drSwitch) drSwitch.checked = !!r.default_route;
+    });
 
-    // If CGI reports no active iface (watchdog exited cleanly)
-    if (!d.active_iface) {
-        activeIface = '';
-        stopPoll();
-        card.style.display = 'none';
-        loadList();
-        return;
-    }
-
-    activeIface = d.active_iface;
-    card.style.display = '';
-
-    var html = '';
-
-    // Interface
-    html += infoRow('Interface', '<strong>' + esc(d.active_iface) + '</strong>');
-
-    // IP address
-    var ipHtml = d.ip
-        ? esc(d.ip)
-        : '<span class="text-secondary">Obtaining\u2026<span class="spin-sm"></span></span>';
-    html += infoRow('IP Address', ipHtml);
-
-    // Gateway
-    html += infoRow('Gateway',
-        d.gateway ? esc(d.gateway) : '<span class="text-secondary">\u2014</span>');
-
-    // Watchdog daemon
-    html += infoRow('Watchdog',
-        '<span class="sdot ' + (d.watchdog_running ? 'sdot-ok' : 'sdot-err') + '"></span>'
-        + (d.watchdog_running ? 'Running' : 'Stopped'));
-
-    // DHCP client
-    html += infoRow('DHCP Client',
-        '<span class="sdot ' + (d.udhcpc_running ? 'sdot-ok' : 'sdot-err') + '"></span>'
-        + (d.udhcpc_running ? 'Running' : 'Stopped'));
-
-    // Bridge status
-    var brOk = !d.in_br0;
-    html += infoRow('Bridge',
-        '<span class="sdot ' + (brOk ? 'sdot-ok' : 'sdot-warn') + '"></span>'
-        + (brOk ? 'Not in br0 \u2714' : '\u26a0 Bound to br0 \u2014 fixing\u2026'));
-
-    // Interface link
-    html += infoRow('Link',
-        '<span class="sdot ' + (d.iface_up ? 'sdot-ok' : 'sdot-warn') + '"></span>'
-        + (d.iface_up ? 'Up' : 'Down \u2014 recovering\u2026'));
-
-    body.innerHTML = html;
+    // If a configured interface vanished (e.g. its watchdog self-removed
+    // because a WLAN VXD was disabled in the MIB), refresh the whole list
+    // so the table and Add dropdown fall back in sync.
+    var stale = Object.keys(configuredMap).some(function(k) { return !seen[k]; });
+    if (stale) loadList();
 }
 
 // ── Form lock / unlock ────────────────────────────────────────────────────────
 function lockForm(on) {
-    ['iface-sel','apply-btn','revert-btn'].forEach(function(id) {
+    ['iface-sel','apply-btn','add-defroute-chk'].forEach(function(id) {
         var el = document.getElementById(id);
         if (!el) return;
         if (on) { el.setAttribute('disabled',''); el.style.pointerEvents = 'none'; }

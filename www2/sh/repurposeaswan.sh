@@ -1,6 +1,17 @@
 #!/bin/sh
 # repurposeaswan.sh — Set up an interface as a DHCP WAN + watchdog
-# Usage: repurposeaswan.sh <interface>
+# Usage: repurposeaswan.sh <interface> [default_route]
+#
+#   <interface>      required — the interface to repurpose
+#   [default_route]  optional — "1" (default when omitted, for backward
+#                     compatibility with older startup.sh entries that only
+#                     ever passed one argument) or "0". Controls whether
+#                     THIS interface receives the kernel default route +
+#                     NAT masquerade once it gets a DHCP lease. Multiple
+#                     interfaces can run this script concurrently (each
+#                     instance is fully namespaced by $TARGET_IFACE); only
+#                     the one(s) with default_route=1 touch the default
+#                     route — see /tmp/repurpose_defroute_<iface>.
 #
 # Runs as a daemon; write PID to /tmp/repurpose_<iface>.pid.
 # DHCP anti-leak (ebtables/iptables physdev) is applied immediately, before
@@ -13,26 +24,52 @@
 #   1. br0 re-binding (fixes it immediately if detected)
 #   2. Interface UP state
 #   3. udhcpc still alive
-# Exits cleanly when /tmp/repurpose_active is removed or changed.
+# /tmp/repurpose_active is a shared registry (one interface name per line —
+# multiple concurrently-repurposed interfaces each add their own line).
+# Exits cleanly when this interface's own line is removed from that file
+# (e.g. by revertwan.sh), or when the file itself is gone.
 
 if [ -z "$1" ]; then
-    echo "Usage: $0 <interface>" >&2
+    echo "Usage: $0 <interface> [default_route]" >&2
     exit 1
 fi
 
 TARGET_IFACE="$1"
+DEFAULT_ROUTE="${2:-1}"
+case "$DEFAULT_ROUTE" in 1) DEFAULT_ROUTE=1 ;; *) DEFAULT_ROUTE=0 ;; esac
 SCRIPT_PATH="/tmp/udhcpc_${TARGET_IFACE}.script"
 STATE_FILE="/tmp/repurpose_active"
+DEFROUTE_FILE="/tmp/repurpose_defroute_${TARGET_IFACE}"
 PID_FILE="/tmp/repurpose_${TARGET_IFACE}.pid"
 UDHCPC_PID="/var/run/udhcpc.${TARGET_IFACE}.pid"
 LOG="/tmp/repurpose_${TARGET_IFACE}.log"
 WATCHDOG_INTERVAL=15
 
-# ── Write PID + state immediately ─────────────────────────────────────────────
+# ── Helper: true if TARGET_IFACE currently has its own line in STATE_FILE ────
+_in_state_registry() {
+    [ -f "$STATE_FILE" ] && busybox grep -qx "$TARGET_IFACE" "$STATE_FILE" 2>/dev/null
+}
+
+# ── Helper: remove only TARGET_IFACE's own line from STATE_FILE ──────────────
+# Never truncates or removes other interfaces' entries — safe to call while
+# other repurposeaswan.sh instances are running for different interfaces.
+_remove_self_from_registry() {
+    [ -f "$STATE_FILE" ] || return
+    _RSFR_TMP="/tmp/repurpose_active.$$.tmp"
+    busybox grep -vx "$TARGET_IFACE" "$STATE_FILE" > "$_RSFR_TMP" 2>/dev/null
+    busybox mv "$_RSFR_TMP" "$STATE_FILE"
+    [ -s "$STATE_FILE" ] || rm -f "$STATE_FILE"
+}
+
+# ── Write PID + register in the shared state file + record our default-route
+# flag immediately. Idempotent add: if this interface's line is already
+# present (e.g. re-launched by the CGI, which pre-registers synchronously
+# before backgrounding this script) it is not duplicated.
 echo $$ > "$PID_FILE"
-printf '%s' "$TARGET_IFACE" > "$STATE_FILE"
-printf '[%s] repurposeaswan started  iface=%s  pid=%s\n' \
-    "$(busybox date)" "$TARGET_IFACE" "$$" > "$LOG"
+_in_state_registry || printf '%s\n' "$TARGET_IFACE" >> "$STATE_FILE"
+printf '%s' "$DEFAULT_ROUTE" > "$DEFROUTE_FILE"
+printf '[%s] repurposeaswan started  iface=%s  pid=%s  default_route=%s\n' \
+    "$(busybox date)" "$TARGET_IFACE" "$$" "$DEFAULT_ROUTE" > "$LOG"
 
 # ── Create the udhcpc handler (single-quoted heredoc — no expansion) ──────────
 busybox cat > "$SCRIPT_PATH" << 'UDHCPC_HANDLER_EOF'
@@ -75,14 +112,38 @@ case "$1" in
         # $subnet is dotted-decimal (e.g. 255.255.255.0); ip(8) accepts it.
         # Fall back to /24 only when udhcpc leaves $subnet empty.
         ip addr add "$ip/${subnet:-24}" dev "$interface" 2>/dev/null
+        # Only interfaces flagged default_route=1 touch the kernel default
+        # route / NAT masquerade. Missing flag file = "1" (matches the old,
+        # pre-multi-interface behaviour where the single repurposed WAN
+        # always became the default route unconditionally).
+        _drf="/tmp/repurpose_defroute_${interface}"
+        _use_defroute=$(busybox cat "$_drf" 2>/dev/null | busybox tr -d '\r\n')
+        _use_defroute="${_use_defroute:-1}"
         if [ -n "$router" ]; then
-            ip route del default dev "$interface" 2>/dev/null
-            ip route add default via "$router" dev "$interface" 2>/dev/null
-            # Persist gateway so the watchdog can restore it if the route is stolen
-            printf '%s' "$router" > "/tmp/repurpose_gw_${interface}"
-            # Idempotent: delete first, then add, so repeated renewals don't stack rules
-            iptables -t nat -D POSTROUTING -o "$interface" -j MASQUERADE 2>/dev/null
-            iptables -t nat -A POSTROUTING -o "$interface" -j MASQUERADE 2>/dev/null
+            if [ "$_use_defroute" = "1" ]; then
+                # Clear EVERY existing default route first — not just one
+                # already tied to $interface. This box can have a stale/dead
+                # default route left over from the device's own native WAN
+                # path (e.g. "default via ... dev br0 linkdown") that has
+                # nothing to do with repurposeaswan.sh; a dev-scoped delete
+                # leaves that stale route in place and the kernel then
+                # refuses (or ECMP-splits) the `ip route add` below, since a
+                # default route already exists at the same metric.
+                while ip route del default 2>/dev/null; do :; done
+                ip route add default via "$router" dev "$interface" 2>/dev/null
+                # Persist gateway so the watchdog can restore it if the route is stolen
+                printf '%s' "$router" > "/tmp/repurpose_gw_${interface}"
+                # Idempotent: delete first, then add, so repeated renewals don't stack rules
+                iptables -t nat -D POSTROUTING -o "$interface" -j MASQUERADE 2>/dev/null
+                iptables -t nat -A POSTROUTING -o "$interface" -j MASQUERADE 2>/dev/null
+            else
+                # Not the default-route interface: make sure it never holds
+                # the default route or a masquerade rule (covers the case
+                # where it used to be the default and was just switched off).
+                ip route del default via "$router" dev "$interface" 2>/dev/null
+                iptables -t nat -D POSTROUTING -o "$interface" -j MASQUERADE 2>/dev/null
+                rm -f "/tmp/repurpose_gw_${interface}"
+            fi
         fi
         ;;
 esac
@@ -376,20 +437,14 @@ _stop_monitor() {
 while true; do
     busybox sleep "$WATCHDOG_INTERVAL"
 
-    # ── Exit condition: state file gone or points to a different iface ────────
-    if [ ! -f "$STATE_FILE" ]; then
-        printf '[%s] State file removed — exiting\n' \
+    # ── Exit condition: state file gone or our own line removed from it ───────
+    # (revertwan.sh removes only this interface's line — other concurrently
+    # repurposed interfaces' lines are untouched and keep running.)
+    if ! _in_state_registry; then
+        printf '[%s] No longer in state registry — exiting\n' \
             "$(busybox date)" >> "$LOG"
         _stop_monitor
-        rm -f "$PID_FILE"
-        exit 0
-    fi
-    _CUR=$(busybox tr -d '\r\n' < "$STATE_FILE" 2>/dev/null)
-    if [ "$_CUR" != "$TARGET_IFACE" ]; then
-        printf '[%s] State changed to "%s" — exiting\n' \
-            "$(busybox date)" "$_CUR" >> "$LOG"
-        _stop_monitor
-        rm -f "$PID_FILE"
+        rm -f "$PID_FILE" "$DEFROUTE_FILE"
         exit 0
     fi
 
@@ -405,7 +460,8 @@ while true; do
         printf '[%s] %s: wlanDisabled=1 in MIB — stopping repurpose watchdog\n' \
             "$(busybox date)" "$TARGET_IFACE" >> "$LOG"
         _stop_monitor
-        rm -f "$STATE_FILE" "$PID_FILE"
+        _remove_self_from_registry
+        rm -f "$PID_FILE" "$DEFROUTE_FILE" "/tmp/repurpose_gw_${TARGET_IFACE}"
         exit 0
     fi
 
@@ -449,15 +505,21 @@ while true; do
     # ── 4. Default route maintenance ──────────────────────────────────────────
     # If the system (vendor firmware, nas* interface, etc.) steals the default
     # route away from our repurposed WAN, restore it from the saved gw file.
+    # Only applies to the interface(s) flagged default_route=1 — re-checked
+    # live every tick so flipping the switch off in the UI (which deletes the
+    # gw file) sticks even between watchdog ticks, and so a flag flip doesn't
+    # require waiting for a fresh DHCP renewal to take effect.
+    _DEFROUTE_NOW=$(busybox cat "$DEFROUTE_FILE" 2>/dev/null | busybox tr -d '\r\n')
+    _DEFROUTE_NOW="${_DEFROUTE_NOW:-1}"
     _GW_FILE="/tmp/repurpose_gw_${TARGET_IFACE}"
-    if [ -f "$_GW_FILE" ]; then
+    if [ "$_DEFROUTE_NOW" = "1" ] && [ -f "$_GW_FILE" ]; then
         _GW=$(busybox tr -d '\r\n' < "$_GW_FILE" 2>/dev/null)
         if [ -n "$_GW" ]; then
             _CUR=$(ip route show default 2>/dev/null | head -1)
             case "$_CUR" in
                 *"dev $TARGET_IFACE"*) ;; # already correct
                 *)
-                    ip route del default 2>/dev/null
+                    while ip route del default 2>/dev/null; do :; done
                     ip route add default via "$_GW" dev "$TARGET_IFACE" 2>/dev/null
                     printf '[%s] RESTORED default route via %s dev %s\n' \
                         "$(busybox date)" "$_GW" "$TARGET_IFACE" >> "$LOG"

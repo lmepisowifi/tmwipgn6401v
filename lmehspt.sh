@@ -576,15 +576,15 @@ cleanup_old_hotspot() {
     teardown_anti_tether 2>/dev/null
     [ -f /tmp/hotspot_watchdog.pid ] && { kill -9 "$(cat /tmp/hotspot_watchdog.pid)" 2>/dev/null; rm -f /tmp/hotspot_watchdog.pid; }
     MY_PID=$$
-    for pid in $($BB ps | $BB grep "run_test.sh" | $BB grep -v grep | $BB awk '{print $1}'); do
+    for pid in $($BB ps ww | $BB grep "run_test.sh" | $BB grep -v grep | $BB awk '{print $1}'); do
         [ "$pid" -ne "$MY_PID" ] && kill -9 "$pid" 2>/dev/null
     done
     [ -f /tmp/hotspot_dhcp.pid ] && { kill -9 "$(cat /tmp/hotspot_dhcp.pid)" 2>/dev/null; rm -f /tmp/hotspot_dhcp.pid; }
-    for pid in $($BB ps | $BB grep "hotspot_dhcp.conf" | $BB grep -v grep | $BB awk '{print $1}'); do kill -9 "$pid" 2>/dev/null; done
-    for pid in $($BB ps | $BB grep "httpd" | $BB grep -v grep | $BB grep -F "$PORTAL_IP:$PORTAL_PORT" | $BB awk '{print $1}'); do kill -9 "$pid" 2>/dev/null; done
+    for pid in $($BB ps ww | $BB grep "hotspot_dhcp.conf" | $BB grep -v grep | $BB awk '{print $1}'); do kill -9 "$pid" 2>/dev/null; done
+    for pid in $($BB ps ww| $BB grep "httpd" | $BB grep -v grep | $BB grep -F "$PORTAL_IP:$PORTAL_PORT" | $BB awk '{print $1}'); do kill -9 "$pid" 2>/dev/null; done
     
     # Kill any spawned ntpd instances for this hotspot to prevent orphaned processes
-    for pid in $($BB ps w | $BB grep "ntpd -S" | $BB grep -v grep | $BB awk '{print $1}'); do
+    for pid in $($BB ps ww | $BB grep "ntpd -S" | $BB grep -v grep | $BB awk '{print $1}'); do
         kill -9 "$pid" 2>/dev/null
     done
 
@@ -641,14 +641,24 @@ cleanup_old_hotspot() {
 }
 
 # Returns the interface to use as the hotspot upstream (upload direction).
-# When repurposeaswan.sh has promoted a WAN port, uses that; else br0.
+# /tmp/repurpose_active is a shared registry (one interface per line) since
+# multiple interfaces can be repurposed as DHCP-client WAN at once — but
+# only ONE of them can meaningfully carry the real default route, so this
+# picks whichever configured interface has its default-route flag set
+# (/tmp/repurpose_defroute_<iface>; missing file = "1", which matches the
+# old pre-multi-interface behaviour where the single repurposed WAN was
+# always the default route). Falls back to br0 if none is flagged.
 resolve_wan_int() {
-    local rif
+    local rif flag
     if [ -f /tmp/repurpose_active ]; then
-        rif=$($BB tr -d '\r\n' < /tmp/repurpose_active 2>/dev/null)
-        if [ -n "$rif" ] && ip link show "$rif" >/dev/null 2>&1; then
-            echo "$rif"; return
-        fi
+        while IFS= read -r rif; do
+            [ -z "$rif" ] && continue
+            flag=$($BB tr -d '\r\n' < "/tmp/repurpose_defroute_${rif}" 2>/dev/null)
+            flag="${flag:-1}"
+            if [ "$flag" = "1" ] && ip link show "$rif" >/dev/null 2>&1; then
+                echo "$rif"; return
+            fi
+        done < /tmp/repurpose_active
     fi
     echo "$WAN_INT_DEFAULT"
 }
@@ -1527,7 +1537,7 @@ apply_portal_ip_change() {
     #    still valid; deleting it would forget currently-connected clients
     #    and let the fresh udhcpd hand their in-use IP to someone else.
     [ -f /tmp/hotspot_dhcp.pid ] && { kill -9 "$(cat /tmp/hotspot_dhcp.pid)" 2>/dev/null; rm -f /tmp/hotspot_dhcp.pid; }
-    for _pid in $($BB ps | $BB grep "hotspot_dhcp.conf" | $BB grep -v grep | $BB awk '{print $1}'); do
+    for _pid in $($BB ps ww | $BB grep "hotspot_dhcp.conf" | $BB grep -v grep | $BB awk '{print $1}'); do
         kill -9 "$_pid" 2>/dev/null
     done
     [ "$new_subnet" != "$old_subnet" ] && rm -f /tmp/udhcpd.leases
@@ -1540,7 +1550,7 @@ apply_portal_ip_change() {
     # Killing every hotspot-portal httpd NOT bound to the new address is
     # self-healing: it also mops up any stray instance left behind by a
     # prior occurrence of that bug, without needing a reboot.
-    for _pid in $($BB ps | $BB grep httpd | $BB grep -v grep | $BB grep -F "hotspot/httpd.conf" | $BB grep -v -F "$PORTAL_IP:$PORTAL_PORT" | $BB awk '{print $1}'); do
+    for _pid in $($BB ps ww | $BB grep httpd | $BB grep -v grep | $BB grep -F "hotspot/httpd.conf" | $BB grep -v -F "$PORTAL_IP:$PORTAL_PORT" | $BB awk '{print $1}'); do
         kill -9 "$_pid" 2>/dev/null
     done
     ensure_port80_clear
@@ -1575,7 +1585,7 @@ start_ntp() {
 
     # Don't spawn a second instance (avoids two daemons fighting over the clock).
     # We use ps | grep here because BusyBox pidof fails to find ntpd when run via the multicall binary.
-    $BB ps w | $BB grep "ntpd -S" | $BB grep -v grep >/dev/null 2>&1 && return 0
+    $BB ps ww | $BB grep "ntpd -S" | $BB grep -v grep >/dev/null 2>&1 && return 0
     [ -x "$NTP_EVENT" ] || $BB chmod +x "$NTP_EVENT" 2>/dev/null
     NTP_PEERS=""
     for s in $NTP_SERVERS; do NTP_PEERS="$NTP_PEERS -p $s"; done
@@ -1593,7 +1603,7 @@ start_ntp() {
     while [ "$_try" -lt 2 ]; do
         ( $BB ntpd -S "$NTP_EVENT" $NTP_PEERS >/dev/null 2>&1 & )
         $BB sleep 1
-        $BB ps w | $BB grep "ntpd -S" | $BB grep -v grep >/dev/null 2>&1 && return 0
+        $BB ps ww | $BB grep "ntpd -S" | $BB grep -v grep >/dev/null 2>&1 && return 0
         _try=$(( _try + 1 ))
     done
     return 1
@@ -1724,7 +1734,7 @@ write_coin_config
 check_and_fix_dns
 start_ntp
 
-if ! $BB ps | $BB grep "httpd" | $BB grep -v grep | $BB grep -q -F "$PORTAL_IP:$PORTAL_PORT"; then
+if ! $BB ps ww | $BB grep "httpd" | $BB grep -v grep | $BB grep -q -F "$PORTAL_IP:$PORTAL_PORT"; then
     ensure_port80_clear
     $BB httpd -p $PORTAL_IP:$PORTAL_PORT -h /lmepisowifi/hotspot -c /lmepisowifi/hotspot/httpd.conf
     $BB chmod +x /lmepisowifi/hotspot/cgi-bin/*.sh
@@ -1778,7 +1788,7 @@ fi
         if [ -f /tmp/hotspot_dhcp_reload ]; then
             rm -f /tmp/hotspot_dhcp_reload
             [ -f /tmp/hotspot_dhcp.pid ] && { kill -9 "$(cat /tmp/hotspot_dhcp.pid)" 2>/dev/null; rm -f /tmp/hotspot_dhcp.pid; }
-            for _pid in $($BB ps | $BB grep "hotspot_dhcp.conf" | $BB grep -v grep | $BB awk '{print $1}'); do
+            for _pid in $($BB ps ww | $BB grep "hotspot_dhcp.conf" | $BB grep -v grep | $BB awk '{print $1}'); do
                 kill -9 "$_pid" 2>/dev/null
             done
             rm -f /tmp/udhcpd.leases
@@ -1866,7 +1876,7 @@ fi
             setup_whitelist
         fi
 
-        if ! $BB ps | $BB grep -v grep | $BB grep -q "hotspot_dhcp.conf"; then start_dhcp; fi
+        if ! $BB ps ww | $BB grep -v grep | $BB grep -q "hotspot_dhcp.conf"; then start_dhcp; fi
         if ! tc qdisc show dev $WAN_INT 2>/dev/null | $BB grep -q "sfq\|htb"; then
             setup_qos
             restore_qos_sessions   # immediately re-add per-user classes so active

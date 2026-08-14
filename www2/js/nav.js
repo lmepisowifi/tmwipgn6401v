@@ -47,6 +47,9 @@ setInterval(function () {
             { label: 'STA Info',  href: '/wlansta.html'     },
         ]},
         { label: 'LAN',     href: '/lan.html' },
+        { label: 'Interfaces', children: [
+            { label: 'DHCP Client', href: '/wan-repurpose.html' },
+        ]},
         { label: 'Domain Blocking', href: '/domainblk.html' },
         { label: 'Hotspot', module: 'hotspot', children: [
             { label: 'Overview',        href: '/hotspot.html',           hotspot: 'always'  },
@@ -65,7 +68,6 @@ setInterval(function () {
             { label: 'Settings',         href: '/system.html'        },
             { label: 'Accounts',         href: '/accounts.html'      },
             { label: 'GPON Settings',    href: '/gpon.html'          },
-            { label: 'Repurpose as WAN', href: '/wan-repurpose.html' },
             { label: 'Dashboard Layout', href: '/dashboard-layout.html' },
             { label: 'Modules',          href: '/modules.html'       },
             { label: 'Tailscale',        href: '/tailscale.html', module: 'tailscale' },

@@ -9,6 +9,8 @@ fi
 
 TARGET_IFACE="$1"
 STATE_FILE="/tmp/repurpose_active"
+DEFROUTE_FILE="/tmp/repurpose_defroute_${TARGET_IFACE}"
+GW_FILE="/tmp/repurpose_gw_${TARGET_IFACE}"
 PID_FILE="/tmp/repurpose_${TARGET_IFACE}.pid"
 SCRIPT_PATH="/tmp/udhcpc_${TARGET_IFACE}.script"
 UDHCPC_PID="/var/run/udhcpc.${TARGET_IFACE}.pid"
@@ -87,9 +89,19 @@ ip link set "$TARGET_IFACE" master br0 2>/dev/null
 # ── 6. Bring back up as a bridge member ───────────────────────────────────────
 ip link set "$TARGET_IFACE" up 2>/dev/null
 
-# ── 7. Clear all state + temp files ───────────────────────────────────────────
-rm -f "$STATE_FILE"
+# ── 7. Clear this interface's state + temp files ──────────────────────────────
+# Remove only TARGET_IFACE's own line from the shared registry — other
+# concurrently repurposed interfaces (each with their own line) are left
+# running and untouched.
+if [ -f "$STATE_FILE" ]; then
+    _RW_TMP="/tmp/repurpose_active.revert.$$.tmp"
+    busybox grep -vx "$TARGET_IFACE" "$STATE_FILE" > "$_RW_TMP" 2>/dev/null
+    busybox mv "$_RW_TMP" "$STATE_FILE"
+    [ -s "$STATE_FILE" ] || rm -f "$STATE_FILE"
+fi
 rm -f "$SCRIPT_PATH"
 rm -f "$LOG"
+rm -f "$DEFROUTE_FILE"
+rm -f "$GW_FILE"
 
 printf '[%s] %s restored to br0\n' "$(busybox date)" "$TARGET_IFACE"
