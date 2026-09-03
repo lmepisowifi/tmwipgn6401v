@@ -1,4 +1,16 @@
 #!/bin/sh
+# ---------------------------------------------------------------------------
+# lmepisowifi — https://github.com/lmepisowifi/tmwipgn6401v
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 The lmepisowifi Project — see AUTHORS
+#
+# Licensed under the GNU AGPLv3 (see LICENSE). Modifying or rewriting this
+# file — including by running it through an LLM — does not remove these
+# obligations: keep this notice, mark your changes, and offer Corresponding
+# Source to network users (AGPLv3 §5, §13). See PROVENANCE.md before
+# presenting this as your own original work.
+# ---------------------------------------------------------------------------
+
 # ============================================================
 # notify_templates.sh — customizable Telegram/Discord message
 # formats for hotspot events.
@@ -21,26 +33,62 @@
 BB="busybox"
 
 # ── Built-in defaults ─────────────────────────────────────────────────────
-DEFAULT_TPL_NEW_SALE='New Sale%0ATotal: *totaltime*%0AAdded: *addedtime*%0ARemaining: *remainingtime*%0ACoin: ₱*insertcoinamt*%0AMAC: *mac*%0AActive Users: *activeusrcount*%0ADaily: ₱*dailyamt* | Monthly: ₱*monthlyamt* | Yearly: ₱*yearlyamt*%0A*date*'
+DEFAULT_TPL_NEW_SALE='%0A-------New Sale-------%0AMAC: *mac*%0ATime Added: *addedtime*%0ATotal Time: *totaltime*%0ARemaining Time: *remainingtime*%0ACoin: ₱*insertcoinamt*%0A%0AOther Information: %0AActive Users: *activeusrcount*%0ADaily: ₱*dailyamt* | Monthly: ₱*monthlyamt* | Yearly: ₱*yearlyamt*%0ADate: *date*%0A%0ASystem Information:%0ACPU Usage: *cpuusage* %0ARAM Usage: *ramusage* %0A'
 DEFAULT_TPL_COINS_INSERTED='Coins Inserted%0AAmount: ₱*insertcoinamt*%0ADevice: *mac*'
-DEFAULT_TPL_ANTI_TROLL='Anti-Troll Suspension%0ADevice suspended: *mac*%0AStrikes: *strikes*/*strikemax* — no coins inserted *strikemax* times in a row%0ASuspended for: *cooldownmins* minutes'
-DEFAULT_TPL_SESSION_EXPIRED='Session Expired%0ADevice: *mac*%0AActive Users: *activeusrcount*'
-DEFAULT_TPL_SESSION_PAUSED='Session *reason* Paused%0ARemaining: *remainingtime*%0ATotal: *totaltime*%0ADevice: *mac*%0AActive Users: *activeusrcount*'
-DEFAULT_TPL_SESSION_RESUMED='Session Resumed%0ARemaining: *remainingtime*%0ATotal: *totaltime*%0ADevice: *mac*%0AActive Users: *activeusrcount*'
-DEFAULT_TPL_VOUCHER_REDEEMED='Voucher Redeemed%0AVoucher: *voucher*%0ATime added: *addedtime*%0ATotal: *totaltime*%0ARemaining: *remainingtime*%0ADevice: *mac*'
-DEFAULT_TPL_DAILY_REPORT='Daily Income Report%0ADate: *label*%0ATotal: ₱*amount*'
-DEFAULT_TPL_MONTHLY_REPORT='Monthly Income Report%0AMonth: *label*%0ATotal: ₱*amount*'
-DEFAULT_TPL_YEARLY_REPORT='Yearly Income Report%0AYear: *label*%0ATotal: ₱*amount*'
-DEFAULT_TPL_TEST_ALERT='Hotspot test alert%0AIf you can read this, notifications are working.'
+DEFAULT_TPL_ANTI_TROLL='-------Insert Coin Suspended-------%0ADevice: *mac*%0AReached *strikemax* Strikes%0ASuspended For: *cooldownmins* minute(s)'
+DEFAULT_TPL_VOUCHER_ANTI_TROLL='-------Voucher Conversion Suspended-------%0ADevice: *mac*%0AReached *strikemax* Strikes%0ASuspended For: *cooldownmins* minute(s)'
+DEFAULT_TPL_SESSION_EXPIRED='-------Ran Out of Time-------%0ADevice: *mac*'
+DEFAULT_TPL_SESSION_PAUSED='-------Time Paused *reason*-------%0ADevice: *mac*'
+DEFAULT_TPL_SESSION_RESUMED='-------Resumed Time-------%0ADevice: *mac*%0ATime Remaining: *remainingtime*%0AActive Users: *activeusrcount*'
+DEFAULT_TPL_VOUCHER_REDEEMED='-------Redeemed Voucher-------%0ADevice: *mac*%0AVoucher: *voucher*%0ATime Added: *addedtime*%0ATotal Time: *totaltime*%0ARemaining Time: *remainingtime*%0A'
+DEFAULT_TPL_DAILY_REPORT='-------Daily Income-------%0ADate: *label*%0ATotal: ₱*amount*'
+DEFAULT_TPL_MONTHLY_REPORT='-------Monthly Income------- Report%0AMonth: *label*%0ATotal: ₱*amount*'
+DEFAULT_TPL_YEARLY_REPORT='-------Yearly Income-------%0AYear: *label*%0ATotal: ₱*amount*'
+DEFAULT_TPL_TEST_ALERT='this is a test message.'
+
+# ── Built-in defaults: router-bot command responses ───────────────────────
+# What notify.sh's --bot command router (/status, /reboot, /hotspotstats,
+# /activeusers, /kick, /addtime, /removetime) replies with. Separate from
+# the event templates above (different override file, different admin UI
+# card — "Bot Command Responses") since they're edited from a different
+# place, but rendered through the SAME tpl_render() below.
+DEFAULT_TPL_CMD_STATUS='*uptime*'
+DEFAULT_TPL_CMD_REBOOT='The system is rebooting..'
+DEFAULT_TPL_CMD_HOTSPOTSTATS_NOTINSTALLED='Hotspot module is not installed on this device.'
+DEFAULT_TPL_CMD_HOTSPOTSTATS='Hotspot: *running*%0AActive sessions: *sessions*%0A%0AIncome%0AToday: ₱*daily*%0AMonth: ₱*monthly*%0AYear: ₱*yearly*%0AAll-time: ₱*total*'
+DEFAULT_TPL_CMD_ACTIVEUSERS_EMPTY='No active or paused users right now.'
+DEFAULT_TPL_CMD_KICK_USAGE='Usage: /kick <mac>%0AExample: /kick aa:bb:cc:dd:ee:ff%0ASee /activeusers for a list of connected MACs.'
+DEFAULT_TPL_CMD_KICK_OK='Kicked *mac* — had *remainingtime* remaining, now paused (can resume with the same balance).'
+DEFAULT_TPL_CMD_KICK_NONE='No active session found for *mac* — nothing to kick.'
+DEFAULT_TPL_CMD_ADDTIME_USAGE='Usage: /addtime <mac> <minutes>%0AExample: /addtime aa:bb:cc:dd:ee:ff 30'
+DEFAULT_TPL_CMD_ADDTIME_CREATED='No existing session for *mac* — created a new one with *minutes*m.'
+DEFAULT_TPL_CMD_ADDTIME_OK='Added *minutes*m to *mac*. Remaining: *remainingtime*.'
+DEFAULT_TPL_CMD_REMOVETIME_USAGE='Usage: /removetime <mac> <minutes>%0AExample: /removetime aa:bb:cc:dd:ee:ff 15'
+DEFAULT_TPL_CMD_REMOVETIME_NONE='No session found for *mac* — nothing to remove time from.'
+DEFAULT_TPL_CMD_REMOVETIME_OK='Removed *minutes*m from *mac*. Remaining: *remainingtime*.'
+# Shared across kick/addtime/removetime (same wording for the same mistake
+# in every command, one place to edit it instead of three).
+DEFAULT_TPL_CMD_BADMAC='That doesn'\''t look like a valid MAC address: *input*'
+DEFAULT_TPL_CMD_BADMINUTES='Minutes must be a positive whole number.'
+# Dispatch-level replies (unknown /command, or a user not on the allow list).
+DEFAULT_TPL_CMD_UNKNOWN='Unknown command.'
+DEFAULT_TPL_CMD_UNAUTHORIZED='Unauthorized user. Access denied.'
 
 # ── Load user overrides ──────────────────────────────────────────────────
 _TPL_ENV="/lmepisowifi/hotspot_data/notify_templates.env"
 [ -f "$_TPL_ENV" ] && . "$_TPL_ENV" 2>/dev/null
 
+# Bot command-response overrides live in their own file (own admin UI card,
+# own get/set/reset actions in hotspot.cgi) so saving one never clobbers
+# the other.
+_BOT_TPL_ENV="/lmepisowifi/hotspot_data/bot_templates.env"
+[ -f "$_BOT_TPL_ENV" ] && . "$_BOT_TPL_ENV" 2>/dev/null
+
 # Empty/unset override -> built-in default (":-" covers both cases)
 TPL_NEW_SALE="${TPL_NEW_SALE:-$DEFAULT_TPL_NEW_SALE}"
 TPL_COINS_INSERTED="${TPL_COINS_INSERTED:-$DEFAULT_TPL_COINS_INSERTED}"
 TPL_ANTI_TROLL="${TPL_ANTI_TROLL:-$DEFAULT_TPL_ANTI_TROLL}"
+TPL_VOUCHER_ANTI_TROLL="${TPL_VOUCHER_ANTI_TROLL:-$DEFAULT_TPL_VOUCHER_ANTI_TROLL}"
 TPL_SESSION_EXPIRED="${TPL_SESSION_EXPIRED:-$DEFAULT_TPL_SESSION_EXPIRED}"
 TPL_SESSION_PAUSED="${TPL_SESSION_PAUSED:-$DEFAULT_TPL_SESSION_PAUSED}"
 TPL_SESSION_RESUMED="${TPL_SESSION_RESUMED:-$DEFAULT_TPL_SESSION_RESUMED}"
@@ -49,6 +97,25 @@ TPL_DAILY_REPORT="${TPL_DAILY_REPORT:-$DEFAULT_TPL_DAILY_REPORT}"
 TPL_MONTHLY_REPORT="${TPL_MONTHLY_REPORT:-$DEFAULT_TPL_MONTHLY_REPORT}"
 TPL_YEARLY_REPORT="${TPL_YEARLY_REPORT:-$DEFAULT_TPL_YEARLY_REPORT}"
 TPL_TEST_ALERT="${TPL_TEST_ALERT:-$DEFAULT_TPL_TEST_ALERT}"
+
+TPL_CMD_STATUS="${TPL_CMD_STATUS:-$DEFAULT_TPL_CMD_STATUS}"
+TPL_CMD_REBOOT="${TPL_CMD_REBOOT:-$DEFAULT_TPL_CMD_REBOOT}"
+TPL_CMD_HOTSPOTSTATS_NOTINSTALLED="${TPL_CMD_HOTSPOTSTATS_NOTINSTALLED:-$DEFAULT_TPL_CMD_HOTSPOTSTATS_NOTINSTALLED}"
+TPL_CMD_HOTSPOTSTATS="${TPL_CMD_HOTSPOTSTATS:-$DEFAULT_TPL_CMD_HOTSPOTSTATS}"
+TPL_CMD_ACTIVEUSERS_EMPTY="${TPL_CMD_ACTIVEUSERS_EMPTY:-$DEFAULT_TPL_CMD_ACTIVEUSERS_EMPTY}"
+TPL_CMD_KICK_USAGE="${TPL_CMD_KICK_USAGE:-$DEFAULT_TPL_CMD_KICK_USAGE}"
+TPL_CMD_KICK_OK="${TPL_CMD_KICK_OK:-$DEFAULT_TPL_CMD_KICK_OK}"
+TPL_CMD_KICK_NONE="${TPL_CMD_KICK_NONE:-$DEFAULT_TPL_CMD_KICK_NONE}"
+TPL_CMD_ADDTIME_USAGE="${TPL_CMD_ADDTIME_USAGE:-$DEFAULT_TPL_CMD_ADDTIME_USAGE}"
+TPL_CMD_ADDTIME_CREATED="${TPL_CMD_ADDTIME_CREATED:-$DEFAULT_TPL_CMD_ADDTIME_CREATED}"
+TPL_CMD_ADDTIME_OK="${TPL_CMD_ADDTIME_OK:-$DEFAULT_TPL_CMD_ADDTIME_OK}"
+TPL_CMD_REMOVETIME_USAGE="${TPL_CMD_REMOVETIME_USAGE:-$DEFAULT_TPL_CMD_REMOVETIME_USAGE}"
+TPL_CMD_REMOVETIME_NONE="${TPL_CMD_REMOVETIME_NONE:-$DEFAULT_TPL_CMD_REMOVETIME_NONE}"
+TPL_CMD_REMOVETIME_OK="${TPL_CMD_REMOVETIME_OK:-$DEFAULT_TPL_CMD_REMOVETIME_OK}"
+TPL_CMD_BADMAC="${TPL_CMD_BADMAC:-$DEFAULT_TPL_CMD_BADMAC}"
+TPL_CMD_BADMINUTES="${TPL_CMD_BADMINUTES:-$DEFAULT_TPL_CMD_BADMINUTES}"
+TPL_CMD_UNKNOWN="${TPL_CMD_UNKNOWN:-$DEFAULT_TPL_CMD_UNKNOWN}"
+TPL_CMD_UNAUTHORIZED="${TPL_CMD_UNAUTHORIZED:-$DEFAULT_TPL_CMD_UNAUTHORIZED}"
 
 # ── Live system stats (used by the universal *ramusage* / *cpuusage* tokens) ──
 # RAM: matches busybox top's own "used" calc (total - free - buffers - cached),

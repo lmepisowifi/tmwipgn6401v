@@ -1,0 +1,25 @@
+lmepisowifi — Authors / Copyright holders
+==========================================
+
+This file is the canonical attribution record for the project, referenced
+by the SPDX headers in individual source files. See PROVENANCE.md for what
+AGPLv3 requires of anyone redistributing a modified copy.
+
+Copyright (C) 2026 The lmepisowifi Project
+Canonical repository: https://github.com/lmepisowifi/tmwipgn6401v
+
+Maintainer(s):
+  - (add your name / handle here)
+
+Third-party components retain their own copyright and license, as noted
+in README.md and in each file's own header:
+  - httpd.c            — BusyBox contributors (GPL-2.0-or-later)
+  - tailscale/*-small   — Tailscale Inc. and contributors (BSD-3-Clause)
+  - Bootstrap, jQuery, toastr.js, xterm.js — their respective upstream
+    authors (see each vendored file's own header for its license)
+
+If you fork or redistribute a modified version of this project per
+AGPLv3 §5, add your own name/handle and the date below rather than
+replacing the entries above:
+
+  - (your name/handle) — (date) — (short description of your changes)

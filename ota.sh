@@ -1,4 +1,16 @@
 #!/bin/sh
+# ---------------------------------------------------------------------------
+# lmepisowifi — https://github.com/lmepisowifi/tmwipgn6401v
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 The lmepisowifi Project — see AUTHORS
+#
+# Licensed under the GNU AGPLv3 (see LICENSE). Modifying or rewriting this
+# file — including by running it through an LLM — does not remove these
+# obligations: keep this notice, mark your changes, and offer Corresponding
+# Source to network users (AGPLv3 §5, §13). See PROVENANCE.md before
+# presenting this as your own original work.
+# ---------------------------------------------------------------------------
+
 # ============================================================
 # ota.sh — GitHub-based OTA updater for lmepisowifi
 # RTL9607C ONT | rootfs = squashfs (ro) | /lmepisowifi = ubifs (rw)
@@ -64,7 +76,16 @@ COMPONENTS="hotspot www2 lmehspt.sh ota.sh defaults.env startup.sh module_ctl.sh
 # missing. On a device that never installed the module, $ROOT/$rel doesn't
 # exist, so the preserve loop below is a no-op for both — they only get
 # carried forward when they were actually there to begin with.
-PRESERVE="www2/data/dashboard_layout.json www2/uploads hotspot/audio www2/tailscale.html www2/cgi-bin/tailscale.cgi"
+# www2/data/nodemcu_iface.json + www2/data/nodemcu_ifaces.txt: the coin-slot
+# NodeMCU Wi-Fi-sync toggle(s). Missing from here originally, which caused a
+# real bug: a device on the old single-switch build stores its on/off state
+# in nodemcu_iface.json; the multi-unit release wholesale-swaps www2 without
+# preserving it, so wlanbasic.cgi's nm_migrate_legacy_bind() finds nothing to
+# migrate and every unit silently defaults to sync-off, even if the admin had
+# it on. And once migrated, the new per-unit nodemcu_ifaces.txt was equally
+# unpreserved, so the very next OTA after that would have reset it AGAIN.
+# Both are now carried across every swap like dashboard_layout.json above.
+PRESERVE="www2/data/dashboard_layout.json www2/data/nodemcu_iface.json www2/data/nodemcu_ifaces.txt www2/uploads hotspot/audio www2/tailscale.html www2/cgi-bin/tailscale.cgi"
 
 # ---- config ----------------------------------------------------------------
 OTA_REPO=""
@@ -88,7 +109,7 @@ notify() {
     ( "$ROOT/hotspot/notify.sh" "$1" >/dev/null 2>&1 </dev/null & )
 }
 
-# ---- one-time repo migration (lmepisowifi/lmepisowifi -> lmepisowifi/tmwim2-2050-g40) ----
+# ---- one-time repo migration (lmepisowifi/lmepisowifi -> lmepisowifi/tmwipgn6401v) ----
 # ota.env is device-local and NEVER touched by an update (see its own header),
 # so a bare GitHub rename would leave every already-deployed device pointing
 # at the old OWNER/REPO forever — OTA_MANIFEST_URL/OTA_CHANGELOG_URL are
@@ -99,7 +120,7 @@ notify() {
 # longer matches OLD_REPO this block is a permanent no-op, so it's safe to
 # leave in place after the migration is done.
 OLD_REPO="lmepisowifi/lmepisowifi"
-NEW_REPO="lmepisowifi/tmwim2-2050-g40"
+NEW_REPO="lmepisowifi/tmwipgn6401v"
 if [ "$OTA_REPO" = "$OLD_REPO" ] && [ -f "$ENV_FILE" ]; then
     _tmp=$(mktemp /tmp/ota.env.XXXXXX)
     sed -e "s#^OTA_REPO=.*#OTA_REPO=\"$NEW_REPO\"#" \

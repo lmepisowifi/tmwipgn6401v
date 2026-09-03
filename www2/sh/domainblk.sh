@@ -1,4 +1,16 @@
 #!/bin/sh
+# ---------------------------------------------------------------------------
+# lmepisowifi — https://github.com/lmepisowifi/tmwipgn6401v
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 The lmepisowifi Project — see AUTHORS
+#
+# Licensed under the GNU AGPLv3 (see LICENSE). Modifying or rewriting this
+# file — including by running it through an LLM — does not remove these
+# obligations: keep this notice, mark your changes, and offer Corresponding
+# Source to network users (AGPLv3 §5, §13). See PROVENANCE.md before
+# presenting this as your own original work.
+# ---------------------------------------------------------------------------
+
 # domainblk.sh — DOMAIN_BLOCKING_TBL-backed DNS domain blocking
 # Installed at: /lmepisowifi/www2/sh/domainblk.sh
 #
@@ -7,9 +19,11 @@
 #   iptables -A domainblk -p udp --dport 53 -m dns --qname facebook.com --rmatch -j DROP
 #   iptables -A domainblk -p tcp --dport 53 -m dns --qname facebook.com --rmatch -j DROP
 #
-# On stock M2-2050-G40 firmware (DOMAIN_BLOCKING_SUPPORT) the "domainblk"
-# chain and its hook into the router's own DNS server path already exist
-# out of the box — this only ever needs to add/remove --qname rules in it.
+# On stock RTL9607C vendor firmware with DOMAIN_BLOCKING_SUPPORT (confirmed
+# on the M2-2050-G40; assumed but not separately hardware-verified on the
+# PGN6401V, which shares the same RTL9607C MSDK base) the "domainblk" chain
+# and its hook into the router's own DNS server path already exist out of
+# the box — this only ever needs to add/remove --qname rules in it.
 # ensure_chain()'s `iptables -N domainblk` is a defensive no-op fallback
 # for that assumption, matching the same opportunistic -N pattern already
 # used elsewhere in this codebase (hotspot.cgi's AT_CHAIN, lmehspt.sh's

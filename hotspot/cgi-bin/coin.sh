@@ -1,4 +1,16 @@
 #!/bin/sh
+# ---------------------------------------------------------------------------
+# lmepisowifi — https://github.com/lmepisowifi/tmwipgn6401v
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 The lmepisowifi Project — see AUTHORS
+#
+# Licensed under the GNU AGPLv3 (see LICENSE). Modifying or rewriting this
+# file — including by running it through an LLM — does not remove these
+# obligations: keep this notice, mark your changes, and offer Corresponding
+# Source to network users (AGPLv3 §5, §13). See PROVENANCE.md before
+# presenting this as your own original work.
+# ---------------------------------------------------------------------------
+
 # Insert Coin CGI backend
 # GET ?action=config           → returns enabled status & checks for resume
 # GET ?action=start            → locks slot, queues user, or returns SID
@@ -6,14 +18,99 @@
 # GET ?action=cancel&sid=SID   → tells NodeMCU to end session immediately or leaves queue
 
 [ -f /tmp/coin_config.env ] && . /tmp/coin_config.env
+[ -f /lmepisowifi/hotspot/macfix.sh ] && . /lmepisowifi/hotspot/macfix.sh
+# tpl_render + TPL_COINS_INSERTED — needed so the two bank-rescue paths
+# below (RESUME_NODEMCU_OFFLINE and poll's LIVE_ACTIVE:false branch) can
+# send the same customer-facing Telegram/Discord notification a normal
+# below-tier top-up gets from coin_result.sh, instead of that sale going
+# silently unreported just because it happened to bypass coin_result.sh.
+[ -f /lmepisowifi/hotspot/notify_templates.sh ] && . /lmepisowifi/hotspot/notify_templates.sh
+
+_unlock() { rm -f /tmp/hotspot_session.lock/pid 2>/dev/null; rmdir /tmp/hotspot_session.lock 2>/dev/null; }
+_lock() {
+    local i=0
+    while ! mkdir /tmp/hotspot_session.lock 2>/dev/null; do
+        # Only steal the lock once its holder is provably dead (see
+        # lmehspt.sh's _lock for the full explanation) - a flat 5s wait was
+        # force-breaking a live holder's lock under normal polling load and
+        # letting two writers stomp the same USERS_FILE.tmp at once.
+        if [ "$((i % 10))" -eq 0 ] && [ "$i" -gt 0 ]; then
+            if [ "$i" -ge 300 ]; then
+                rm -f /tmp/hotspot_session.lock/pid 2>/dev/null
+                rmdir /tmp/hotspot_session.lock 2>/dev/null
+            else
+                _HPID=$(cat /tmp/hotspot_session.lock/pid 2>/dev/null)
+                if [ -z "$_HPID" ] || ! kill -0 "$_HPID" 2>/dev/null; then
+                    rm -f /tmp/hotspot_session.lock/pid 2>/dev/null
+                    rmdir /tmp/hotspot_session.lock 2>/dev/null
+                fi
+            fi
+        fi
+        sleep 0.1 2>/dev/null || sleep 1
+        i=$((i + 1))
+    done
+    echo $$ > /tmp/hotspot_session.lock/pid 2>/dev/null
+    trap _unlock EXIT INT TERM
+}
+
+# --- Get client MAC from ARP — server-side, client cannot forge this ---
+CLIENT_MAC=$(awk -v ip="$REMOTE_ADDR" -v br="$HOTSPOT_BR" \
+    '$1==ip && $6==br {print tolower($4); exit}' /proc/net/arp 2>/dev/null)
+
+# Verify/refresh this browser's fingerprint cookie and, if it was last seen
+# on a different MAC (a randomized-MAC reconnect), migrate its banked
+# below-minimum-tier coin balance (plus session/users rows) onto the
+# current MAC before any CLIENT_MAC-keyed lookup below runs — same call
+# macfix.sh's other callers (status.sh/login.sh/logout.sh) already make.
+# _lock/_unlock just above exist to satisfy mf_reconcile()'s own locking;
+# this file has no SESSION_FILE/USERS_FILE of its own to protect.
+mf_reconcile
 
 printf 'Content-Type: application/json\r\n'
 printf 'Cache-Control: no-cache, no-store\r\n'
+[ -n "$MF_COOKIE_HEADER" ] && printf '%s\r\n' "$MF_COOKIE_HEADER"
 printf '\r\n'
 
 _err() { printf '{"error":"%s"}\n' "$1"; exit 0; }
 _ok()  { printf '%s\n' "$1";           exit 0; }
 _md5() { printf '%s' "$1" | md5sum | awk '{print $1}'; }
+
+# ── Below-minimum-tier coin banking ───────────────────────────────────────────
+# Same physical file as coin_result.sh's COIN_BANK_FILE — macfix.sh (sourced
+# above) already defines its path once as MACFIX_BANK_FILE, so it's aliased
+# here rather than re-hardcoded a third time. coin_result.sh remains the
+# only writer for a NORMAL finalize; this CGI mostly only reads it, to fold
+# a customer's already-banked balance into the amount/minutes it hands back
+# for start/resume/poll — otherwise a returning customer who previously
+# fell short of a rate tier sees the modal reset to ₱0/insert-coins-to-begin
+# instead of showing what they already have sitting there. The one
+# exception is the RESUME_NODEMCU_OFFLINE path below, which writes here to
+# rescue a verified-but-now-orphaned amount instead of discarding it.
+COIN_BANK_FILE="${MACFIX_BANK_FILE:-/lmepisowifi/hotspot_data/coin_bank.txt}"
+_bank_get() {
+    [ -f "$COIN_BANK_FILE" ] || { printf '0'; return; }
+    _bg_v=$($BB awk -v m="$1" '$1==m{print $2; exit}' "$COIN_BANK_FILE")
+    case "$_bg_v" in ''|*[!0-9]*) _bg_v=0 ;; esac
+    printf '%s' "$_bg_v"
+}
+BANKED=$(_bank_get "$CLIENT_MAC")
+
+# Adds (not replaces) $2 pesos to $1 (MAC)'s banked balance — same
+# exclude-then-recommit idiom as coin_result.sh's own _bank_set, kept
+# additive here rather than mirroring its "replace" signature since this
+# caller is always folding an amount IN, never resetting a balance. Only
+# used by the RESUME_NODEMCU_OFFLINE rescue below. Call inside _lock.
+_bank_add() {
+    _ba_mac="$1"; _ba_add="${2:-0}"
+    case "$_ba_add" in ''|*[!0-9]*) _ba_add=0 ;; esac
+    [ "$_ba_add" -gt 0 ] || return 0
+    $BB mkdir -p /lmepisowifi/hotspot_data 2>/dev/null
+    _ba_before=$(_bank_get "$_ba_mac")
+    _ba_after=$(( _ba_before + _ba_add ))
+    $BB grep -v "^${_ba_mac} " "$COIN_BANK_FILE" > "${COIN_BANK_FILE}.tmp" 2>/dev/null
+    printf '%s %s\n' "$_ba_mac" "$_ba_after" >> "${COIN_BANK_FILE}.tmp"
+    $BB mv "${COIN_BANK_FILE}.tmp" "$COIN_BANK_FILE"
+}
 
 # ── Multi-NodeMCU node registry ──────────────────────────────────────────────
 # Node #1 is always the primary (NODEMCU_IP/MAC/PORT/COIN_PSK, sourced above
@@ -154,9 +251,8 @@ ACTION=$(get_qs "action")
 NODE_ID=$(get_qs "nodemcu")
 case "$NODE_ID" in ''|*[!0-9]*) NODE_ID=1 ;; esac
 
-# --- Get client MAC from ARP — server-side, client cannot forge this ---
-CLIENT_MAC=$(awk -v ip="$REMOTE_ADDR" -v br="$HOTSPOT_BR" \
-    '$1==ip && $6==br {print tolower($4); exit}' /proc/net/arp 2>/dev/null)
+# CLIENT_MAC was already resolved above (before headers, so mf_reconcile()
+# could run and possibly emit a Set-Cookie) — not recomputed here.
 
 # config action works regardless of enabled state so the JS can show/hide the button
 if [ "$ACTION" = "config" ]; then
@@ -204,10 +300,27 @@ if [ "$ACTION" = "config" ]; then
         fi
     fi
 
-    if [ -f /tmp/coin_enabled ]; then
+    # Same "don't disrupt an in-flight session" logic as the start action: only
+    # report the coin feature as unavailable over a missing internet
+    # connection when this client has no active/pending session of its own to
+    # resume — otherwise the frontend's checkCoinEnabled() would treat a
+    # real, already-paid session as nonexistent (enabled:false skips its
+    # resume/pending handling entirely) during a brief outage.
+    NO_INET_BLOCK="false"
+    if [ "${COIN_REQUIRE_INTERNET:-0}" = "1" ] && [ ! -f "${INTERNET_UP_FILE:-/tmp/internet_up}" ] \
+        && [ "$RESUME_FLAG" != "true" ] && [ "$PENDING_FLAG" != "true" ]; then
+        NO_INET_BLOCK="true"
+    fi
+
+    # Voucher input master switch — surfaced here (rather than a separate
+    # endpoint) since this is the config poll the portal already hits on
+    # load and after every session-state change.
+    VOUCHER_ON="true"; [ "${VOUCHER_ENABLED:-1}" = "0" ] && VOUCHER_ON="false"
+
+    if [ -f /tmp/coin_enabled ] && [ "$NO_INET_BLOCK" != "true" ]; then
         SUSPENDED_FLAG="false"
         COOLDOWN_REMAINING=0
-        if [ -n "$CLIENT_MAC" ] && [ -f /tmp/coin_strikes.txt ]; then
+        if [ "${COIN_STRIKE_ENABLED:-1}" = "1" ] && [ -n "$CLIENT_MAC" ] && [ -f /tmp/coin_strikes.txt ]; then
             SUSP_DATA=$($BB grep "^$CLIENT_MAC " /tmp/coin_strikes.txt 2>/dev/null)
             if [ -n "$SUSP_DATA" ]; then
                 SUSP_STRIKES=$(printf '%s' "$SUSP_DATA" | $BB awk '{print $2}')
@@ -224,12 +337,12 @@ if [ "$ACTION" = "config" ]; then
                 fi
             fi
         fi
-        _ok "{\"enabled\":true,\"timeout\":${COIN_TIMEOUT},\"rates\":\"${COIN_RATES}\",\"resume\":${RESUME_FLAG},\"resume_nodemcu\":${RESUME_NODE},\"pending\":${PENDING_FLAG},\"suspended\":${SUSPENDED_FLAG},\"cooldown_remaining\":${COOLDOWN_REMAINING},\"nodemcus\":$(_node_list_json)}"
+        _ok "{\"enabled\":true,\"timeout\":${COIN_TIMEOUT},\"rates\":\"${COIN_RATES}\",\"resume\":${RESUME_FLAG},\"resume_nodemcu\":${RESUME_NODE},\"pending\":${PENDING_FLAG},\"suspended\":${SUSPENDED_FLAG},\"cooldown_remaining\":${COOLDOWN_REMAINING},\"nodemcus\":$(_node_list_json),\"voucher_enabled\":${VOUCHER_ON}}"
     else
         # Coin acceptor toggled off. Still expose the configured rates so the
         # portal can keep showing the WiFi Rates button independently of the
         # coin toggle (nodemcus/resume/etc. are coin-only and stay omitted).
-        _ok "{\"enabled\":false,\"rates\":\"${COIN_RATES}\"}"
+        _ok "{\"enabled\":false,\"rates\":\"${COIN_RATES}\",\"voucher_enabled\":${VOUCHER_ON}}"
     fi
 fi
 
@@ -263,20 +376,22 @@ start)
     touch /tmp/coin_strikes.txt
 
     # --- DoS PREVENTION 3: ANTI-GRIEFING STRIKE SYSTEM ---
-    STRIKE_DATA=$($BB grep "^$CLIENT_MAC " /tmp/coin_strikes.txt 2>/dev/null)
-    if [ -n "$STRIKE_DATA" ]; then
-        STRIKES=$(printf '%s' "$STRIKE_DATA" | $BB awk '{print $2}')
-        LAST_STRIKE=$(printf '%s' "$STRIKE_DATA" | $BB awk '{print $3}')
-        _ST=${COIN_STRIKE_THRESHOLD:-3}
-        _CD=${COIN_COOLDOWN:-300}
-        if [ "$STRIKES" -ge "$_ST" ]; then
-            _SINCE=$(( NOW - LAST_STRIKE ))
-            if [ "$_SINCE" -lt "$_CD" ]; then
-                _WAIT_MINS=$(( (_CD - _SINCE + 59) / 60 ))
-                _err "Temporarily suspended. Please wait ${_WAIT_MINS} more minute(s)."
-            else
-                $BB grep -v "^$CLIENT_MAC " /tmp/coin_strikes.txt > /tmp/cs.tmp 2>/dev/null
-                $BB mv /tmp/cs.tmp /tmp/coin_strikes.txt
+    if [ "${COIN_STRIKE_ENABLED:-1}" = "1" ]; then
+        STRIKE_DATA=$($BB grep "^$CLIENT_MAC " /tmp/coin_strikes.txt 2>/dev/null)
+        if [ -n "$STRIKE_DATA" ]; then
+            STRIKES=$(printf '%s' "$STRIKE_DATA" | $BB awk '{print $2}')
+            LAST_STRIKE=$(printf '%s' "$STRIKE_DATA" | $BB awk '{print $3}')
+            _ST=${COIN_STRIKE_THRESHOLD:-3}
+            _CD=${COIN_COOLDOWN:-300}
+            if [ "$STRIKES" -ge "$_ST" ]; then
+                _SINCE=$(( NOW - LAST_STRIKE ))
+                if [ "$_SINCE" -lt "$_CD" ]; then
+                    _WAIT_MINS=$(( (_CD - _SINCE + 59) / 60 ))
+                    _err "Temporarily suspended. Please wait ${_WAIT_MINS} more minute(s)."
+                else
+                    $BB grep -v "^$CLIENT_MAC " /tmp/coin_strikes.txt > /tmp/cs.tmp 2>/dev/null
+                    $BB mv /tmp/cs.tmp /tmp/coin_strikes.txt
+                fi
             fi
         fi
     fi
@@ -343,7 +458,16 @@ start)
                     R_LIVE=$(wget -q -T 2 -O - \
                         "http://${_N_IP}:${_N_PORT}/status?sid=${LOCK_SID}&sig=${R_POLL_SIG}" \
                         2>/dev/null)
+                    R_ACTIVE=1
                     if [ -n "$R_LIVE" ]; then
+                        # NodeMCU now answers a sid it doesn't recognize with a
+                        # signed "active":false 200 (see handle_coin_status in
+                        # the firmware) instead of an unsigned 404 — a 404's
+                        # body never reached us anyway (wget only reads a 2xx
+                        # body), so this is what actually lets a session
+                        # NodeMCU has ALREADY correctly finished be told apart
+                        # from one it genuinely can't be reached for at all.
+                        case "$R_LIVE" in *'"active":false'*) R_ACTIVE=0 ;; esac
                         R_RAW_AMT=$(printf '%s' "$R_LIVE" | grep -o '"amount":[0-9]*' | grep -o '[0-9]*$')
                         R_RAW_SIG=$(printf '%s' "$R_LIVE" | grep -o '"sig":"[^"]*"' | awk -F'"' '{print $4}')
                         R_EXP_SIG=$(_md5 "${_N_PSK}:${LOCK_SID}:${R_RAW_AMT}:status")
@@ -355,14 +479,92 @@ start)
                         fi
                     fi
 
-                    if [ "$R_VERIFIED" -eq 1 ]; then
-                        RESUME_MINUTES=$(_calc_time "$RESUME_AMOUNT")
-                        _ok "{\"sid\":\"$LOCK_SID\",\"timeout\":$COIN_TIMEOUT,\"remaining\":$RESUME_REMAINING,\"amount\":$RESUME_AMOUNT,\"minutes\":$RESUME_MINUTES,\"resumed\":true}"
+                    if [ "$R_VERIFIED" -eq 1 ] && [ "$R_ACTIVE" -eq 1 ]; then
+                        # Fold in BANKED same as the fresh-start and poll
+                        # responses do — RESUME_AMOUNT is only this live
+                        # session's own coins, so without this a reload
+                        # mid-session would show a lower total than the very
+                        # next poll response a second later.
+                        RESUME_TOTAL=$(( BANKED + RESUME_AMOUNT ))
+                        RESUME_MINUTES=$(_calc_time "$RESUME_TOTAL")
+                        _ok "{\"sid\":\"$LOCK_SID\",\"timeout\":$COIN_TIMEOUT,\"remaining\":$RESUME_REMAINING,\"amount\":$RESUME_TOTAL,\"minutes\":$RESUME_MINUTES,\"resumed\":true}"
                     fi
-                    if [ -n "$R_LIVE" ]; then
+
+                    # Don't just drop this session's coins on the floor: the
+                    # last poll that DID get a PSK-verified reply from
+                    # NodeMCU (before it went quiet, or before it confirmed
+                    # the session is over) already wrote its checked amount
+                    # to .amt, so we know FOR A FACT — it's signed, not
+                    # guessed — that this many pesos were really inserted
+                    # for this SID. Fold that known-good amount into the
+                    # customer's coin bank so it survives as spendable
+                    # balance instead of vanishing, whichever of the three
+                    # ways below we ended up here.
+                    #
+                    # Also stamp a .result marker for this SID so that IF
+                    # NodeMCU turns out not to be truly dead and later
+                    # replays this exact session — either a normal
+                    # end-of-session POST or a flash-crash recovery replay
+                    # — coin_result.sh's existing duplicate-SID guard
+                    # (RESULT_PATH, checked before either grant path runs)
+                    # recognizes it as already handled and reports
+                    # "duplicate" instead of granting the same coins again
+                    # on top of the bank credit we just gave. Skipped
+                    # entirely when there's nothing banked (R_STALE_AMT=0)
+                    # — a zero-amount replay is already a no-op downstream.
+                    R_STALE_AMT=$(cat "/tmp/coin_sessions/${LOCK_SID}.amt" 2>/dev/null)
+                    case "$R_STALE_AMT" in ''|*[!0-9]*) R_STALE_AMT=0 ;; esac
+                    if [ "$R_STALE_AMT" -gt 0 ]; then
+                        _lock
+                        # This exact SID can also be rescued from the poll
+                        # action's own LIVE_ACTIVE:false branch (NodeMCU
+                        # coming back online after its reboot and reporting
+                        # it doesn't know this sid), or genuinely finalized
+                        # by NodeMCU's own delayed-but-real end-of-session
+                        # POST landing right now. Both paths — and this one
+                        # — write the SAME .result marker, but only AFTER
+                        # doing their own _bank_add, so without this check
+                        # two of them racing each other bank the same coins
+                        # twice: whichever gets here first correctly banks
+                        # R_STALE_AMT, and without re-checking, whichever
+                        # gets here second would bank the identical amount
+                        # again on top. Checking-and-claiming it here, inside
+                        # the same _lock every one of those paths shares,
+                        # makes this a single atomic "is it still mine to
+                        # bank" test instead of a check then an act two
+                        # requests can both pass through.
+                        if [ -f "/tmp/coin_sessions/${LOCK_SID}.result" ]; then
+                            _unlock
+                        else
+                            _bank_add "$CLIENT_MAC" "$R_STALE_AMT"
+                            printf '%s 0\n' "$R_STALE_AMT" > "/tmp/coin_sessions/${LOCK_SID}.result"
+                            _unlock
+                            # This rescue bypasses coin_result.sh entirely, which is
+                            # normally the only place a physically-inserted coin gets
+                            # counted as income (at time of insertion, regardless of
+                            # whether it crosses a rate tier) and reported to
+                            # Telegram/Discord. Without this, a coin rescued here
+                            # would still convert to time correctly once later spent
+                            # from the bank, but would never show up in income.sh's
+                            # daily/monthly/yearly totals or send a notification.
+                            # Record and report it now, same event key coin_result.sh
+                            # uses for an ordinary below-tier top-up, so it isn't lost
+                            # and existing per-event mute settings still apply.
+                            /lmepisowifi/hotspot/income.sh add "$R_STALE_AMT" >/dev/null 2>&1
+                            _R_MSG=$(tpl_render "$TPL_COINS_INSERTED" insertcoinamt "$R_STALE_AMT" mac "$CLIENT_MAC")
+                            ( /lmepisowifi/hotspot/notify.sh "$_R_MSG" "" coins_inserted >/dev/null 2>&1 </dev/null & )
+                        fi
+                    fi
+
+                    if [ "$R_VERIFIED" -eq 1 ] && [ "$R_ACTIVE" -eq 0 ]; then
+                        # NodeMCU AUTHORITATIVELY confirmed the session is
+                        # over — not an error, just a page reload racing a
+                        # session that finished normally. No alert.
+                        :
+                    elif [ -n "$R_LIVE" ]; then
                         _coin_alert "RESUME_SIG_MISMATCH" "SID=${LOCK_SID} response received but HMAC invalid — PSK mismatch or tampered reply"
                     else
-                        _coin_alert "RESUME_NODEMCU_OFFLINE" "SID=${LOCK_SID} no response from NodeMCU (node ${NODE_ID}) at ${_N_IP}:${_N_PORT} during resume check — stale lock dropped"
+                        _coin_alert "RESUME_NODEMCU_OFFLINE" "SID=${LOCK_SID} no response from NodeMCU (node ${NODE_ID}) at ${_N_IP}:${_N_PORT} during resume check — stale lock dropped, ₱${R_STALE_AMT} banked to ${CLIENT_MAC}"
                     fi
                     rm -f "$LOCK_FILE" "/tmp/coin_sessions/${LOCK_SID}" \
                         "/tmp/coin_sessions/${LOCK_SID}.miss" "/tmp/coin_sessions/${LOCK_SID}.amt" \
@@ -378,6 +580,16 @@ start)
         fi
     fi
 
+    # If we get here, this request isn't resuming/pending/cancelling an
+    # existing lock of ours (those branches above all _ok/_err and exit
+    # before reaching this point) — it's about to open a brand new session
+    # or queue for one. Gate that specifically on internet connectivity so
+    # an outage never interrupts coins someone already has in flight, only
+    # blocks new ones from starting.
+    if [ "${COIN_REQUIRE_INTERNET:-0}" = "1" ] && [ ! -f "${INTERNET_UP_FILE:-/tmp/internet_up}" ]; then
+        _err "No internet connection. Coin insertion is temporarily unavailable."
+    fi
+
     # 3. Check Queue & Determine Flow
     if [ "$LOCKED" -eq 0 ]; then
         # Check if anyone is waiting in line ahead of us
@@ -388,6 +600,15 @@ start)
     fi
 
     if [ "$LOCKED" -eq 1 ]; then
+        # Waiting-line feature master switch. When off, don't put this
+        # client on hold at all — just turn them away so they can try the
+        # slot again later themselves instead of sitting in an unattended
+        # queue. Nothing is written to QFILE in this branch, so it simply
+        # never accumulates entries while the switch is off.
+        if [ "${COIN_QUEUE_ENABLED:-1}" = "0" ]; then
+            _err "Coin slot is in use, try again later."
+        fi
+
         # Enqueue user / Refresh their spot in line
         $BB grep -v "^$CLIENT_MAC " "$QFILE" > "${QFILE}.tmp" 2>/dev/null
         echo "$CLIENT_MAC $NOW" >> "${QFILE}.tmp"
@@ -446,7 +667,11 @@ start)
         # Success! Upgrade lock to ACTIVE
         printf '%s %s %s %s\n' "$SID" "$NOW" "$CLIENT_MAC" "ACTIVE" > "$LOCK_FILE"
         
-        _ok "{\"sid\":\"$SID\",\"timeout\":$COIN_TIMEOUT}"
+        # No coins have landed on this brand-new session yet, so the only
+        # money in play right now is whatever's already banked (BANKED,
+        # above) — report it so the modal opens showing the customer's real
+        # available balance instead of resetting to ₱0.
+        _ok "{\"sid\":\"$SID\",\"timeout\":$COIN_TIMEOUT,\"amount\":$BANKED,\"minutes\":$(_calc_time "$BANKED")}"
     else
         _coin_alert "NODEMCU_OFFLINE" "SID=${SID} no response from NodeMCU (node ${NODE_ID}) at ${_N_IP}:${_N_PORT}/start"
         rm -f "/tmp/coin_sessions/${SID}" "$LOCK_FILE"
@@ -500,6 +725,29 @@ poll)
     AMT_PATH="${SESSION_PATH}.amt"
     REM_PATH="${SESSION_PATH}.rem"
 
+    # Once the customer has already clicked Done/Cancel (the node's lock
+    # flipped to CANCELLING — see the cancel action), there is no reason to
+    # make the frontend's "Adding time." spinner sit through the FULL
+    # RECONNECT_GRACE window (5 minutes by default) meant for an ACTIVE
+    # session that might still want to insert more coins once the slot
+    # reconnects. The customer is done inserting coins either way at that
+    # point — measured from the lock's own CANCELLING timestamp (set the
+    # instant Done was clicked) rather than SINCE_SEEN below, since a
+    # session that had been idle for a while before Done was clicked would
+    # otherwise start this countdown already most of the way elapsed.
+    LOCK_FILE_FOR_NODE="/tmp/coin_lock_${SESSION_NODE}"
+    CANCEL_GIVEUP=0
+    if [ -f "$LOCK_FILE_FOR_NODE" ]; then
+        _LF_SID=$(awk '{print $1}' "$LOCK_FILE_FOR_NODE")
+        _LF_TIME=$(awk '{print $2}' "$LOCK_FILE_FOR_NODE")
+        _LF_STATE=$(awk '{print $4}' "$LOCK_FILE_FOR_NODE")
+        if [ "$_LF_SID" = "$SID" ] && [ "$_LF_STATE" = "CANCELLING" ]; then
+            case "$_LF_TIME" in ''|*[!0-9]*) _LF_TIME=$NOW ;; esac
+            CANCEL_SINCE=$(( NOW - _LF_TIME ))
+            [ "$CANCEL_SINCE" -gt "${COIN_CANCEL_GIVEUP:-15}" ] && CANCEL_GIVEUP=1
+        fi
+    fi
+
     # Fallback estimate in case NodeMCU doesn't answer this particular poll —
     # overwritten below with NodeMCU's own authoritative value when it does.
     REMAINING=$(( COIN_TIMEOUT - (NOW - CREATED_AT) ))
@@ -511,10 +759,34 @@ poll)
     # answering polls. We now also tolerate a whole RECONNECT_GRACE window of
     # silence on top of that so a mid-insert dropout doesn't nuke the coins the
     # customer already dropped — only give up once even the reconnect grace has
-    # elapsed, and even then hand back the preserved amount rather than zero.
-    if [ "$SINCE_SEEN" -gt $(( COIN_TIMEOUT + 25 + RECONNECT_GRACE )) ]; then
+    # elapsed (or the faster CANCEL_GIVEUP above already fired), and even then
+    # hand back the preserved amount rather than zero.
+    if [ "$CANCEL_GIVEUP" -eq 1 ] || [ "$SINCE_SEEN" -gt $(( COIN_TIMEOUT + 25 + RECONNECT_GRACE )) ]; then
         GIVEUP_AMT=$(cat "$AMT_PATH" 2>/dev/null); GIVEUP_AMT=${GIVEUP_AMT:-0}
-        rm -f "$SESSION_PATH" "$MISS_PATH" "$AMT_PATH" "$REM_PATH" "/tmp/coin_lock_${SESSION_NODE}"
+        if [ "$GIVEUP_AMT" -gt 0 ]; then
+            _lock
+            # Same three-way race as the other two rescue paths (this SID's
+            # own genuine-but-delayed NodeMCU POST, or a concurrent request
+            # hitting one of the other rescue branches) — claim it via the
+            # same .result marker under the same lock before banking, or a
+            # give-up racing either of those would credit these coins twice.
+            if [ -f "$RESULT_PATH" ]; then
+                _unlock
+            else
+                # Previously this branch only ever computed a throwaway
+                # preview number for the toast message and discarded the
+                # actual coins — a customer whose NodeMCU never reconnected
+                # at all lost their money outright once this fired. Bank it
+                # for real, same as the other two rescue paths.
+                _bank_add "$SESSION_MAC" "$GIVEUP_AMT"
+                printf '%s 0\n' "$GIVEUP_AMT" > "$RESULT_PATH"
+                _unlock
+                /lmepisowifi/hotspot/income.sh add "$GIVEUP_AMT" >/dev/null 2>&1
+                _G_MSG=$(tpl_render "$TPL_COINS_INSERTED" insertcoinamt "$GIVEUP_AMT" mac "$SESSION_MAC")
+                ( /lmepisowifi/hotspot/notify.sh "$_G_MSG" "" coins_inserted >/dev/null 2>&1 </dev/null & )
+            fi
+        fi
+        rm -f "$SESSION_PATH" "$MISS_PATH" "$AMT_PATH" "$REM_PATH" "$LOCK_FILE_FOR_NODE"
         _clear_pending "$SID"   # session abandoned → drop the non-volatile mirror
         _ok "{\"status\":\"expired\",\"amount\":${GIVEUP_AMT},\"minutes\":$(_calc_time "$GIVEUP_AMT")}"
     fi
@@ -528,13 +800,67 @@ poll)
     LIVE_AMOUNT=$(cat "$AMT_PATH" 2>/dev/null)
     LIVE_AMOUNT=${LIVE_AMOUNT:-0}
     LIVE_OK=0
+    LIVE_ACTIVE=1
     if [ -n "$LIVE" ]; then
+        # NodeMCU answers a sid it doesn't recognize with a signed
+        # "active":false 200 instead of an unsigned 404 (see
+        # handle_coin_status in the firmware) — catch that BEFORE touching
+        # AMT_PATH below, since its "amount":0 means "I have no session",
+        # never "a live session sitting at zero coins".
+        case "$LIVE" in *'"active":false'*) LIVE_ACTIVE=0 ;; esac
         RAW_AMT=$(printf '%s' "$LIVE" | grep -o '"amount":[0-9]*' | grep -o '[0-9]*$')
         RAW_SIG=$(printf '%s' "$LIVE" | grep -o '"sig":"[^"]*"' | awk -F'"' '{print $4}')
         EXP_SIG=$(_md5 "${_N_PSK}:${SID}:${RAW_AMT}:status")
         # Only trust the amount if NodeMCU signed it with the PSK
         if [ -n "$RAW_SIG" ] && [ "$RAW_SIG" = "$EXP_SIG" ]; then
             LIVE_OK=1
+            if [ "$LIVE_ACTIVE" -eq 0 ]; then
+                # NodeMCU has AUTHORITATIVELY confirmed this sid is no
+                # longer live there — a normal timeout/Done/Cancel already
+                # finalized it, or it rebooted. Bank whatever we last
+                # verified for it (same rescue the resume-check's offline
+                # path uses) and stamp the same .result duplicate-guard, so
+                # a late-arriving real grant for this exact sid (a normal
+                # end POST that got delayed, or a flash-crash recovery
+                # replay) becomes a no-op instead of a double credit.
+                # Resolves in one round trip instead of waiting out 4
+                # misses and then the full RECONNECT_GRACE window to reach
+                # the same conclusion the slow way.
+                if [ "$LIVE_AMOUNT" -gt 0 ]; then
+                    _lock
+                    # Same sid can also be rescued from the start action's
+                    # own resume-check (a client re-clicking "Insert Coin"
+                    # while this exact reboot-triggered poll is in flight),
+                    # or genuinely finalized by NodeMCU's own delayed-but-
+                    # real end-of-session POST landing right now. All three
+                    # write this same .result marker, but only AFTER doing
+                    # their own _bank_add — so without re-checking here,
+                    # whichever of them loses the race would bank the same
+                    # coins again on top of whichever won it. Checking under
+                    # the same _lock every one of those paths shares makes
+                    # this a single atomic "is it still mine to bank" test.
+                    if [ -f "$RESULT_PATH" ]; then
+                        _unlock
+                        _R_AMOUNT=$(awk '{print $1}' "$RESULT_PATH")
+                        _R_MINUTES=$(awk '{print $2}' "$RESULT_PATH")
+                        rm -f "$SESSION_PATH" "$MISS_PATH" "$AMT_PATH" "$REM_PATH" "/tmp/coin_lock_${SESSION_NODE}"
+                        _clear_pending "$SID"
+                        _ok "{\"status\":\"complete\",\"amount\":${_R_AMOUNT:-0},\"minutes\":${_R_MINUTES:-0}}"
+                    fi
+                    _bank_add "$SESSION_MAC" "$LIVE_AMOUNT"
+                    printf '%s 0\n' "$LIVE_AMOUNT" > "$RESULT_PATH"
+                    _unlock
+                    # Same income/notification gap as the resume-check
+                    # rescue above: this bypasses coin_result.sh, so record
+                    # and report it here or it never gets counted or seen.
+                    /lmepisowifi/hotspot/income.sh add "$LIVE_AMOUNT" >/dev/null 2>&1
+                    _L_MSG=$(tpl_render "$TPL_COINS_INSERTED" insertcoinamt "$LIVE_AMOUNT" mac "$SESSION_MAC")
+                    ( /lmepisowifi/hotspot/notify.sh "$_L_MSG" "" coins_inserted >/dev/null 2>&1 </dev/null & )
+                fi
+                rm -f "$SESSION_PATH" "$MISS_PATH" "$AMT_PATH" "$REM_PATH" "/tmp/coin_lock_${SESSION_NODE}"
+                _clear_pending "$SID"
+                _ok "{\"status\":\"expired\",\"amount\":${LIVE_AMOUNT},\"minutes\":$(_calc_time "$LIVE_AMOUNT")}"
+            fi
             PREV_AMOUNT=$LIVE_AMOUNT          # what we had before this poll
             LIVE_AMOUNT=${RAW_AMT:-0}
             echo "$LIVE_AMOUNT" > "$AMT_PATH" 2>/dev/null
@@ -568,6 +894,14 @@ poll)
             _coin_alert "POLL_SIG_MISMATCH" "SID=${SID} poll response received but HMAC invalid (got=${RAW_SIG} want=${EXP_SIG}) — PSK mismatch or tampered reply"
         fi
     fi
+
+    # LIVE_AMOUNT is only this session's own coins — fold in whatever's
+    # already banked (BANKED, resolved up top) so the amount/minutes handed
+    # back match what coin_result.sh will actually grant at session end (it
+    # folds the same BANKED balance into its own tier calculation), instead
+    # of the modal showing just the fraction that arrived in this session.
+    TOTAL_AMOUNT=$(( BANKED + LIVE_AMOUNT ))
+
     if [ "$LIVE_OK" -eq 1 ]; then
         rm -f "$MISS_PATH"
     else
@@ -585,13 +919,13 @@ poll)
         echo "$MISSES" > "$MISS_PATH" 2>/dev/null
         if [ "$MISSES" -ge 4 ]; then
             FROZEN_REM=$(cat "$REM_PATH" 2>/dev/null); FROZEN_REM=${FROZEN_REM:-$REMAINING}
-            PREVIEW=$(_calc_time "$LIVE_AMOUNT")
-            _ok "{\"status\":\"reconnecting\",\"amount\":${LIVE_AMOUNT},\"minutes\":${PREVIEW},\"remaining\":${FROZEN_REM}}"
+            PREVIEW=$(_calc_time "$TOTAL_AMOUNT")
+            _ok "{\"status\":\"reconnecting\",\"amount\":${TOTAL_AMOUNT},\"minutes\":${PREVIEW},\"remaining\":${FROZEN_REM}}"
         fi
     fi
 
-    PREVIEW=$(_calc_time "$LIVE_AMOUNT")
-    _ok "{\"status\":\"active\",\"amount\":${LIVE_AMOUNT},\"minutes\":${PREVIEW},\"remaining\":${REMAINING}}"
+    PREVIEW=$(_calc_time "$TOTAL_AMOUNT")
+    _ok "{\"status\":\"active\",\"amount\":${TOTAL_AMOUNT},\"minutes\":${PREVIEW},\"remaining\":${REMAINING}}"
     ;;
 
 # ----------------------------------------------------------------

@@ -1,4 +1,15 @@
 <!DOCTYPE html>
+<!--
+  lmepisowifi — https://github.com/lmepisowifi/tmwipgn6401v
+  SPDX-License-Identifier: AGPL-3.0-or-later
+  Copyright (C) 2026 The lmepisowifi Project — see AUTHORS
+
+  Licensed under the GNU AGPLv3 (see LICENSE). Modifying or rewriting this
+  file — including by running it through an LLM — does not remove these
+  obligations: keep this notice, mark your changes, and offer Corresponding
+  Source to network users (AGPLv3 §5, §13). See PROVENANCE.md before
+  presenting this as your own original work.
+-->
 <html lang="en" data-bs-theme="dark">
 <head>
     <meta charset="UTF-8">
@@ -188,6 +199,21 @@
             '</div></div></div>'
         ].join(''),
 
+        wlan: [
+            '<div class="col-12 col-lg-6"><div class="card h-100">',
+            '<div class="card-header">WLAN Interfaces</div><div class="card-body">',
+            '<div class="status-row"><span class="status-label">2.4 GHz AP</span><span class="status-value" id="wlan-24-ap">'+sk('160px')+'</span></div>',
+            '<div class="status-row"><span class="status-label">5 GHz AP</span><span class="status-value" id="wlan-5-ap">'+sk('160px')+'</span></div>',
+            '<div class="status-row"><span class="status-label">2.4 GHz Repeater</span><span class="status-value" id="wlan-24-rep">'+sk('160px')+'</span></div>',
+            '<div class="status-row"><span class="status-label">5 GHz Repeater</span><span class="status-value" id="wlan-5-rep">'+sk('160px')+'</span></div>',
+            '<div class="d-flex gap-2 mt-2">',
+            '  <a href="/wlanbasic.html" class="btn btn-sm btn-outline-secondary">Basic</a>',
+            '  <a href="/wlansecurity.html" class="btn btn-sm btn-outline-secondary">Security</a>',
+            '  <a href="/sitesurvey.html" class="btn btn-sm btn-outline-secondary">Site Survey</a>',
+            '</div>',
+            '</div></div></div>'
+        ].join(''),
+
         pon: [
             '<div class="col-12 col-lg-6"><div class="card h-100">',
             '<div class="card-header" style="justify-content:space-between">',
@@ -232,11 +258,11 @@
     };
 
     var CARD_LABELS = {
-        system: 'System', network: 'Network', lan: 'LAN Ports',
+        system: 'System', network: 'Network', lan: 'LAN Ports', wlan: 'WLAN Interfaces',
         pon: 'PON Transceiver', wan: 'WAN Profiles', hotspot: 'Hotspot Statistics'
     };
 
-    var DEFAULT_ORDER = ['system','network','lan','pon','wan','hotspot'];
+    var DEFAULT_ORDER = ['system','network','lan','wlan','pon','wan','hotspot'];
 
     // ── Layout persistence ───────────────────────────────────��────────────────
     // Layout is fetched from the server once at boot so all browsers/devices
@@ -339,6 +365,62 @@
             .catch(function(){ set('lan-p0','—'); set('lan-p1','—'); set('lan-p2','—'); set('lan-p3','—'); });
     }
 
+    // WLAN encrypt code -> short label (same table as wlansecurity.html's
+    // ENC_LABELS / sitesurvey.html's mapEnc). `wep` overrides encrypt since
+    // WEP is a separate MIB toggle, not part of this bitmask.
+    var WLAN_ENC_SHORT = {0:'Open', 2:'WPA', 4:'WPA2', 6:'WPA/WPA2', 16:'WPA3', 20:'WPA2/WPA3'};
+
+    function _wlanApBadge(elId, iface) {
+        if (!iface) { set(elId, '—'); return; }
+        var up = iface.disabled === 0;
+        var badge = up
+            ? '<span class="wan-status-badge wan-up"><span class="dot"></span>Up</span>'
+            : '<span class="wan-status-badge wan-other"><span class="dot"></span>Off</span>';
+        if (!up) { set(elId, badge); return; }
+        var secLbl = iface.wep === 1 ? 'WEP' : (WLAN_ENC_SHORT[iface.encrypt] || 'Open');
+        set(elId, badge + '<span class="wan-iface-detail">&nbsp;'+esc(iface.ssid||'—')+' &middot; '+secLbl+'</span>');
+    }
+
+    function _wlanRepBadge(elId, vxdIface, band) {
+        if (!vxdIface || vxdIface.disabled !== 0) { set(elId, '<span class="wan-status-badge wan-other"><span class="dot"></span>Off</span>'); return; }
+        // VXD enabled — fetch its live connection/auth status
+        fetch('/cgi-bin/wlanbasic.cgi?band=' + band + '&action=vxd_status', {cache:'no-store'})
+            .then(function(r){ return r.json(); })
+            .then(function(vs){
+                if (vs.connected) {
+                    var authOk = vs.authFinished === 1 && vs.authStatus === 0;
+                    var badge = '<span class="wan-status-badge wan-up"><span class="dot"></span>Connected</span>';
+                    var detail = esc(vs.ssid||'—') + ' &middot; RSSI ' + esc(vs.rssi) + '/100';
+                    if (!authOk) detail += ' &middot; <span style="color:#ef9a9a">'+esc(vs.authText)+'</span>';
+                    set(elId, badge + '<span class="wan-iface-detail">&nbsp;'+detail+'</span>');
+                } else {
+                    set(elId, '<span class="wan-status-badge wan-down"><span class="dot"></span>Not Connected</span>');
+                }
+            })
+            .catch(function(){ set(elId, '—'); });
+    }
+
+    function fetchWlan() {
+        ['5','24'].forEach(function(band){
+            fetch('/cgi-bin/wlanbasic.cgi?band=' + band + '&action=status', {cache:'no-store'})
+                .then(function(r){ return r.json(); })
+                .then(function(d){
+                    var ifaces = d.ifaces || [];
+                    var ap  = ifaces.filter(function(i){ return i.idx === 0; })[0];
+                    var vxd = ifaces.filter(function(i){ return i.idx === 5; })[0];
+                    var apId  = band === '5' ? 'wlan-5-ap'  : 'wlan-24-ap';
+                    var repId = band === '5' ? 'wlan-5-rep' : 'wlan-24-rep';
+                    _wlanApBadge(apId, ap);
+                    _wlanRepBadge(repId, vxd, band);
+                })
+                .catch(function(){
+                    var apId  = band === '5' ? 'wlan-5-ap'  : 'wlan-24-ap';
+                    var repId = band === '5' ? 'wlan-5-rep' : 'wlan-24-rep';
+                    set(apId, '—'); set(repId, '—');
+                });
+        });
+    }
+
     function fetchPon() {
         fetch('/cgi-bin/lme.cgi?action=pon_transceiver')
             .then(function(r){return r.json();})
@@ -415,6 +497,7 @@
     var POLLS = [
         { fn: fetchDynamic,      ms: 5000  },
         { fn: fetchLanLink,      ms: 5000  },
+        { fn: fetchWlan,         ms: 10000 },
         { fn: fetchPon,          ms: 10000 },
         { fn: fetchWanProfiles,  ms: 10000 },
         { fn: fetchHotspotStats, ms: 15000 }
@@ -447,6 +530,7 @@
             fetchStatic();
             fetchDynamic();
             fetchLanLink();
+            fetchWlan();
             fetchPon();
             fetchWanProfiles();
             if (_hotspotInstalled) fetchHotspotStats();

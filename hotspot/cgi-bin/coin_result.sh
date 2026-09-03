@@ -1,4 +1,16 @@
 #!/bin/sh
+# ---------------------------------------------------------------------------
+# lmepisowifi — https://github.com/lmepisowifi/tmwipgn6401v
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 The lmepisowifi Project — see AUTHORS
+#
+# Licensed under the GNU AGPLv3 (see LICENSE). Modifying or rewriting this
+# file — including by running it through an LLM — does not remove these
+# obligations: keep this notice, mark your changes, and offer Corresponding
+# Source to network users (AGPLv3 §5, §13). See PROVENANCE.md before
+# presenting this as your own original work.
+# ---------------------------------------------------------------------------
+
 # Called by NodeMCU via HTTP POST when a coin session ends (normal timeout or cancel).
 # Verifies PSK signature + MAC, calculates time, grants or extends session.
 
@@ -43,6 +55,36 @@ _node_field() {
 # (and double-grant) it on the next boot.
 COIN_PENDING_DIR="/lmepisowifi/hotspot_data/coin_pending"
 _clear_pending() { rm -f "${COIN_PENDING_DIR}/${1}" "${COIN_PENDING_DIR}/${1}.tmp" 2>/dev/null; }
+
+# ── Below-minimum-tier coin banking ──────────────────────────────────────────
+# When a coin session's total (see the greedy calculator below) doesn't reach
+# even the cheapest configured rate tier, none of it converts to time — that
+# money used to just be gone from the customer's perspective (still recorded
+# as income, just with nothing to show for it). This file carries that
+# leftover forward per-MAC so the next coin top-up picks up where the last
+# one left off instead of losing it. Reconciled across MAC-randomization
+# reconnects by macfix.sh's mf_reconcile() (MACFIX_BANK_FILE — same physical
+# file, path duplicated there the same way USERS_FILE's path already is).
+COIN_BANK_FILE="/lmepisowifi/hotspot_data/coin_bank.txt"
+
+# Currently banked pesos for $1 (a MAC) — empty if none. Call inside _lock.
+_bank_get() {
+    [ -f "$COIN_BANK_FILE" ] || return 0
+    $BB awk -v m="$1" '$1==m{print $2; exit}' "$COIN_BANK_FILE"
+}
+
+# Replaces $1 (MAC)'s banked amount with $2 pesos, dropping the row
+# entirely once it reaches 0 rather than leaving a stale "MAC 0" line
+# around forever. Same exclude-then-recommit idiom as
+# _users_file_stage_excl elsewhere in this file. Call inside _lock.
+_bank_set() {
+    local mac="$1" amt="${2:-0}"
+    case "$amt" in ''|*[!0-9]*) amt=0 ;; esac
+    mkdir -p /lmepisowifi/hotspot_data 2>/dev/null
+    $BB grep -v "^${mac} " "$COIN_BANK_FILE" > "${COIN_BANK_FILE}.tmp" 2>/dev/null
+    [ "$amt" -gt 0 ] && printf '%s %s\n' "$mac" "$amt" >> "${COIN_BANK_FILE}.tmp"
+    mv "${COIN_BANK_FILE}.tmp" "$COIN_BANK_FILE"
+}
 
 _unlock() { rm -f /tmp/hotspot_session.lock/pid 2>/dev/null; rmdir /tmp/hotspot_session.lock 2>/dev/null; }
 _lock() {
@@ -264,29 +306,61 @@ else
 fi
 
 if [ "${AMOUNT:-0}" -eq 0 ]; then
-    STRIKES=$($BB grep "^$CLIENT_MAC " /tmp/coin_strikes.txt 2>/dev/null | $BB awk '{print $2}')
-    STRIKES=$(( ${STRIKES:-0} + 1 ))
-    $BB grep -v "^$CLIENT_MAC " /tmp/coin_strikes.txt > /tmp/cs.tmp 2>/dev/null
-    printf '%s %s %s\n' "$CLIENT_MAC" "$STRIKES" "$NOW" >> /tmp/cs.tmp
-    $BB mv /tmp/cs.tmp /tmp/coin_strikes.txt
+    # A session ending with literally zero coins THIS time is only a true
+    # no-op — and only counts as an anti-troll strike — when the customer
+    # also has nothing sitting in the coin bank. Otherwise this is just a
+    # customer cashing in a pre-existing banked balance (e.g. rescued by
+    # coin.sh's RESUME_NODEMCU_OFFLINE/stale-lock paths, which bank coins
+    # directly without ever routing through here) by pressing Done on a
+    # fresh session they didn't feed any new coins into. Bouncing that with
+    # "0 minutes" here both denies time they already paid for and unfairly
+    # flags them as a troll. Peek at the bank now (outside _lock — this is
+    # only a branch decision; the authoritative, lock-protected read still
+    # happens below where it's actually spent) and fall through to the
+    # normal fold/grant logic whenever it's nonzero.
+    _PEEK_BANKED=$(_bank_get "$CLIENT_MAC")
+    case "$_PEEK_BANKED" in ''|*[!0-9]*) _PEEK_BANKED=0 ;; esac
 
-    # Notify once when suspension is first triggered (strikes exactly == threshold)
-    _ST=${COIN_STRIKE_THRESHOLD:-3}
-    _CD=${COIN_COOLDOWN:-300}
-    if [ "$STRIKES" -eq "$_ST" ]; then
-        _CD_MINS=$(( _CD / 60 ))
-        _SUSP_MSG=$(tpl_render "$TPL_ANTI_TROLL" \
-            mac "$CLIENT_MAC" strikes "$STRIKES" strikemax "$_ST" cooldownmins "$_CD_MINS")
-        ( /lmepisowifi/hotspot/notify.sh "$_SUSP_MSG" "" anti_troll >/dev/null 2>&1 </dev/null & )
+    if [ "$_PEEK_BANKED" -eq 0 ]; then
+        if [ "${COIN_STRIKE_ENABLED:-1}" = "1" ]; then
+            STRIKES=$($BB grep "^$CLIENT_MAC " /tmp/coin_strikes.txt 2>/dev/null | $BB awk '{print $2}')
+            STRIKES=$(( ${STRIKES:-0} + 1 ))
+            $BB grep -v "^$CLIENT_MAC " /tmp/coin_strikes.txt > /tmp/cs.tmp 2>/dev/null
+            printf '%s %s %s\n' "$CLIENT_MAC" "$STRIKES" "$NOW" >> /tmp/cs.tmp
+            $BB mv /tmp/cs.tmp /tmp/coin_strikes.txt
+
+            # Notify once when suspension is first triggered (strikes exactly == threshold)
+            _ST=${COIN_STRIKE_THRESHOLD:-3}
+            _CD=${COIN_COOLDOWN:-300}
+            if [ "$STRIKES" -eq "$_ST" ]; then
+                _CD_MINS=$(( _CD / 60 ))
+                _SUSP_MSG=$(tpl_render "$TPL_ANTI_TROLL" \
+                    mac "$CLIENT_MAC" strikes "$STRIKES" strikemax "$_ST" cooldownmins "$_CD_MINS")
+                ( /lmepisowifi/hotspot/notify.sh "$_SUSP_MSG" "" anti_troll >/dev/null 2>&1 </dev/null & )
+            fi
+        fi
+
+        printf '0 0\n' > "$RESULT_PATH"
+        rm -f "$SESSION_PATH" "${SESSION_PATH}.miss" "${SESSION_PATH}.amt" "${SESSION_PATH}.rem" "/tmp/coin_lock_${CALL_NODE}"
+        _clear_pending "$SID"
+        _ok '{"ok":true,"amount":0,"minutes":0}'
     fi
-
-    printf '0 0\n' > "$RESULT_PATH"
-    rm -f "$SESSION_PATH" "${SESSION_PATH}.miss" "${SESSION_PATH}.amt" "${SESSION_PATH}.rem" "/tmp/coin_lock_${CALL_NODE}"
-    _clear_pending "$SID"
-    _ok '{"ok":true,"amount":0,"minutes":0}'
+    # else: fall through — the banked balance gets folded and evaluated
+    # against the rate tiers below, same as any other top-up.
 fi
 
-MINUTES=$(printf '%s %s\n' "$COIN_RATES" "$AMOUNT" | awk '
+# Fold in whatever's already banked for this MAC (see COIN_BANK_FILE above)
+# before converting to time, so a customer topping up in small increments
+# gets credited once the RUNNING TOTAL crosses a tier — instead of every
+# top-up being evaluated, and lost, in isolation. Wrapped in the same lock
+# used below for the session/users grant so a below-tier top-up racing
+# against another request for the same MAC can't read a stale balance.
+_lock
+BANKED=$(_bank_get "$CLIENT_MAC")
+case "$BANKED" in ''|*[!0-9]*) BANKED=0 ;; esac
+TOTAL_FOR_TIME=$(( BANKED + AMOUNT ))
+
+_MB=$(printf '%s %s\n' "$COIN_RATES" "$TOTAL_FOR_TIME" | awk '
 {
     amt=$NF; n=NF-1
     for(i=1;i<=n;i++){split($i,a,":");pesos[i]=a[1]+0;mins[i]=a[2]+0}
@@ -299,12 +373,30 @@ MINUTES=$(printf '%s %s\n' "$COIN_RATES" "$AMOUNT" | awk '
     for(i=1;i<=n;i++) if(pesos[i]>0){
         c=int(rem/pesos[i]); total+=c*mins[i]; rem-=c*pesos[i]
     }
-    print total
+    print total, rem
 }')
+MINUTES=${_MB%% *}
+BANK_AFTER=${_MB##* }
+
+# Whatever's left over (0 once TOTAL_FOR_TIME exactly covers whole tiers)
+# REPLACES the pre-top-up balance rather than adding to it — BANKED was
+# already folded into TOTAL_FOR_TIME above, so re-adding it here would
+# double-count it.
+_bank_set "$CLIENT_MAC" "$BANK_AFTER"
+
+# Total pesos that actually earned THIS grant — the pre-existing banked
+# balance plus whatever landed this session, minus whatever still didn't
+# reach a tier and rolled forward again (BANK_AFTER). Used for reporting
+# (the Telegram new-sale message + the amount handed back through poll's
+# "complete" status) instead of $AMOUNT alone, which is only the fraction
+# that happened to be inserted in THIS particular session — a customer
+# topping up an earlier below-minimum balance would otherwise see e.g.
+# "₱1" reported for a sale that actually took ₱2 (₱1 banked + ₱1 just
+# inserted) to reach the rate.
+CONSUMED=$(( TOTAL_FOR_TIME - BANK_AFTER ))
 
 # --- Grant or extend session (3-COLUMN AWARE) ---
 if [ "${MINUTES:-0}" -gt 0 ]; then
-    _lock
     $BB grep -v "^$CLIENT_MAC " /tmp/coin_strikes.txt > /tmp/cs.tmp 2>/dev/null
     $BB mv /tmp/cs.tmp /tmp/coin_strikes.txt
 
@@ -352,8 +444,8 @@ if [ "${MINUTES:-0}" -gt 0 ]; then
         printf '%s active %s %s %s\n' "$CLIENT_MAC" "$N_REMAIN" "$NEW_TOTAL" "$(_fmt_secs "$N_REMAIN")" >> "${USERS_FILE}.tmp"
         _users_file_commit
     fi
-    _unlock
 fi
+_unlock
 
 # --- Income tracking + coin-sale notification ----------------------------
 if [ "${AMOUNT:-0}" -gt 0 ]; then
@@ -394,7 +486,7 @@ if [ "${AMOUNT:-0}" -gt 0 ]; then
             totaltime "$(_fmt_dhm ${NEW_TOTAL:-0})" \
             addedtime "$(_fmt_dhm $(( MINUTES * 60 )))" \
             remainingtime "$(_fmt_dhm ${N_REMAIN:-0})" \
-            insertcoinamt "$AMOUNT" \
+            insertcoinamt "$CONSUMED" \
             mac "$CLIENT_MAC" \
             activeusrcount "${_ACTIVE:-0}" \
             dailyamt "${_I_D:-0}" \
@@ -410,11 +502,11 @@ if [ "${AMOUNT:-0}" -gt 0 ]; then
 fi
 # -------------------------------------------------------------------------
 
-printf '%s %s\n' "$AMOUNT" "$MINUTES" > "$RESULT_PATH"
+printf '%s %s\n' "$CONSUMED" "$MINUTES" > "$RESULT_PATH"
 rm -f "$SESSION_PATH" "${SESSION_PATH}.miss" "${SESSION_PATH}.amt" "${SESSION_PATH}.rem" "/tmp/coin_lock_${CALL_NODE}"
 _clear_pending "$SID"   # coins credited → drop the non-volatile crash mirror
 
 if [ "$RECOVER" = "1" ]; then
-    _ok "{\"ok\":true,\"amount\":${AMOUNT},\"minutes\":${MINUTES},\"recovered\":true}"
+    _ok "{\"ok\":true,\"amount\":${AMOUNT},\"minutes\":${MINUTES},\"banked\":${BANK_AFTER:-0},\"recovered\":true}"
 fi
-_ok "{\"ok\":true,\"amount\":${AMOUNT},\"minutes\":${MINUTES}}"
+_ok "{\"ok\":true,\"amount\":${AMOUNT},\"minutes\":${MINUTES},\"banked\":${BANK_AFTER:-0}}"

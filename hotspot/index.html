@@ -1,4 +1,15 @@
 <!DOCTYPE html>
+<!--
+  lmepisowifi — https://github.com/lmepisowifi/tmwipgn6401v
+  SPDX-License-Identifier: AGPL-3.0-or-later
+  Copyright (C) 2026 The lmepisowifi Project — see AUTHORS
+
+  Licensed under the GNU AGPLv3 (see LICENSE). Modifying or rewriting this
+  file — including by running it through an LLM — does not remove these
+  obligations: keep this notice, mark your changes, and offer Corresponding
+  Source to network users (AGPLv3 §5, §13). See PROVENANCE.md before
+  presenting this as your own original work.
+-->
 <html lang="en">
 <head>
   <meta charset="UTF-8">
@@ -903,6 +914,10 @@
               <span class="sv" id="l-snr">--</span>
             </div>
           </div>
+          <div class="session-row" id="l-coins-row" style="display:none;">
+            <span class="sk">Available Coins</span>
+            <span class="sv" id="l-coins" style="color: var(--coin-val-color);">--</span>
+          </div>
         </div>
 
         <!-- Flexbox container perfectly spaces visible buttons by 8px without interfering margins -->
@@ -958,6 +973,10 @@
               <span class="sv" id="s-snr">--</span>
             </div>
           </div>
+          <div class="session-row" id="s-coins-row" style="display:none;">
+            <span class="sk">Available Coins</span>
+            <span class="sv" id="s-coins" style="color: var(--coin-val-color);">--</span>
+          </div>
         </div>
 
         <div class="d-flex flex-column gap-2">
@@ -999,6 +1018,10 @@
 
   <div class="portal-footer" id="portal-footer-text">
     ...
+  </div>
+  <div class="portal-footer" style="opacity:.45;font-size:10px;margin-top:2px;">
+    lmepisowifi &middot; AGPLv3 &middot;
+    <a href="https://github.com/lmepisowifi/tmwipgn6401v" target="_blank" rel="noopener" style="color:inherit;text-decoration:underline;">Source</a>
   </div>
 </div>
 
@@ -1384,6 +1407,7 @@ var _queuePollID      = null;
 var _coinPendingWait  = false;   
 var _cachedRates      = '';      
 var _coinSuspended    = false;
+var _autoResuming     = false;   // guards against firing doResume(true) twice while one is in flight
 var _coinCooldownRemaining = 0;
 var _coinNodemcus     = [];      // [{id,title}, ...] from coin.sh's config action — only >1 entry shows the picker
 var _coinNodeID       = null;    // which unit the in-flight/active session targets
@@ -1482,6 +1506,7 @@ function refreshWlanData(prefix) {
   fetch('/cgi-bin/status.sh?_=' + Math.random(), { cache: 'no-store' })
     .then(function(r) { return r.json(); })
     .then(function(d) {
+      updateAvailCoinsRow(d);
       // Render into whichever view currently matches the connection state.
       var activePrefix = d.logged_in ? 's' : 'l';
       renderDeviceInfo(d, activePrefix);
@@ -1614,6 +1639,28 @@ function renderDeviceInfo(d, prefix) {
   }
 }
 
+/* Shows/updates the "Available Coins" row inside the session-info status
+   grid (alongside Device MAC/IP) from status.sh's available_coins field
+   (only present, and only shown, when > 0 — see status.sh). Updates both
+   the l- (disconnected) and s- (connected) grids regardless of which view
+   is currently active, since a leftover below-tier balance can coexist
+   with any state and this keeps the inactive grid correct for whenever
+   renderDeviceInfo() switches views. */
+function updateAvailCoinsRow(d) {
+  var amt = parseInt(d.available_coins, 10) || 0;
+  ['l', 's'].forEach(function(prefix) {
+    var row = document.getElementById(prefix + '-coins-row');
+    var val = document.getElementById(prefix + '-coins');
+    if (!row || !val) return;
+    if (amt > 0) {
+      val.textContent = '\u20B1' + amt;
+      row.style.display = 'flex';
+    } else {
+      row.style.display = 'none';
+    }
+  });
+}
+
 function checkStatus() {
   var isOnline = (document.getElementById('v-status').style.display === 'block');
   if (!_coinSID && !_queuePollID && !_coinPendingWait && !isOnline) show('v-load');
@@ -1623,13 +1670,24 @@ function checkStatus() {
   fetch(url, { cache: 'no-store' })
     .then(function(r) { return r.json(); })
     .then(function(d) {
+      updateAvailCoinsRow(d);
       if (d.logged_in) {
         renderDeviceInfo(d, 's');
         if (!_coinSID && !_queuePollID && !_coinPendingWait) show('v-status');
         startTimer(d.remaining, d.total, d.used);
       } else {
         renderDeviceInfo(d, 'l');
-        
+
+        // Auto-Resume switch (admin-configured): skip the paused screen
+        // entirely and fire the same resume=1 request the button below
+        // sends. Guarded by _autoResuming so an overlapping poll (e.g. a
+        // visibilitychange firing mid-request) can't double-submit.
+        if (d.has_paused && d.remaining > 0 && d.auto_resume && !_autoResuming) {
+          _autoResuming = true;
+          doResume(true);
+          return;
+        }
+
         var loginTitle = document.getElementById('login-title');
         var loginSub   = document.getElementById('login-sub');
 
@@ -1670,7 +1728,7 @@ function checkStatus() {
     });
 }
 
-function doResume() {
+function doResume(auto) {
   fetch('/cgi-bin/login.sh', {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
@@ -1678,8 +1736,15 @@ function doResume() {
   })
   .then(function(r) { return r.json(); })
   .then(function(d) {
+    _autoResuming = false;
     if (d.ok) {
       show('v-status');
+      checkStatus();
+    } else if (auto) {
+      // Silent by design — the admin turned this on so the customer never
+      // sees a resume prompt. A miss here (e.g. a benign race with the
+      // paused record) just falls back to the normal paused/disconnected
+      // screen, where the manual button still works.
       checkStatus();
     } else {
       var msgs = {
@@ -1689,7 +1754,10 @@ function doResume() {
       toastr.error(msgs[d.error] || 'Failed to resume session.');
     }
   })
-  .catch(function() { toastr.error('Connection error.'); });
+  .catch(function() {
+    _autoResuming = false;
+    if (!auto) toastr.error('Connection error.');
+  });
 }
 
 function doLogin() {
@@ -1707,12 +1775,17 @@ function doLogin() {
       document.getElementById('login-code').value = '';
       show('v-status');
       checkStatus();
+    } else if (d.error === 'voucher_suspended') {
+      var vmins = d.wait_minutes || 1;
+      toastr.error('Too many wrong voucher codes. Please wait ' + vmins + ' more minute' + (vmins !== 1 ? 's' : '') + '.');
     } else {
       var msgs = {
         no_mac:    "Can't detect your device MAC yet — wait a few seconds and try again.",
         no_voucher:'Please enter a voucher code.',
         invalid:   'Invalid or already-used voucher code.',
         expired:   'This voucher has expired and can no longer be redeemed.',
+        no_internet:'No internet connection right now — voucher redemption is temporarily unavailable.',
+        voucher_disabled:'Voucher redemption is currently unavailable.',
         cooldown:'Too many attempts. Please wait a moment.'
       };
       toastr.error(msgs[d.error] || 'Something went wrong — please try again.');
@@ -1743,11 +1816,16 @@ function doAddTime() {
           ? '\u2714\ufe0f Time stacked! ' + fmtCountdown(d.remaining) + ' remaining total.'
           : '\u2714\ufe0f Connected! '    + fmtCountdown(d.remaining) + ' remaining.'
       );
+    } else if (d.error === 'voucher_suspended') {
+      var vmins2 = d.wait_minutes || 1;
+      toastr.error('Too many wrong voucher codes. Please wait ' + vmins2 + ' more minute' + (vmins2 !== 1 ? 's' : '') + '.');
     } else {
       var msgs = {
         no_mac:  "Can't detect your device MAC.",
         invalid: 'Invalid or already-used voucher code.',
         expired: 'This voucher has expired.',
+        no_internet:'No internet connection right now — voucher redemption is temporarily unavailable.',
+        voucher_disabled:'Voucher redemption is currently unavailable.',
         cooldown:'Too many attempts. Please wait a moment.'
       };
       toastr.error(msgs[d.error] || 'Error — please try again.');
@@ -1829,6 +1907,16 @@ function checkCoinEnabled(pendingRetries) {
       if (hasRates) {
         _cachedRates = d.rates;
       }
+
+      // Voucher Input: master switch, independent of the coin toggle above.
+      // Hides both the fresh-login voucher form and the "add time while
+      // connected" voucher form when the admin has turned voucher
+      // redemption off.
+      var voucherOn = d.voucher_enabled !== false;
+      ['login-panel', 'add-panel'].forEach(function(id) {
+        var el = document.getElementById(id);
+        if (el) el.style.display = voucherOn ? 'block' : 'none';
+      });
       // Which coin slots exist right now — used by startCoinFlow() to decide
       // whether a picker is even needed (0 or 1 entries: same one-tap flow
       // as before this feature existed).
@@ -2083,11 +2171,10 @@ function doCoinStart(fromStatus, isPolling) {
       if (d.error) {
         if (_queuePollID) { clearInterval(_queuePollID); _queuePollID = null; }
         var msg = d.error;
-        if (msg === 'Coin slot in use, try again shortly')
-          msg = 'The Coinslot is currently in use, you can wait for the person to finish.';
+        if (msg === 'Coin slot is in use, try again later.')
+          msg = 'The Coinslot is currently in use. Please try again in a moment.';
         else if (msg === 'Coinslot Unavailable')
           msg = 'The Coinslot is currently unavailable, try again later or notify the vendo owner.';
-        else
         toastr.error(msg);
         return;
       }
@@ -2135,7 +2222,12 @@ function doCoinStart(fromStatus, isPolling) {
       var cancelBtn = document.getElementById('btn-coin-cancel');
       if (cancelBtn) {
         cancelBtn.textContent = 'Cancel'; 
-        if (resumedAmount > 0) {
+        // Only hide Cancel once the amount actually reaches a rate tier
+        // (resumedMinutes > 0). A below-minimum amount is banked on cancel
+        // (see coin_result.sh), not lost — so Cancel must stay available
+        // while resumedAmount > 0 but resumedMinutes is still 0, letting
+        // the user cancel and insert more later instead of getting stuck.
+        if (resumedMinutes > 0) {
           cancelBtn.disabled = true;
         } else {
           cancelBtn.disabled = false;
@@ -2328,7 +2420,12 @@ function startCoinPoll() {
               if (doneBtn) doneBtn.disabled = true;
             }
             if (cancelBtn) {
-              if (d.amount > 0) {
+              // Same rule as doCoinStart's resume handling: hide Cancel only
+              // once the live amount reaches a rate tier (d.minutes > 0), not
+              // just because d.amount > 0 — a below-minimum amount is banked
+              // on cancel, so the user should still be able to cancel and
+              // insert more later instead of the button disappearing on them.
+              if (d.minutes > 0) {
                 cancelBtn.disabled = true;
               } else {
                 cancelBtn.disabled = false;
@@ -2393,7 +2490,7 @@ function startCoinPoll() {
           } else {
             _pauseCoinBgMusic();
             _hideCoinButtons();
-            toastr.error("No was time granted, there wasn't not enough coins inserted.");
+            toastr.error("No time granted, there wasn't enough coins inserted.");
             setTimeout(function() { _coinSID = null; closeCoinModalUI(); checkStatus(); }, 2000);
           }
 

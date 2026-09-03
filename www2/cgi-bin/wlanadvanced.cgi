@@ -1,4 +1,16 @@
 #!/bin/sh
+# ---------------------------------------------------------------------------
+# lmepisowifi — https://github.com/lmepisowifi/tmwipgn6401v
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 The lmepisowifi Project — see AUTHORS
+#
+# Licensed under the GNU AGPLv3 (see LICENSE). Modifying or rewriting this
+# file — including by running it through an LLM — does not remove these
+# obligations: keep this notice, mark your changes, and offer Corresponding
+# Source to network users (AGPLv3 §5, §13). See PROVENANCE.md before
+# presenting this as your own original work.
+# ---------------------------------------------------------------------------
+
 
 SESSION_TIMEOUT=600
 
@@ -100,9 +112,13 @@ unified_enabled() { [ "$(merge_get enabled 0)" = "1" ] && printf '1' || printf '
 
 
 # POST field helper: extract an integer field; $1 = field name, $2 = default
+# Anchored on "&name=" (synthetic leading "&" so the first field matches too)
+# so a field name that's a substring of another field's name later in the
+# body can't be mismatched — see wlanbasic.cgi's pd_str for the sta_connect
+# ssid/bssid bug this pattern caused there.
 pd_int() {
-    V=$(echo "$POST_DATA" \
-        | busybox sed -n "s/.*${1}=\\([^&]*\\).*/\\1/p" \
+    V=$(echo "&$POST_DATA" \
+        | busybox sed -n "s/.*&${1}=\\([^&]*\\).*/\\1/p" \
         | busybox tr -d '\r\n')
     case "$V" in ''|*[!0-9]*) V="${2:-0}" ;; esac
     printf '%s' "$V"

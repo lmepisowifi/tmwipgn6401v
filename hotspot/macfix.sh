@@ -1,4 +1,16 @@
 #!/bin/sh
+# ---------------------------------------------------------------------------
+# lmepisowifi — https://github.com/lmepisowifi/tmwipgn6401v
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 The lmepisowifi Project — see AUTHORS
+#
+# Licensed under the GNU AGPLv3 (see LICENSE). Modifying or rewriting this
+# file — including by running it through an LLM — does not remove these
+# obligations: keep this notice, mark your changes, and offer Corresponding
+# Source to network users (AGPLv3 §5, §13). See PROVENANCE.md before
+# presenting this as your own original work.
+# ---------------------------------------------------------------------------
+
 # /lmepisowifi/hotspot/macfix.sh — MAC-randomization session-continuity fix
 # ============================================================================
 # Recent iOS/Android builds hand out a freshly randomized MAC address on
@@ -16,14 +28,16 @@
 # cookie's signature (never trusts a value just because it was sent — see
 # _mf_verify_cookie), looks up which MAC that same browser last presented,
 # and — if that differs from the MAC it's presenting right now — moves the
-# live SESSION_FILE / USERS_FILE row and firewall rule over to the new MAC
-# *before* the caller does its own MAC-keyed lookup. If the new MAC
-# already has its own separate live row (e.g. it was paid for on its own
-# before this browser's cookie tied the two MACs together), the two rows'
-# remaining time are combined into one instead of being left as two
-# shadowing/duplicate rows under the same MAC — see _mf_reconcile_row.
-# Every existing MAC-keyed code path downstream (resume, stacking, pause,
-# status polling) keeps working completely unmodified.
+# live SESSION_FILE / USERS_FILE row, any banked below-minimum-tier coin
+# balance (MACFIX_BANK_FILE — see coin_result.sh), and firewall rule over
+# to the new MAC *before* the caller does its own MAC-keyed lookup. If the
+# new MAC already has its own separate live row (e.g. it was paid for on
+# its own before this browser's cookie tied the two MACs together), the
+# two rows' remaining time (or banked pesos) are combined into one instead
+# of being left as two shadowing/duplicate rows under the same MAC — see
+# _mf_reconcile_row. Every existing MAC-keyed code path downstream
+# (resume, stacking, pause, status polling, coin banking) keeps working
+# completely unmodified.
 #
 # Cookie is set purely via the HTTP Set-Cookie response header — no
 # document.cookie / localStorage JS involved on the frontend at all, so it
@@ -36,13 +50,22 @@
 # Toggle: MAC_RANDOMIZATION_FIX ("1"/"0", default "1" — see defaults.env,
 # www2 > Hotspot).
 #
-# Sourced (not executed) by login.sh / logout.sh / status.sh. Requires the
-# sourcing script to already define: BB, SESSION_FILE, USERS_FILE,
-# CLIENT_MAC, _lock, _unlock — all already present at the top of each.
+# Sourced (not executed) by login.sh / logout.sh / status.sh / coin.sh.
+# Requires the sourcing script to already define: BB, CLIENT_MAC, _lock,
+# _unlock — all already present at the top of each. SESSION_FILE and
+# USERS_FILE are optional: a caller that doesn't define them (coin.sh has
+# no need for either) simply skips reconciliation for those two files —
+# the coin-bank balance (MACFIX_BANK_FILE, always defined below) still
+# gets migrated regardless.
 # ============================================================================
 
 MACFIX_SECRET_FILE="/lmepisowifi/hotspot_data/.macfix_secret"
 MACFIX_MAP_FILE="/lmepisowifi/hotspot_data/device_fp.txt"
+# Same physical file as coin_result.sh's COIN_BANK_FILE — duplicated as a
+# literal constant here rather than sourced, matching how this project
+# already repeats e.g. USERS_FILE's path across lmehspt.sh/coin_result.sh/
+# status.sh instead of centralizing it.
+MACFIX_BANK_FILE="/lmepisowifi/hotspot_data/coin_bank.txt"
 MACFIX_COOKIE_NAME="lme_fp"
 MACFIX_COOKIE_MAXAGE=31536000   # 1 year — a slow "remember this browser", not a login session
 
@@ -197,6 +220,17 @@ _mf_reconcile_row() {
                 m_tot=$(( o_tot + n_tot ))
                 printf '%s active %d %d %s\n' "$new" "$m_rem" "$m_tot" "$(_mf_fmt_secs "$m_rem")" >> "${file}.tmp"
                 ;;
+            bank)
+                # "MAC AMOUNT" - plain pesos, no time math needed. Always
+                # summed on collision (unlike "users", there's no
+                # active/paused state to worry about mismatching here).
+                local o_amt n_amt
+                o_amt=$($BB echo "$old_row" | $BB awk '{print $2}')
+                n_amt=$($BB echo "$new_row" | $BB awk '{print $2}')
+                [ -n "$o_amt" ] || o_amt=0
+                [ -n "$n_amt" ] || n_amt=0
+                printf '%s %d\n' "$new" "$(( o_amt + n_amt ))" >> "${file}.tmp"
+                ;;
         esac
     fi
 
@@ -248,6 +282,11 @@ mf_reconcile() {
             iptables -t filter -I HOTSPOT_FWD 1 -m mac --mac-source "$CLIENT_MAC" -j ACCEPT 2>/dev/null
         fi
         _mf_reconcile_row "$USERS_FILE" "$PREV_MAC" "$CLIENT_MAC" users
+        # Below-minimum-tier coin balance follows the browser too, same as
+        # the session/users rows above — MACFIX_BANK_FILE is a fixed
+        # constant (not caller-supplied), so this runs for every caller
+        # regardless of whether SESSION_FILE/USERS_FILE were defined.
+        _mf_reconcile_row "$MACFIX_BANK_FILE" "$PREV_MAC" "$CLIENT_MAC" bank
     fi
 
     # Keep the mapping current regardless: a first-ever sighting of this

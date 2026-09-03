@@ -1,4 +1,15 @@
 <!DOCTYPE html>
+<!--
+  lmepisowifi — https://github.com/lmepisowifi/tmwipgn6401v
+  SPDX-License-Identifier: AGPL-3.0-or-later
+  Copyright (C) 2026 The lmepisowifi Project — see AUTHORS
+
+  Licensed under the GNU AGPLv3 (see LICENSE). Modifying or rewriting this
+  file — including by running it through an LLM — does not remove these
+  obligations: keep this notice, mark your changes, and offer Corresponding
+  Source to network users (AGPLv3 §5, §13). See PROVENANCE.md before
+  presenting this as your own original work.
+-->
 <html lang="en" data-bs-theme="dark">
 <head>
     <meta charset="UTF-8">
@@ -45,6 +56,7 @@
             <div style="font-size:12px;color:var(--text-secondary);" id="power-sub">Loading…</div>
         </div>
         <div class="d-flex align-items-center gap-3">
+            <span id="inet-status-badge" class="status-badge stopped" title="WAN connectivity"><span class="dot"></span><span id="inet-status-text">…</span></span>
             <span id="hsp-status-badge" class="status-badge stopped"><span class="dot"></span><span id="hsp-status-text">…</span></span>
             <div id="hotspot-power-toggle" class="wlan-toggle" onclick="toggleHotspot()" title="Enable / Disable hotspot">
                 <div class="wlan-toggle-knob"></div>
@@ -52,10 +64,68 @@
         </div>
     </div>
 
-    <!-- ═══ Bandwidth & Inactivity ═══ -->
+    <!-- ═══ Protections ═══ -->
     <div class="card mb-3">
-        <div class="card-header d-flex align-items-center justify-content-between flex-wrap gap-2">
-            <span>Bandwidth &amp; Inactivity</span>
+        <div class="card-header">Protections</div>
+        <div class="card-body p-0">
+            <div class="d-flex align-items-start justify-content-between gap-3 p-3">
+                <div>
+                    <div style="font-weight:500;">Anti-Tethering</div>
+                    <div class="field-hint">Marks hotspot traffic by TTL so clients cannot re-share the connection as a personal hotspot.</div>
+                </div>
+                <div class="d-flex align-items-center gap-2 flex-shrink-0">
+                    <span id="at-badge" class="at-badge off">Off</span>
+                    <div id="at-toggle" class="wlan-toggle" onclick="toggleAntiTether()" title="Toggle anti-tethering">
+                        <div class="wlan-toggle-knob"></div>
+                    </div>
+                </div>
+            </div>
+            <hr class="my-0" style="border-color:var(--border-color);">
+            <div class="d-flex align-items-start justify-content-between gap-3 p-3">
+                <div>
+                    <div style="font-weight:500;">LAN Isolation</div>
+                    <div class="field-hint">Prevents hotspot clients from reaching the router gateway and RFC 1918 LAN addresses.</div>
+                </div>
+                <div class="d-flex align-items-center gap-2 flex-shrink-0">
+                    <span id="li-badge" class="at-badge off">Off</span>
+                    <div id="li-toggle" class="wlan-toggle" onclick="toggleLanIsolate()" title="Toggle LAN isolation">
+                        <div class="wlan-toggle-knob"></div>
+                    </div>
+                </div>
+            </div>
+            <hr class="my-0" style="border-color:var(--border-color);">
+            <div class="d-flex align-items-start justify-content-between gap-3 p-3">
+                <div>
+                    <div style="font-weight:500;">MAC Randomization Fix</div>
+                    <div class="field-hint">Recovers active sessions when a client device rotates its MAC address mid-session.</div>
+                </div>
+                <div class="d-flex align-items-center gap-2 flex-shrink-0">
+                    <span id="mf-badge" class="at-badge off">Off</span>
+                    <div id="mf-toggle" class="wlan-toggle" onclick="toggleMacFix()" title="Toggle MAC-randomization fix">
+                        <div class="wlan-toggle-knob"></div>
+                    </div>
+                </div>
+            </div>
+            <hr class="my-0" style="border-color:var(--border-color);">
+            <div class="d-flex align-items-start justify-content-between gap-3 p-3">
+                <div>
+                    <div style="font-weight:500;">Pause Active Users on Boot</div>
+                    <div class="field-hint">On reboot, converts any session still marked active into paused (preserving its remaining time) instead of leaving it stale. Off skips the one-time boot conversion — the periodic 5-minute self-heal sync still catches it later if it's still stale then.</div>
+                </div>
+                <div class="d-flex align-items-center gap-2 flex-shrink-0">
+                    <span id="pob-badge" class="at-badge off">Off</span>
+                    <div id="pob-toggle" class="wlan-toggle" onclick="togglePauseOnBoot()" title="Toggle pause-active-users-on-boot">
+                        <div class="wlan-toggle-knob"></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- ═══ Bandwidth & QoS ═══ -->
+    <div class="card mb-3">
+        <div class="card-header d-flex align-items-center justify-content-between gap-2">
+            <span>Bandwidth &amp; QoS</span>
         </div>
         <div class="card-body">
             <div class="row g-3">
@@ -82,7 +152,7 @@
                             <option value="kbit">Kbit/s</option>
                         </select>
                     </div>
-                    <div class="field-hint">Minimum bandwidth each active client can claim</div>
+                    <div class="field-hint" id="pur-hint">Minimum bandwidth each active client can claim</div>
                 </div>
                 <!-- Per-user burst -->
                 <div class="col-sm-6">
@@ -108,10 +178,36 @@
                     </div>
                     <div class="field-hint">Captive-portal redirect speed for new clients</div>
                 </div>
+                <!-- Equal bandwidth sharing -->
+                <div class="col-sm-6">
+                    <div class="d-flex align-items-center justify-content-between">
+                        <div style="font-weight:500;">Equal Sharing</div>
+                        <div id="es-toggle" class="wlan-toggle" onclick="toggleEqualShareUI()" title="Split the Global Cap evenly across everyone currently online">
+                            <div class="wlan-toggle-knob"></div>
+                        </div>
+                    </div>
+                    <div class="field-hint">Splits the Global Cap evenly among online clients (e.g. 20 Mbit/s ÷ 4 users ≈ 5 Mbit/s each). A single active client can still burst up to the full Global Cap whenever the others are idle. Overrides Per-User Rate while enabled.</div>
+                </div>
+            </div>
+            <hr class="my-3" style="border-color:var(--border-color);">
+            <div class="d-flex gap-2">
+                <button class="btn btn-primary" onclick="saveRates()">Save &amp; Apply</button>
+                <button class="btn btn-outline-secondary" onclick="loadConfig()">Discard</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- ═══ Session Settings ═══ -->
+    <div class="card mb-3">
+        <div class="card-header d-flex align-items-center justify-content-between gap-2">
+            <span>Session Settings</span>
+        </div>
+        <div class="card-body">
+            <div class="row g-3">
                 <!-- Auto-pause + inactivity timeout -->
                 <div class="col-sm-6">
                     <div class="d-flex align-items-center justify-content-between">
-                        <label class="form-label mb-0">Auto-Pause Session</label>
+                        <div style="font-weight:500;">Auto-Pause Session</div>
                         <div id="ap-toggle" class="wlan-toggle" onclick="toggleAutoPauseUI()" title="Auto-pause a client's session when idle">
                             <div class="wlan-toggle-knob"></div>
                         </div>
@@ -126,64 +222,28 @@
                         <div class="field-hint">Idle time before session auto-pauses</div>
                     </div>
                 </div>
+                <!-- Auto-resume on reconnect -->
+                <div class="col-sm-6">
+                    <div class="d-flex align-items-center justify-content-between">
+                        <div style="font-weight:500;">Auto-Resume on Reconnect</div>
+                        <div id="ar-toggle" class="wlan-toggle" onclick="toggleAutoResumeUI()" title="Automatically resume a paused session the moment the device reconnects">
+                            <div class="wlan-toggle-knob"></div>
+                        </div>
+                    </div>
+                    <div class="field-hint">Skip the Resume Time button — restore remaining time as soon as a paused device is back online</div>
+                </div>
             </div>
             <hr class="my-3" style="border-color:var(--border-color);">
             <div class="d-flex gap-2">
-                <button class="btn btn-primary" onclick="saveRates()">Save &amp; Apply</button>
+                <button class="btn btn-primary" onclick="saveSessionSettings()">Save &amp; Apply</button>
                 <button class="btn btn-outline-secondary" onclick="loadConfig()">Discard</button>
             </div>
         </div>
     </div>
 
-    <!-- ═══ Anti-Tethering ═══ -->
-    <div class="card mb-3">
-        <div class="card-header d-flex align-items-center justify-content-between gap-3">
-            <div style="min-width:0;">
-                <div style="font-weight:500;">Anti-Tethering</div>
-            </div>
-            <div class="d-flex align-items-center gap-2 flex-shrink-0">
-                <span id="at-badge" class="at-badge off">Off</span>
-                <div id="at-toggle" class="wlan-toggle" onclick="toggleAntiTether()" title="Toggle anti-tethering">
-                    <div class="wlan-toggle-knob"></div>
-                </div>
-            </div>
-        </div>
-    </div>
-
-    <!-- ═══ LAN Isolation ═══ -->
-    <div class="card mb-3">
-        <div class="card-header d-flex align-items-center justify-content-between gap-3">
-                    <div style="min-width:0;">
-                <div style="font-weight:500;">Anti-Gateway/LAN Access</div>
-            </div>
-
-            <div class="d-flex align-items-center gap-2 flex-shrink-0">
-                <span id="li-badge" class="at-badge off">Off</span>
-                <div id="li-toggle" class="wlan-toggle" onclick="toggleLanIsolate()" title="Toggle LAN isolation">
-                    <div class="wlan-toggle-knob"></div>
-                </div>
-            </div>
-        </div>
-    </div>
-
-    <!-- ═══ MAC Randomization Fix ═══ -->
-    <div class="card mb-3">
-        <div class="card-header d-flex align-items-center justify-content-between gap-3">
-            <div style="min-width:0;">
-                <div style="font-weight:500;">MAC Randomization Fix</div>
-            </div>
-            <div class="d-flex align-items-center gap-2 flex-shrink-0">
-                <span id="mf-badge" class="at-badge off">Off</span>
-                <div id="mf-toggle" class="wlan-toggle" onclick="toggleMacFix()" title="Toggle MAC-randomization fix">
-                    <div class="wlan-toggle-knob"></div>
-                </div>
-            </div>
-        </div>
-    </div>
-
     <!-- ═══ Coin Acceptor ═══ -->
-    <div class="card">
-        <div class="card-header d-flex align-items-center justify-content-between flex-wrap gap-2">
+    <div class="card mb-3">
+        <div class="card-header d-flex align-items-center justify-content-between gap-2">
             <span>Coin Acceptor</span>
             <div class="d-flex align-items-center gap-2">
                 <span style="font-size:12px;color:var(--text-secondary);" id="coin-toggle-label">Coin: Off</span>
@@ -193,6 +253,19 @@
             </div>
         </div>
         <div class="card-body">
+            <!-- Anti-Troll -->
+            <div class="d-flex align-items-start justify-content-between gap-3 mb-3">
+                <div style="min-width:0;">
+                    <div style="font-weight:500;">Anti-Troll Suspension</div>
+                    <div class="field-hint">Temporarily suspend a device that triggers the coin slot repeatedly without inserting coins.</div>
+                </div>
+                <div class="d-flex align-items-center gap-2 flex-shrink-0">
+                    <span id="cs-badge" class="at-badge on">On</span>
+                    <div id="cs-toggle" class="wlan-toggle" onclick="toggleCoinStrike()" title="Toggle coin anti-troll suspension">
+                        <div class="wlan-toggle-knob"></div>
+                    </div>
+                </div>
+            </div>
             <div class="row g-3">
                 <div class="col-sm-6">
                     <label class="form-label">Coin Session Timeout <span class="field-hint d-inline">(seconds)</span></label>
@@ -210,8 +283,95 @@
                 </div>
             </div>
             <hr class="my-3" style="border-color:var(--border-color);">
+            <!-- Require internet -->
+            <div class="d-flex align-items-start justify-content-between gap-3">
+                <div style="min-width:0;">
+                    <div style="font-weight:500;">Require Internet</div>
+                    <div class="field-hint">Refuse new coin sessions while the router has no WAN access. Active sessions are never interrupted.</div>
+                </div>
+                <div class="d-flex align-items-center gap-2 flex-shrink-0">
+                    <span id="ci-badge" class="at-badge off">Off</span>
+                    <div id="ci-toggle" class="wlan-toggle" onclick="toggleCoinInternet()" title="Require internet to insert coins">
+                        <div class="wlan-toggle-knob"></div>
+                    </div>
+                </div>
+            </div>
+            <hr class="my-3" style="border-color:var(--border-color);">
+            <!-- Waiting line -->
+            <div class="d-flex align-items-start justify-content-between gap-3">
+                <div style="min-width:0;">
+                    <div style="font-weight:500;">Insert Coin Queue</div>
+                    <div class="field-hint">When someone hits Insert Coin while the slot is busy, put them in line and notify them when it's their turn. When off, they're told the slot is in use and to try again later — no one is queued.</div>
+                </div>
+                <div class="d-flex align-items-center gap-2 flex-shrink-0">
+                    <span id="cq-badge" class="at-badge on">On</span>
+                    <div id="cq-toggle" class="wlan-toggle" onclick="toggleCoinQueue()" title="Toggle the insert coin waiting line">
+                        <div class="wlan-toggle-knob"></div>
+                    </div>
+                </div>
+            </div>
+            <hr class="my-3" style="border-color:var(--border-color);">
             <div class="d-flex gap-2 flex-wrap">
                 <button class="btn btn-primary" onclick="saveCoin()">Save Coin Settings</button>
+                <button class="btn btn-outline-secondary" onclick="loadConfig()">Discard</button>
+            </div>
+        </div>
+    </div>
+
+    <!-- ═══ Voucher Input ═══ -->
+    <div class="card mb-3">
+        <div class="card-header d-flex align-items-center justify-content-between gap-2">
+            <span>Voucher Input</span>
+            <div class="d-flex align-items-center gap-2">
+                <span style="font-size:12px;color:var(--text-secondary);" id="voucher-toggle-label">Voucher: On</span>
+                <div class="wlan-toggle" id="voucher-toggle" onclick="toggleVoucher()" title="Toggle voucher code redemption">
+                    <div class="wlan-toggle-knob"></div>
+                </div>
+            </div>
+        </div>
+        <div class="card-body">
+            <!-- Wrong-code suspension -->
+            <div class="d-flex align-items-start justify-content-between gap-3 mb-3">
+                <div style="min-width:0;">
+                    <div style="font-weight:500;">Wrong-Code Suspension</div>
+                    <div class="field-hint">Temporarily block a device from redeeming vouchers after too many wrong codes in a row.</div>
+                </div>
+                <div class="d-flex align-items-center gap-2 flex-shrink-0">
+                    <span id="vs-badge" class="at-badge off">Off</span>
+                    <div id="vs-toggle" class="wlan-toggle" onclick="toggleVoucherStrike()" title="Toggle wrong-voucher suspension">
+                        <div class="wlan-toggle-knob"></div>
+                    </div>
+                </div>
+            </div>
+            <div class="row g-3">
+                <div class="col-sm-6">
+                    <label class="form-label">Wrong Attempts Threshold</label>
+                    <input type="number" class="form-control" id="v-strike-threshold" placeholder="3" min="1" max="20">
+                    <div class="field-hint">Wrong voucher codes before suspension</div>
+                </div>
+                <div class="col-sm-6">
+                    <label class="form-label">Suspension Cooldown <span class="field-hint d-inline">(seconds)</span></label>
+                    <input type="number" class="form-control" id="v-cooldown" placeholder="60" min="30">
+                    <div class="field-hint">Duration of voucher suspension after threshold reached</div>
+                </div>
+            </div>
+            <hr class="my-3" style="border-color:var(--border-color);">
+            <!-- Require internet -->
+            <div class="d-flex align-items-start justify-content-between gap-3">
+                <div style="min-width:0;">
+                    <div style="font-weight:500;">Require Internet</div>
+                    <div class="field-hint">Refuse voucher redemption while the router has no WAN access.</div>
+                </div>
+                <div class="d-flex align-items-center gap-2 flex-shrink-0">
+                    <span id="vi-badge" class="at-badge off">Off</span>
+                    <div id="vi-toggle" class="wlan-toggle" onclick="toggleVoucherInternet()" title="Require internet to redeem vouchers">
+                        <div class="wlan-toggle-knob"></div>
+                    </div>
+                </div>
+            </div>
+            <hr class="my-3" style="border-color:var(--border-color);">
+            <div class="d-flex gap-2 flex-wrap">
+                <button class="btn btn-primary" onclick="saveVoucherStrike()">Save Voucher Settings</button>
                 <button class="btn btn-outline-secondary" onclick="loadConfig()">Discard</button>
             </div>
         </div>
@@ -301,13 +461,25 @@ function loadConfig(){
             setRateField('r-unauth-val','r-unauth-unit',  d.unauth_rate||'256kbit');
             document.getElementById('r-inactivity').value = d.inactivity_timeout||'300';
             setAutoPauseUI(d.auto_pause_enabled===true||d.auto_pause_enabled==='1'||d.auto_pause_enabled===1);
+            setAutoResumeUI(d.auto_resume_enabled===true||d.auto_resume_enabled==='1'||d.auto_resume_enabled===1);
+            setEqualShareUI(d.equal_sharing_enabled===true||d.equal_sharing_enabled==='1'||d.equal_sharing_enabled===1);
             document.getElementById('c-coin-timeout').value  = d.coin_timeout||'';
             document.getElementById('c-strike-threshold').value = d.coin_strike_threshold||'';
             document.getElementById('c-cooldown').value       = d.coin_cooldown||'';
+            setCoinStrikeUI(d.coin_strike_enabled===true||d.coin_strike_enabled==='1'||d.coin_strike_enabled===1);
+            setCoinQueueUI(d.coin_queue_enabled===true||d.coin_queue_enabled==='1'||d.coin_queue_enabled===1);
             setCoinToggleUI(d.coin_on);
+            setVoucherToggleUI(d.voucher_on);
             setAntiTetherUI(d.anti_tether===true||d.anti_tether==='1'||d.anti_tether===1);
             setLanIsolateUI(d.lan_isolate===true||d.lan_isolate==='1'||d.lan_isolate===1);
             setMacFixUI(d.mac_randomization_fix===true||d.mac_randomization_fix==='1'||d.mac_randomization_fix===1);
+            setPauseOnBootUI(d.pause_on_boot===true||d.pause_on_boot==='1'||d.pause_on_boot===1);
+            setCoinInternetUI(d.coin_require_internet===true||d.coin_require_internet==='1'||d.coin_require_internet===1);
+            setVoucherInternetUI(d.voucher_require_internet===true||d.voucher_require_internet==='1'||d.voucher_require_internet===1);
+            document.getElementById('v-strike-threshold').value = d.voucher_strike_threshold||'';
+            document.getElementById('v-cooldown').value          = d.voucher_cooldown||'';
+            setVoucherStrikeUI(d.voucher_strike_enabled===true||d.voucher_strike_enabled==='1'||d.voucher_strike_enabled===1);
+            setInetStatusUI(d.internet_up===true||d.internet_up==='1'||d.internet_up===1);
         })
         .catch(function(){toastr.error('Network error loading config');});
 }
@@ -318,22 +490,48 @@ function saveRates(){
     var pur = getRateStr('r-user-val','r-user-unit');
     var pub = getRateStr('r-burst-val','r-burst-unit');
     var uar = getRateStr('r-unauth-val','r-unauth-unit');
-    var ina = document.getElementById('r-inactivity').value.trim();
-    var apOn = document.getElementById('ap-toggle').classList.contains('on');
+    var esOn = document.getElementById('es-toggle').classList.contains('on');
     if(!gr){toastr.warning('Global Cap is required');return;}
     showOverlay('Saving…');
     var body='global_rate='+encodeURIComponent(gr)
             +'&per_user_rate='+encodeURIComponent(pur)
             +'&per_user_burst='+encodeURIComponent(pub)
             +'&unauth_rate='+encodeURIComponent(uar)
-            +'&inactivity_timeout='+encodeURIComponent(ina)
-            +'&auto_pause_enabled='+(apOn?'1':'0');
+            +'&equal_sharing_enabled='+(esOn?'1':'0');
     postForm('config_set', body, function(d){
         hideOverlay();
         if(!d.ok){toastr.error('Save failed');return;}
         postForm('qos_apply','',function(r2){
             toastr.success(r2.ok?'Rates saved — QoS updating…':'Saved (QoS trigger failed)');
         });
+    });
+}
+
+/* ── Equal bandwidth sharing switch (local UI state; persisted via Save & Apply) ── */
+function setEqualShareUI(on){
+    var tog=document.getElementById('es-toggle');
+    var hint=document.getElementById('pur-hint');
+    if(on){ tog.classList.add('on'); hint.textContent='Ignored while Equal Sharing is enabled'; }
+    else  { tog.classList.remove('on'); hint.textContent='Minimum bandwidth each active client can claim'; }
+}
+function toggleEqualShareUI(){
+    var tog=document.getElementById('es-toggle');
+    setEqualShareUI(!tog.classList.contains('on'));
+}
+
+/* ── Save session settings ── */
+function saveSessionSettings(){
+    var ina = document.getElementById('r-inactivity').value.trim();
+    var apOn = document.getElementById('ap-toggle').classList.contains('on');
+    var arOn = document.getElementById('ar-toggle').classList.contains('on');
+    showOverlay('Saving…');
+    var body='inactivity_timeout='+encodeURIComponent(ina)
+            +'&auto_pause_enabled='+(apOn?'1':'0')
+            +'&auto_resume_enabled='+(arOn?'1':'0');
+    postForm('config_set', body, function(d){
+        hideOverlay();
+        if(d.ok) toastr.success('Session settings saved');
+        else toastr.error('Save failed: '+(d.error||''));
     });
 }
 
@@ -347,6 +545,16 @@ function setAutoPauseUI(on){
 function toggleAutoPauseUI(){
     var tog=document.getElementById('ap-toggle');
     setAutoPauseUI(!tog.classList.contains('on'));
+}
+
+/* ── Auto-resume switch (local UI state; persisted via Save & Apply) ── */
+function setAutoResumeUI(on){
+    var tog=document.getElementById('ar-toggle');
+    if(on) tog.classList.add('on'); else tog.classList.remove('on');
+}
+function toggleAutoResumeUI(){
+    var tog=document.getElementById('ar-toggle');
+    setAutoResumeUI(!tog.classList.contains('on'));
 }
 
 /* ── Anti-tethering toggle ── */
@@ -406,6 +614,37 @@ function toggleMacFix(){
     });
 }
 
+/* ── Pause active users on boot toggle ── */
+function setPauseOnBootUI(on){
+    var tog=document.getElementById('pob-toggle');
+    var badge=document.getElementById('pob-badge');
+    if(on){ tog.classList.add('on'); badge.textContent='On'; badge.className='at-badge on'; }
+    else  { tog.classList.remove('on'); badge.textContent='Off'; badge.className='at-badge off'; }
+}
+function togglePauseOnBoot(){
+    var tog=document.getElementById('pob-toggle');
+    if(tog.classList.contains('busy')) return;
+    var newVal=tog.classList.contains('on')?0:1;
+    tog.classList.add('busy');
+    postForm('pause_on_boot_set','enabled='+newVal,function(d){
+        tog.classList.remove('busy');
+        if(d.ok){ setPauseOnBootUI(d.pause_on_boot); toastr.success('Pause active users on boot '+(d.pause_on_boot?'enabled':'disabled')); }
+        else toastr.error('Failed: '+(d.error||'unknown'));
+    });
+}
+
+/* ── Voucher toggle ── */
+function setVoucherToggleUI(on){ var tog=document.getElementById('voucher-toggle'); var lbl=document.getElementById('voucher-toggle-label'); if(on){tog.classList.add('on');lbl.textContent='Voucher: On';}else{tog.classList.remove('on');lbl.textContent='Voucher: Off';} }
+function toggleVoucher(){
+    var tog=document.getElementById('voucher-toggle'); tog.classList.add('busy');
+    var newState=tog.classList.contains('on')?0:1;
+    postForm('voucher_toggle','enabled='+newState,function(d){
+        tog.classList.remove('busy');
+        if(d.ok){setVoucherToggleUI(d.voucher_on);toastr.success('Voucher input '+(d.voucher_on?'enabled':'disabled'));}
+        else toastr.error('Toggle failed: '+(d.error||'unknown'));
+    });
+}
+
 /* ── Coin toggle ── */
 function setCoinToggleUI(on){ var tog=document.getElementById('coin-toggle'); var lbl=document.getElementById('coin-toggle-label'); if(on){tog.classList.add('on');lbl.textContent='Coin: On';}else{tog.classList.remove('on');lbl.textContent='Coin: Off';} }
 function toggleCoin(){
@@ -415,6 +654,44 @@ function toggleCoin(){
         tog.classList.remove('busy');
         if(d.ok){setCoinToggleUI(d.coin_on);toastr.success('Coin acceptor '+(d.coin_on?'enabled':'disabled'));}
         else toastr.error('Toggle failed: '+(d.error||'unknown'));
+    });
+}
+
+/* ── Coin anti-troll suspension toggle ── */
+function setCoinStrikeUI(on){
+    var tog=document.getElementById('cs-toggle');
+    var badge=document.getElementById('cs-badge');
+    if(on){ tog.classList.add('on'); badge.textContent='On'; badge.className='at-badge on'; }
+    else  { tog.classList.remove('on'); badge.textContent='Off'; badge.className='at-badge off'; }
+}
+function toggleCoinStrike(){
+    var tog=document.getElementById('cs-toggle');
+    if(tog.classList.contains('busy')) return;
+    var newVal=tog.classList.contains('on')?0:1;
+    tog.classList.add('busy');
+    postForm('coin_strike_set','enabled='+newVal,function(d){
+        tog.classList.remove('busy');
+        if(d.ok){ setCoinStrikeUI(d.coin_strike_enabled); toastr.success('Coin anti-troll suspension '+(d.coin_strike_enabled?'enabled':'disabled')); }
+        else toastr.error('Failed: '+(d.error||'unknown'));
+    });
+}
+
+/* ── Insert Coin queue toggle ── */
+function setCoinQueueUI(on){
+    var tog=document.getElementById('cq-toggle');
+    var badge=document.getElementById('cq-badge');
+    if(on){ tog.classList.add('on'); badge.textContent='On'; badge.className='at-badge on'; }
+    else  { tog.classList.remove('on'); badge.textContent='Off'; badge.className='at-badge off'; }
+}
+function toggleCoinQueue(){
+    var tog=document.getElementById('cq-toggle');
+    if(tog.classList.contains('busy')) return;
+    var newVal=tog.classList.contains('on')?0:1;
+    tog.classList.add('busy');
+    postForm('coin_queue_set','enabled='+newVal,function(d){
+        tog.classList.remove('busy');
+        if(d.ok){ setCoinQueueUI(d.coin_queue_enabled); toastr.success('Insert Coin queue '+(d.coin_queue_enabled?'enabled':'disabled')); }
+        else toastr.error('Failed: '+(d.error||'unknown'));
     });
 }
 
@@ -429,6 +706,81 @@ function saveCoin(){
         +'&coin_strike_threshold='+encodeURIComponent(p.coin_strike_threshold)
         +'&coin_cooldown='+encodeURIComponent(p.coin_cooldown);
     postForm('config_set',body,function(d){hideOverlay();if(d.ok)toastr.success('Coin settings saved');else toastr.error('Save failed: '+(d.error||''));});
+}
+
+/* ── Voucher suspension toggle ── */
+function setVoucherStrikeUI(on){
+    var tog=document.getElementById('vs-toggle');
+    var badge=document.getElementById('vs-badge');
+    if(on){ tog.classList.add('on'); badge.textContent='On'; badge.className='at-badge on'; }
+    else  { tog.classList.remove('on'); badge.textContent='Off'; badge.className='at-badge off'; }
+}
+function toggleVoucherStrike(){
+    var tog=document.getElementById('vs-toggle');
+    if(tog.classList.contains('busy')) return;
+    var newVal=tog.classList.contains('on')?0:1;
+    tog.classList.add('busy');
+    postForm('voucher_strike_set','enabled='+newVal,function(d){
+        tog.classList.remove('busy');
+        if(d.ok){ setVoucherStrikeUI(d.voucher_strike_enabled); toastr.success('Voucher suspension '+(d.voucher_strike_enabled?'enabled':'disabled')); }
+        else toastr.error('Failed: '+(d.error||'unknown'));
+    });
+}
+function saveVoucherStrike(){
+    var p={
+        voucher_strike_threshold: document.getElementById('v-strike-threshold').value.trim(),
+        voucher_cooldown:  document.getElementById('v-cooldown').value.trim()
+    };
+    showOverlay('Saving voucher settings…');
+    var body='voucher_strike_threshold='+encodeURIComponent(p.voucher_strike_threshold)
+        +'&voucher_cooldown='+encodeURIComponent(p.voucher_cooldown);
+    postForm('config_set',body,function(d){hideOverlay();if(d.ok)toastr.success('Voucher settings saved');else toastr.error('Save failed: '+(d.error||''));});
+}
+
+/* ── Internet status (read-only indicator) ── */
+function setInetStatusUI(up){
+    var badge=document.getElementById('inet-status-badge');
+    var txt=document.getElementById('inet-status-text');
+    if(up){ badge.className='status-badge running'; txt.textContent='Online'; }
+    else  { badge.className='status-badge stopped'; txt.textContent='Offline'; }
+}
+
+/* ── Disable Insert Coin when no internet ── */
+function setCoinInternetUI(on){
+    var tog=document.getElementById('ci-toggle');
+    var badge=document.getElementById('ci-badge');
+    if(on){ tog.classList.add('on'); badge.textContent='On'; badge.className='at-badge on'; }
+    else  { tog.classList.remove('on'); badge.textContent='Off'; badge.className='at-badge off'; }
+}
+function toggleCoinInternet(){
+    var tog=document.getElementById('ci-toggle');
+    if(tog.classList.contains('busy')) return;
+    var newVal=tog.classList.contains('on')?0:1;
+    tog.classList.add('busy');
+    postForm('coin_internet_set','enabled='+newVal,function(d){
+        tog.classList.remove('busy');
+        if(d.ok){ setCoinInternetUI(d.coin_require_internet); toastr.success('Insert Coin internet requirement '+(d.coin_require_internet?'enabled':'disabled')); }
+        else toastr.error('Failed: '+(d.error||'unknown'));
+    });
+}
+
+/* ── Disable Voucher Conversion when no internet ── */
+function setVoucherInternetUI(on){
+    var tog=document.getElementById('vi-toggle');
+    var badge=document.getElementById('vi-badge');
+    if(on){ tog.classList.add('on'); badge.textContent='On'; badge.className='at-badge on'; }
+    else  { tog.classList.remove('on'); badge.textContent='Off'; badge.className='at-badge off'; }
+}
+function toggleVoucherInternet(){
+    var tog=document.getElementById('vi-toggle');
+    if(tog.classList.contains('busy')) return;
+    var newVal=tog.classList.contains('on')?0:1;
+    tog.classList.add('busy');
+    postForm('voucher_internet_set','enabled='+newVal,function(d){
+        tog.classList.remove('busy');
+        if(d.ok){ setVoucherInternetUI(d.voucher_require_internet); toastr.success('Voucher internet requirement '+(d.voucher_require_internet?'enabled':'disabled')); }
+        else toastr.error('Failed: '+(d.error||'unknown'));
+    });
 }
 
 /* ── Shared fetch helper ── */

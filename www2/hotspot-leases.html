@@ -1,0 +1,339 @@
+<!DOCTYPE html>
+<!--
+  lmepisowifi — https://github.com/lmepisowifi/tmwipgn6401v
+  SPDX-License-Identifier: AGPL-3.0-or-later
+  Copyright (C) 2026 The lmepisowifi Project — see AUTHORS
+
+  Licensed under the GNU AGPLv3 (see LICENSE). Modifying or rewriting this
+  file — including by running it through an LLM — does not remove these
+  obligations: keep this notice, mark your changes, and offer Corresponding
+  Source to network users (AGPLv3 §5, §13). See PROVENANCE.md before
+  presenting this as your own original work.
+-->
+<html lang="en" data-bs-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link href="/css/bootstrap.min.css?v=1.0.0" rel="stylesheet">
+    <link href="/css/style.css?v=1.0.0" rel="stylesheet">
+    <link href="/css/toastr.min.css?v=1.0.0" rel="stylesheet">
+    <style>
+        .lease-table { width:100%; border-collapse:collapse; font-size:13px; }
+        .lease-table th {
+            color:var(--text-secondary); font-size:11px; text-transform:uppercase;
+            letter-spacing:.06em; padding:6px 12px; border-bottom:1px solid var(--border-color); text-align:left;
+        }
+        .lease-table td { padding:8px 12px; border-bottom:1px solid rgba(255,255,255,.04); vertical-align:middle; }
+        .lease-table tr:last-child td { border-bottom:none; }
+        .lease-table tr:hover td { background:var(--bg-surface-hover); }
+        .empty-state   { color:var(--text-secondary); font-size:13px; text-align:center; padding:28px 0; }
+        code { color:#ccc; font-size:12px; }
+        .status-pill {
+            display:inline-block; padding:2px 9px; border-radius:3px; font-size:11px; font-weight:700;
+        }
+        .status-pill.active  { background:rgba(76,175,80,.2);  color:#81c784; }
+        .status-pill.expired { background:rgba(244,67,54,.2);  color:#e57373; }
+
+        .leases-toolbar { margin-bottom:14px; display:flex; flex-wrap:wrap; justify-content:flex-end; gap:8px; align-items:center; }
+        .leases-toolbar .btn { white-space:nowrap; }
+        @media (max-width:576px) {
+            .leases-toolbar #lease-count { flex:1 1 100%; text-align:left; }
+        }
+    </style>
+</head>
+<body>
+
+<div id="overlay">
+    <div id="overlay-blur"></div>
+    <div id="overlay-msg">
+        <div id="overlay-spinner"></div>
+        <span id="overlay-text"></span>
+    </div>
+</div>
+
+<script>document.write('<script src="/js/nav.js?t=' + Date.now() + '"><\/script>');</script>
+
+<div class="container mt-4" style="max-width:960px;">
+
+    <div class="leases-toolbar">
+        <span id="lease-count" style="font-size:13px;color:var(--text-secondary);"></span>
+        <button class="btn btn-sm btn-outline-secondary" onclick="loadLeases()">Refresh</button>
+    </div>
+
+    <div class="card">
+        <div class="card-header">DHCP Leases</div>
+        <div class="card-body p-0">
+            <p style="font-size:12px;color:var(--text-secondary);margin:10px 12px 0;">
+                Devices currently holding an address on the hotspot subnet. NodeMCU coin acceptors
+                use a fixed IP and are managed on the NodeMCUs page, not here.
+            </p>
+            <div style="overflow-x:auto; min-height:80px;" id="leases-wrap">
+                <div class="empty-state" id="leases-empty">Loading…</div>
+                <table class="lease-table" id="leases-table" style="display:none;">
+                    <thead>
+                        <tr>
+                            <th>MAC</th>
+                            <th>IP</th>
+                            <th>Time Remaining</th>
+                            <th>Status</th>
+                            <th></th>
+                        </tr>
+                    </thead>
+                    <tbody id="leases-tbody"></tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+</div>
+
+<!-- ── Renew Modal ── -->
+<div class="modal fade" id="renewModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered" style="max-width:320px;margin-left:auto;margin-right:auto;">
+        <div class="modal-content" style="border:1px solid var(--border-color);">
+            <div class="modal-header py-2 px-3">
+                <div>
+                    <div class="fw-semibold" style="font-size:14px;">Renew Lease</div>
+                    <code id="rm-mac" style="font-size:11px;color:var(--text-secondary);"></code>
+                </div>
+                <button type="button" class="btn-close btn-close-white ms-auto" data-bs-dismiss="modal" style="font-size:12px;"></button>
+            </div>
+            <div class="modal-body px-3 pb-2 pt-3">
+                <div class="d-flex gap-2 justify-content-center align-items-end mb-3">
+                    <div class="text-center">
+                        <label for="rm-days" style="font-size:11px;color:var(--text-secondary);display:block;margin-bottom:4px;">Days</label>
+                        <input id="rm-days" type="number" min="0" max="365" value="1"
+                               class="form-control form-control-sm text-center fw-semibold"
+                               style="width:68px;font-size:18px;padding:6px 4px;"
+                               oninput="_rmUpdatePreview()">
+                    </div>
+                    <span style="font-size:20px;font-weight:300;color:var(--text-secondary);padding-bottom:6px;">:</span>
+                    <div class="text-center">
+                        <label for="rm-hours" style="font-size:11px;color:var(--text-secondary);display:block;margin-bottom:4px;">Hours</label>
+                        <input id="rm-hours" type="number" min="0" max="23" value="0"
+                               class="form-control form-control-sm text-center fw-semibold"
+                               style="width:68px;font-size:18px;padding:6px 4px;"
+                               oninput="_rmUpdatePreview()">
+                    </div>
+                    <span style="font-size:20px;font-weight:300;color:var(--text-secondary);padding-bottom:6px;">:</span>
+                    <div class="text-center">
+                        <label for="rm-minutes" style="font-size:11px;color:var(--text-secondary);display:block;margin-bottom:4px;">Mins</label>
+                        <input id="rm-minutes" type="number" min="0" max="59" value="0"
+                               class="form-control form-control-sm text-center fw-semibold"
+                               style="width:68px;font-size:18px;padding:6px 4px;"
+                               oninput="_rmUpdatePreview()">
+                    </div>
+                </div>
+                <p id="rm-preview" style="font-size:12px;color:var(--text-secondary);text-align:center;margin:0;min-height:18px;"></p>
+                <p style="font-size:11px;color:var(--text-secondary);text-align:center;margin:8px 0 0;">
+                    The device stays connected — only the server's timer for this lease resets.
+                </p>
+            </div>
+            <div class="modal-footer py-2 px-3" style="border-top:1px solid var(--border-color);">
+                <button type="button" class="btn btn-sm btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                <button type="button" class="btn btn-sm btn-primary" id="rm-confirm" onclick="confirmRenewModal()">Renew</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script src="/js/bootstrap.bundle.min.js?v=1.0.0"></script>
+<script src="/js/jquery-3.7.1.min.js?v=1.0.0"></script>
+<script src="/js/toastr.min.js?v=1.0.0"></script>
+<script>
+toastr.options = { positionClass:'toast-bottom-right', timeOut:3000, progressBar:true, closeButton:true };
+function showOverlay(m){ document.getElementById('overlay-text').textContent=m||''; document.getElementById('overlay').style.display='flex'; }
+function hideOverlay(){ document.getElementById('overlay').style.display='none'; }
+
+// Format seconds → "1d 2h 3m", "2h 3m", "3m 4s", "4s". Used for the live countdown.
+function fmtTime(s){
+    s = Math.max(0, Math.floor(s));
+    var d=Math.floor(s/86400), h=Math.floor((s%86400)/3600), m=Math.floor((s%3600)/60), sec=s%60;
+    if (d>0) return d+'d '+h+'h '+m+'m';
+    if (h>0) return h+'h '+m+'m';
+    if (m>0) return m+'m '+sec+'s';
+    return sec+'s';
+}
+
+// Format seconds → "1d 2h", "3h 4m", "5m", for the renew-preview text.
+function fmtDHM(secs) {
+    secs = Math.abs(Math.round(secs));
+    var d = Math.floor(secs / 86400);
+    var h = Math.floor((secs % 86400) / 3600);
+    var m = Math.floor((secs % 3600) / 60);
+    var parts = [];
+    if (d) parts.push(d + 'd');
+    if (h) parts.push(h + 'h');
+    if (m || !parts.length) parts.push(m + 'm');
+    return parts.join(' ');
+}
+
+function _rowId(mac){ return 'lease-' + mac.replace(/:/g, ''); }
+
+var _leases = [];       // last fetch, each {mac, ip, remaining, expired}
+var _capturedAt = 0;    // Date.now() when _leases was fetched, for local tick-down
+var _leasesSupported = true;
+var _pollTimer = null, _tickTimer = null;
+
+function loadLeases(){
+    var empty = document.getElementById('leases-empty');
+    var tbl   = document.getElementById('leases-table');
+    var cnt   = document.getElementById('lease-count');
+    empty.textContent='Loading…'; empty.style.display='block'; tbl.style.display='none';
+
+    fetch('/cgi-bin/hotspot.cgi?action=dhcp_leases', { cache:'no-store' })
+        .then(function(r){ return r.json(); })
+        .then(function(d){
+            if (!d.ok){ empty.textContent='Failed to load leases'; return; }
+            _leasesSupported = !!d.supported;
+            if (!_leasesSupported){
+                cnt.textContent = '';
+                empty.textContent = "This device's busybox build doesn't include the DHCP lease tools this page needs.";
+                empty.style.display='block'; tbl.style.display='none';
+                if (_pollTimer) clearInterval(_pollTimer);
+                if (_tickTimer) clearInterval(_tickTimer);
+                return;
+            }
+            _leases = d.leases || [];
+            _capturedAt = Date.now();
+            cnt.textContent = _leases.length ? _leases.length + ' lease' + (_leases.length>1?'s':'') : '';
+            if (!_leases.length){
+                empty.textContent='No active DHCP leases'; empty.style.display='block'; tbl.style.display='none'; return;
+            }
+            renderLeases();
+            empty.style.display='none'; tbl.style.display='table';
+        })
+        .catch(function(){ empty.textContent='Failed to load leases'; });
+}
+
+// Full table rebuild — called after every fresh fetch (~15s) or when the
+// list itself changes (renew/delete). The 1s tick only patches countdown
+// text/status in place (see tickLeases) so the table doesn't flicker.
+function renderLeases(){
+    var tbody = document.getElementById('leases-tbody');
+    tbody.innerHTML = '';
+    _leases.forEach(function(l){
+        var rid = _rowId(l.mac);
+        var tr = document.createElement('tr');
+        tr.id = rid;
+        tr.innerHTML =
+            '<td><code>'+l.mac+'</code></td>'+
+            '<td><code>'+l.ip+'</code></td>'+
+            '<td id="'+rid+'-rem" style="white-space:nowrap;"></td>'+
+            '<td id="'+rid+'-status"></td>'+
+            '<td>'+
+                '<div style="display:flex;gap:3px;min-width:140px;">'+
+                    '<button class="btn btn-sm btn-outline-primary flex-fill" onclick="openRenewModal(\''+l.mac+'\')">Renew</button>'+
+                    '<button class="btn btn-sm btn-outline-danger flex-fill" onclick="deleteLease(\''+l.mac+'\',this)">Delete</button>'+
+                '</div>'+
+            '</td>';
+        tbody.appendChild(tr);
+    });
+    tickLeases();
+}
+
+// Runs every second: recompute each row's remaining time locally from the
+// last fetch (no network call) so the countdown actually counts down
+// instead of sitting frozen between polls.
+function tickLeases(){
+    if (!_leases.length) return;
+    var elapsed = Math.floor((Date.now() - _capturedAt) / 1000);
+    _leases.forEach(function(l){
+        var rid = _rowId(l.mac);
+        var remCell = document.getElementById(rid+'-rem');
+        var stCell  = document.getElementById(rid+'-status');
+        if (!remCell || !stCell) return;
+        var live = Math.max(0, l.remaining - elapsed);
+        var isExpired = l.expired || live <= 0;
+        remCell.textContent = isExpired ? '—' : fmtTime(live);
+        stCell.innerHTML = isExpired
+            ? '<span class="status-pill expired">Expired</span>'
+            : '<span class="status-pill active">Active</span>';
+    });
+}
+
+function deleteLease(mac, btn){
+    var lease = _leases.filter(function(l){ return l.mac === mac; })[0];
+    var ip = lease ? lease.ip : '';
+    if (!confirm('Delete the lease for '+mac+(ip?' ('+ip+')':'')+'? The device will be disconnected and must reconnect to get a new address.')) return;
+    btn.disabled = true; btn.textContent = '…';
+    fetch('/cgi-bin/hotspot.cgi?action=dhcp_lease_delete', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+        body: 'mac=' + encodeURIComponent(mac)
+    })
+    .then(function(r){ return r.json(); })
+    .then(function(d){
+        if (d.ok){ toastr.success('Deleted lease for '+mac); loadLeases(); }
+        else { toastr.error('Delete failed: '+(d.error||'')); btn.disabled=false; btn.textContent='Delete'; }
+    })
+    .catch(function(){ toastr.error('Network error'); btn.disabled=false; btn.textContent='Delete'; });
+}
+
+/* ── Renew modal ── */
+var _rmMac = null, _rmModal = null;
+
+function _rmUpdatePreview(){
+    var d    = parseInt(document.getElementById('rm-days').value,    10) || 0;
+    var h    = parseInt(document.getElementById('rm-hours').value,   10) || 0;
+    var mins = parseInt(document.getElementById('rm-minutes').value, 10) || 0;
+    var total = d * 1440 + h * 60 + mins;
+    var pre  = document.getElementById('rm-preview');
+    var btn  = document.getElementById('rm-confirm');
+    if (total < 1) {
+        pre.textContent = 'Enter at least 1 minute';
+        pre.style.color = 'var(--bs-danger, #f87171)';
+        btn.disabled = true;
+    } else {
+        pre.textContent = 'Extend to ' + fmtDHM(total * 60) + ' remaining';
+        pre.style.color = 'var(--text-secondary)';
+        btn.disabled = false;
+    }
+}
+
+function openRenewModal(mac){
+    _rmMac = mac;
+    document.getElementById('rm-mac').textContent = mac;
+    document.getElementById('rm-days').value    = 1;
+    document.getElementById('rm-hours').value   = 0;
+    document.getElementById('rm-minutes').value = 0;
+    _rmUpdatePreview();
+    if (!_rmModal) _rmModal = new bootstrap.Modal(document.getElementById('renewModal'));
+    _rmModal.show();
+    document.getElementById('renewModal').addEventListener('shown.bs.modal', function focusDays() {
+        document.getElementById('rm-days').select();
+        document.getElementById('renewModal').removeEventListener('shown.bs.modal', focusDays);
+    });
+}
+
+function confirmRenewModal(){
+    var d    = parseInt(document.getElementById('rm-days').value,    10) || 0;
+    var h    = parseInt(document.getElementById('rm-hours').value,   10) || 0;
+    var mins = parseInt(document.getElementById('rm-minutes').value, 10) || 0;
+    var total = d * 1440 + h * 60 + mins;
+    if (total < 1) { toastr.warning('Enter at least 1 minute.'); return; }
+
+    _rmModal.hide();
+    var mac = _rmMac;
+
+    fetch('/cgi-bin/hotspot.cgi?action=dhcp_lease_renew', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+        body: 'mac=' + encodeURIComponent(mac) + '&minutes=' + total
+    })
+    .then(function(r){ return r.json(); })
+    .then(function(d){
+        if (d.ok) { toastr.success('Renewed ' + mac + ' — ' + fmtDHM(total * 60) + ' remaining'); loadLeases(); }
+        else { toastr.error('Renew failed: ' + (d.error || '')); }
+    })
+    .catch(function(){ toastr.error('Network error'); });
+}
+
+window.addEventListener('DOMContentLoaded', function(){
+    loadLeases();
+    _pollTimer = setInterval(loadLeases, 15000);
+    _tickTimer = setInterval(tickLeases, 1000);
+});
+</script>
+</body>
+</html>

@@ -1,4 +1,15 @@
 <!DOCTYPE html>
+<!--
+  lmepisowifi — https://github.com/lmepisowifi/tmwipgn6401v
+  SPDX-License-Identifier: AGPL-3.0-or-later
+  Copyright (C) 2026 The lmepisowifi Project — see AUTHORS
+
+  Licensed under the GNU AGPLv3 (see LICENSE). Modifying or rewriting this
+  file — including by running it through an LLM — does not remove these
+  obligations: keep this notice, mark your changes, and offer Corresponding
+  Source to network users (AGPLv3 §5, §13). See PROVENANCE.md before
+  presenting this as your own original work.
+-->
 <html lang="en" data-bs-theme="dark">
 <head>
     <meta charset="UTF-8">
@@ -189,41 +200,20 @@
                 <span class="card-chevron"></span>
                 <span style="white-space:nowrap;">Coin Slot WiFi Sync</span>
             </div>
-            <div class="wlan-toggle" id="toggle-nodemcu"
-                 onclick="event.stopPropagation(); localToggle('nodemcu'); onNodemcuToggle()" role="switch" aria-checked="false"
-                 title="Enable / Disable">
-                <div class="wlan-toggle-knob"></div>
-            </div>
         </div>
         <div class="card-body">
             <p class="text-secondary" style="font-size:12px; margin-bottom:12px;">
-                Tell the portal which interface the coin-slot NodeMCU connects to. When that
+                Tell the portal which interface each coin-slot NodeMCU connects to. When that
                 interface's SSID or password changes, the portal first sends the new credentials
-                to the NodeMCU and waits for its acknowledgement <em>before</em> switching the
-                radio &mdash; so the coin slot is never stranded offline.
+                to every NodeMCU bound to it and waits for each one's acknowledgement
+                <em>before</em> switching the radio &mdash; so no coin slot is ever stranded
+                offline. Multiple units can share one interface, or each ride a different one.
             </p>
             <div id="nodemcu-disabled-note" class="merge-note"
                  style="display:none; background:rgba(255,180,80,0.10); border-color:rgba(255,180,80,0.30); color:#ffcf8e;">
-                ⚠️ The coin slot is not enabled on this router, so WiFi sync has no effect until you enable it in the coin-slot settings.
+                ⚠️ No coin-slot NodeMCU units are configured yet — add one in the coin-slot settings first.
             </div>
-            <div id="nodemcu-fields">
-                <div class="row g-2">
-                    <div class="col-sm-6">
-                        <label class="form-label">Band</label>
-                        <select class="form-select" id="nodemcu-band" onchange="renderNodemcuIfaces()">
-                            <option value="24">2.4 GHz</option>
-                            <option value="5">5 GHz</option>
-                        </select>
-                    </div>
-                    <div class="col-sm-6">
-                        <label class="form-label">Interface</label>
-                        <select class="form-select" id="nodemcu-iface"></select>
-                    </div>
-                </div>
-            </div>
-            <button type="button" class="btn btn-primary w-100 mt-3" id="save-nodemcu-btn" onclick="saveNodemcu()">
-                Save
-            </button>
+            <div id="nodemcu-units"></div>
         </div>
     </div>
 
@@ -695,6 +685,24 @@ function buildIfaceCards(ifaces) {
                 </div>
                 <button type="button" class="btn btn-primary w-100 mt-3"
                         id="save-${id}-btn" onclick="saveIface(${iface.idx})">Save</button>
+                ${isVxd ? `
+                <hr class="my-3">
+                <div style="font-size:11px; color:#888; margin-bottom:8px;">
+                    Live connection status moved to
+                    <a href="/sitesurvey.html" style="color:#9fc5ff;">Site Survey</a>.
+                </div>
+                <label class="form-label mt-2">Lock to BSSID <span style="font-weight:400; color:#888;">(optional)</span></label>
+                <div class="d-flex gap-2">
+                    <input type="text" class="form-control" id="${id}-bssid-lock"
+                           maxlength="17" placeholder="AA:BB:CC:DD:EE:FF (blank = any AP with this SSID)">
+                    <button type="button" class="btn btn-outline-secondary" style="white-space:nowrap;"
+                            id="save-${id}-bssid-btn" onclick="saveBssidLock(${iface.idx})">Save</button>
+                </div>
+                <div style="font-size:11px; color:#888; margin-top:4px;">
+                    Pins this radio to one specific access point instead of any AP broadcasting the SSID.
+                    Not guaranteed during automatic roam scans on some firmware — verify it holds if you
+                    have more than one AP using the same network name nearby.
+                </div>` : ''}
             </div>`;
 
         container.appendChild(div);
@@ -703,6 +711,81 @@ function buildIfaceCards(ifaces) {
         document.getElementById(id + '-ssid').value = iface.ssid || '';
         setToggle(id, iface.disabled === 0);
     });
+
+    startVxdStatusPolling();
+}
+
+// ═══════════════════════════════════════════════════════════════
+// VXD (idx 5) — BSSID lock field. Live connection/auth status now
+// lives on the Site Survey page (Android-style card at the top);
+// this page only needs vxd_status for the lockedBssid value.
+// ═══════════════════════════════════════════════════════════════
+let vxdPollTimer = null;
+
+function macToColon(hex) {
+    if (!hex || hex.length !== 12) return '';
+    return hex.match(/.{2}/g).join(':').toUpperCase();
+}
+function macToHex(colonOrHex) {
+    return (colonOrHex || '').toLowerCase().replace(/[^0-9a-f]/g, '');
+}
+
+function applyVxdStatus(vs) {
+    const id = 'iface-5';
+    const lockInput = document.getElementById(id + '-bssid-lock');
+    if (!lockInput) return; // VXD card not currently rendered
+
+    // Don't stomp on a value the user is actively typing
+    if (document.activeElement !== lockInput) {
+        lockInput.value = macToColon(vs.lockedBssid);
+    }
+}
+
+function loadVxdStatus() {
+    fetch(CGI + '?band=' + currentBand + '&action=vxd_status')
+        .then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
+        .then(applyVxdStatus)
+        .catch(() => {}); // silent — this is a background poll
+}
+
+function startVxdStatusPolling() {
+    if (vxdPollTimer) { clearInterval(vxdPollTimer); vxdPollTimer = null; }
+    if (!document.getElementById('iface-5-bssid-lock')) return; // no VXD card this band
+    loadVxdStatus();
+    vxdPollTimer = setInterval(loadVxdStatus, 5000);
+}
+
+// Save VXD BSSID lock  (POST ?action=save_bssid_lock)
+function saveBssidLock(idx) {
+    const id = 'iface-' + idx;
+    const raw = document.getElementById(id + '-bssid-lock').value.trim();
+    const hex = macToHex(raw);
+
+    if (raw && hex.length !== 12) {
+        toastr["warning"]('Enter a full MAC address (AA:BB:CC:DD:EE:FF) or leave it blank.', "Error");
+        return;
+    }
+
+    setFormEnabled(false);
+    startCountdown('Applying');
+    let aborted = false;
+    fetch(CGI + '?action=save_bssid_lock&band=' + currentBand, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: 'bssid=' + encodeURIComponent(hex)
+    })
+    .then(r => {
+        if (r && !r.ok) { aborted = true; return r.text().then(t => { throw new Error(t || ('HTTP ' + r.status)); }); }
+    })
+    .catch(err => {
+        if (aborted) {
+            if (countdownTimer) { clearInterval(countdownTimer); countdownTimer = null; }
+            hideOverlay();
+            setFormEnabled(true);
+            toastr["warning"](err.message || 'Save failed', "Error");
+        }
+    });
+    setTimeout(() => { if (!aborted) pollUntilBack(); }, 4500);
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -1098,58 +1181,111 @@ function saveMerge() {
 }
 
 // ═══════════════════════════════════════════════════════════════════
-// Coin Slot (NodeMCU) Wi-Fi sync binding
+// Coin Slot (NodeMCU) Wi-Fi sync bindings — one row per configured unit.
+// Multiple units can be bound to the same interface, or each to a
+// different one; every unit manages its own enabled/band/iface state.
 // ═══════════════════════════════════════════════════════════════════
-let nodemcuCfg    = { coinEnabled: 0, enabled: 0, band: 24, iface: 0 };
+let nodemcuUnits  = [];   // [{id,title,regEnabled,enabled,band,iface,nodemcuIp}, ...]
 let nodemcuLoaded = false;
 
-function onNodemcuToggle() { updateNodemcuFieldsState(); }
+function nmEscHtml(s) {
+    return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+    }[c]));
+}
 
-function updateNodemcuFieldsState() {
-    const on = isToggleOn('nodemcu');
-    const b = document.getElementById('nodemcu-band');
-    const i = document.getElementById('nodemcu-iface');
+function onNodemcuUnitToggle(id) { localToggle('nodemcu-' + id); updateNodemcuUnitFieldsState(id); }
+
+function updateNodemcuUnitFieldsState(id) {
+    const on = isToggleOn('nodemcu-' + id);
+    const b = document.getElementById('nodemcu-band-' + id);
+    const i = document.getElementById('nodemcu-iface-' + id);
     if (b) b.disabled = !on;
     if (i) i.disabled = !on;
-    const f = document.getElementById('nodemcu-fields');
+    const f = document.getElementById('nodemcu-fields-' + id);
     if (f) f.style.opacity = on ? '1' : '0.45';
 }
 
-// Populate the interface picker from whichever band is selected. Reuses the
-// merge interface lists (loaded via loadMergeStatus) — enabled AP-type only.
-function renderNodemcuIfaces() {
-    const band = parseInt(document.getElementById('nodemcu-band').value);
+// Called from setFormEnabled() once controls are re-enabled — re-applies
+// every rendered unit row's own toggle-driven enable state.
+function updateNodemcuFieldsState() {
+    nodemcuUnits.forEach(u => updateNodemcuUnitFieldsState(u.id));
+}
+
+// Populate one unit's interface picker from whichever band it has selected.
+// Reuses the merge interface lists (loaded via loadMergeStatus) — enabled
+// AP-type only (a NodeMCU is a station, so it can't ride the VXD/client iface).
+function renderNodemcuUnitIfaces(id) {
+    const bandSel = document.getElementById('nodemcu-band-' + id);
+    if (!bandSel) return;
+    const band = parseInt(bandSel.value);
     const ifaces = band === 24 ? (mergeCfg.ifaces24 || []) : (mergeCfg.ifaces5 || []);
-    populateMergeSelect('nodemcu-iface', ifaces, nodemcuCfg.iface);
+    const u = nodemcuUnits.find(x => x.id === id);
+    populateMergeSelect('nodemcu-iface-' + id, ifaces, u ? u.iface : 0);
+}
+
+function nodemcuUnitRowHtml(u) {
+    const regNote = u.regEnabled !== 1
+        ? '<div class="merge-note" style="background:rgba(255,180,80,0.10); border-color:rgba(255,180,80,0.30); color:#ffcf8e; margin-bottom:8px;">'
+          + '⚠️ This unit is disabled in the coin-slot settings, so WiFi sync has no effect until it\'s enabled there.</div>'
+        : '';
+    return '<div class="nodemcu-unit-row mb-3" id="nodemcu-unit-' + u.id + '" '
+        + 'style="border:1px solid rgba(255,255,255,0.08); border-radius:8px; padding:12px;">'
+        + '<div class="d-flex align-items-center justify-content-between gap-2 mb-2">'
+        + '<strong style="font-size:13px;">#' + u.id + ' — ' + nmEscHtml(u.title || ('Unit ' + u.id)) + '</strong>'
+        + '<div class="wlan-toggle" id="toggle-nodemcu-' + u.id + '" '
+        + 'onclick="onNodemcuUnitToggle(' + u.id + ')" role="switch" aria-checked="false" '
+        + 'title="Enable / Disable sync for this unit"><div class="wlan-toggle-knob"></div></div>'
+        + '</div>'
+        + regNote
+        + '<div class="row g-2" id="nodemcu-fields-' + u.id + '">'
+        + '<div class="col-sm-5"><label class="form-label">Band</label>'
+        + '<select class="form-select" id="nodemcu-band-' + u.id + '" onchange="renderNodemcuUnitIfaces(' + u.id + ')">'
+        + '<option value="24">2.4 GHz</option><option value="5">5 GHz</option></select></div>'
+        + '<div class="col-sm-5"><label class="form-label">Interface</label>'
+        + '<select class="form-select" id="nodemcu-iface-' + u.id + '"></select></div>'
+        + '<div class="col-sm-2 d-flex align-items-end">'
+        + '<button type="button" class="btn btn-primary w-100" onclick="saveNodemcuUnit(' + u.id + ')">Save</button>'
+        + '</div></div></div>';
 }
 
 function renderNodemcuCard() {
-    setToggle('nodemcu', nodemcuCfg.enabled === 1);
-    document.getElementById('nodemcu-band').value = String(nodemcuCfg.band || 24);
-    renderNodemcuIfaces();
+    const container = document.getElementById('nodemcu-units');
     const note = document.getElementById('nodemcu-disabled-note');
-    if (note) note.style.display = (nodemcuCfg.coinEnabled === 1) ? 'none' : '';
-    updateNodemcuFieldsState();
+    if (!container) return;
+    if (nodemcuUnits.length === 0) {
+        container.innerHTML = '';
+        if (note) note.style.display = '';
+        return;
+    }
+    if (note) note.style.display = 'none';
+    container.innerHTML = nodemcuUnits.map(nodemcuUnitRowHtml).join('');
+    nodemcuUnits.forEach(u => {
+        setToggle('nodemcu-' + u.id, u.enabled === 1);
+        document.getElementById('nodemcu-band-' + u.id).value = String(u.band || 24);
+        renderNodemcuUnitIfaces(u.id);
+        updateNodemcuUnitFieldsState(u.id);
+    });
 }
 
 function loadNodemcuStatus() {
     return fetch(CGI + '?action=nodemcu_status')
         .then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
-        .then(cfg => { nodemcuCfg = cfg; nodemcuLoaded = true; renderNodemcuCard(); })
+        .then(cfg => { nodemcuUnits = cfg.units || []; nodemcuLoaded = true; renderNodemcuCard(); })
         .catch(() => { /* non-fatal */ });
 }
 
-function saveNodemcu() {
-    const enabled = isToggleOn('nodemcu') ? 1 : 0;
-    const band    = parseInt(document.getElementById('nodemcu-band').value) || 24;
-    let   iface   = parseInt(document.getElementById('nodemcu-iface').value);
+function saveNodemcuUnit(id) {
+    const enabled = isToggleOn('nodemcu-' + id) ? 1 : 0;
+    const band    = parseInt(document.getElementById('nodemcu-band-' + id).value) || 24;
+    let   iface   = parseInt(document.getElementById('nodemcu-iface-' + id).value);
     if (enabled === 1 && isNaN(iface)) {
-        alert('Select the interface the NodeMCU connects to.');
+        alert('Select the interface this NodeMCU connects to.');
         return;
     }
     if (isNaN(iface)) iface = 0;
 
-    const body = 'enabled=' + enabled + '&band=' + band + '&iface=' + iface;
+    const body = 'id=' + id + '&enabled=' + enabled + '&band=' + band + '&iface=' + iface;
     setFormEnabled(false);
     showOverlay('Saving…');
     fetch(CGI + '?action=save_nodemcu_bind', {

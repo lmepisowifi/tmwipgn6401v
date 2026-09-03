@@ -1,4 +1,15 @@
 <!DOCTYPE html>
+<!--
+  lmepisowifi — https://github.com/lmepisowifi/tmwipgn6401v
+  SPDX-License-Identifier: AGPL-3.0-or-later
+  Copyright (C) 2026 The lmepisowifi Project — see AUTHORS
+
+  Licensed under the GNU AGPLv3 (see LICENSE). Modifying or rewriting this
+  file — including by running it through an LLM — does not remove these
+  obligations: keep this notice, mark your changes, and offer Corresponding
+  Source to network users (AGPLv3 §5, §13). See PROVENANCE.md before
+  presenting this as your own original work.
+-->
 <html lang="en" data-bs-theme="dark">
 <head>
     <meta charset="UTF-8">
@@ -144,6 +155,31 @@
             color: #ffb74d;
             margin-top: 8px;
         }
+        /* ── Connected network (VXD/client) — Android WiFi-page style ── */
+        #connected-network-card { display: none; }
+        .connected-net-row {
+            display: flex;
+            align-items: center;
+            gap: 14px;
+            padding: 14px 16px;
+        }
+        .connected-net-icon {
+            width: 40px; height: 40px;
+            border-radius: 50%;
+            display: flex; align-items: center; justify-content: center;
+            flex-shrink: 0;
+        }
+        .connected-net-icon svg { width: 22px; height: 22px; }
+        .connected-net-icon.state-connected { background: rgba(76,175,80,.15);  color: #81c784; }
+        .connected-net-icon.state-problem   { background: rgba(255,152,0,.15);  color: #ffb74d; }
+        .connected-net-icon.state-off       { background: rgba(244,67,54,.12);  color: #ef9a9a; }
+        .connected-net-info { flex: 1; min-width: 0; }
+        .connected-net-title {
+            font-size: 15px; font-weight: 600; color: var(--text-primary);
+            white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+        }
+        .connected-net-sub { font-size: 12px; color: var(--text-secondary); margin-top: 2px; }
+        .connected-net-sub.problem { color: #ffb74d; }
     </style>
     <link href="/css/toastr.min.css?v=1.0.0" rel="stylesheet">
 </head>
@@ -160,6 +196,20 @@
 
     <div class="container mt-4">
 
+        <!-- ── Connected network (VXD/client) — Android WiFi-page style,
+             sits above everything else; hidden entirely when the VXD
+             interface for the selected band is disabled ── -->
+        <div class="card mb-3" id="connected-network-card">
+            <div class="connected-net-row">
+                <div class="connected-net-icon" id="connected-net-icon"></div>
+                <div class="connected-net-info">
+                    <div class="connected-net-title" id="connected-net-title">—</div>
+                    <div class="connected-net-sub" id="connected-net-sub">—</div>
+                </div>
+                <span class="rssi-badge" id="connected-net-rssi" style="display:none;"></span>
+            </div>
+        </div>
+
         <!-- ── Controls card ── -->
         <div class="card mb-3">
             <div class="card-body" style="padding: 12px 16px !important;">
@@ -171,6 +221,9 @@
                     </select>
                     <button id="refresh-btn" class="btn btn-primary" onclick="toggleRefresh()">
                         Refresh
+                    </button>
+                    <button id="manual-connect-btn" class="btn btn-outline-secondary" onclick="openManualConnectModal()">
+                        Connect Manually
                     </button>
                     <span class="status-txt" id="status-txt">Not scanned yet</span>
                 </div>
@@ -264,6 +317,80 @@
         </div>
     </div>
 
+    <!-- ── Manual network connection modal ── -->
+    <div class="modal fade" id="manual-connect-modal" tabindex="-1" aria-hidden="true">
+        <div class="modal-dialog modal-dialog-centered">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">Connect to Network Manually</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <div class="mb-2" style="font-size:12px;color:var(--text-secondary);">
+                        Using <span id="mc-iface" style="color:var(--text-primary);"></span>
+                    </div>
+                    <div class="mb-2">
+                        <label for="mc-ssid" class="form-label" style="font-size:12px;">Network Name (SSID)</label>
+                        <input type="text" class="form-control" id="mc-ssid" maxlength="32"
+                               autocomplete="off" placeholder="Exact SSID — required, case sensitive">
+                    </div>
+                    <div class="mb-2">
+                        <label for="mc-sec" class="form-label" style="font-size:12px;">Security</label>
+                        <select class="form-select" id="mc-sec" onchange="onManualSecChange()">
+                            <option value="open">Open (no password)</option>
+                            <option value="wep">WEP (Legacy)</option>
+                            <option value="wpa">WPA</option>
+                            <option value="wpa2" selected>WPA2</option>
+                            <option value="wpa_wpa2">WPA / WPA2</option>
+                            <option value="wpa3">WPA3</option>
+                            <option value="wpa2_wpa3">WPA2 / WPA3</option>
+                        </select>
+                    </div>
+                    <div id="mc-pw-wrap" class="mb-2">
+                        <label for="mc-pw" class="form-label" style="font-size:12px;">Password</label>
+                        <input type="password" class="form-control" id="mc-pw" autocomplete="off"
+                               placeholder="Network password">
+                        <div class="d-flex align-items-center gap-2 mt-2">
+                            <div class="wlan-toggle" id="mc-show" role="switch" aria-checked="false"
+                                 onclick="toggleShowPwManual()" title="Show password">
+                                <div class="wlan-toggle-knob"></div>
+                            </div>
+                            <span style="font-size:12px;">Show password</span>
+                        </div>
+                    </div>
+                    <div id="mc-wep-wrap" class="mb-2" style="display:none;">
+                        <label for="mc-wepkey" class="form-label" style="font-size:12px;">WEP Key</label>
+                        <input type="password" class="form-control" id="mc-wepkey" autocomplete="off"
+                               maxlength="26" placeholder="5 or 13 ASCII chars, or 10/26 hex">
+                        <div class="d-flex align-items-center gap-2 mt-2">
+                            <div class="wlan-toggle" id="mc-wep-show" role="switch" aria-checked="false"
+                                 onclick="toggleShowWepManual()" title="Show key">
+                                <div class="wlan-toggle-knob"></div>
+                            </div>
+                            <span style="font-size:12px;">Show key</span>
+                        </div>
+                        <div style="font-size:11px;color:var(--text-secondary);margin-top:4px;">
+                            5 ASCII/10 hex chars = 64-bit &middot; 13 ASCII/26 hex chars = 128-bit.
+                            WEP fields were reverse-engineered from a live MIB dump &mdash; confirm the
+                            network actually connects before relying on it.
+                        </div>
+                    </div>
+                    <div class="mb-1">
+                        <label for="mc-bssid" class="form-label" style="font-size:12px;">
+                            BSSID <span style="font-weight:400;color:var(--text-secondary);">(optional — pins to one specific AP)</span>
+                        </label>
+                        <input type="text" class="form-control" id="mc-bssid" maxlength="17"
+                               autocomplete="off" placeholder="AA:BB:CC:DD:EE:FF">
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                    <button type="button" class="btn btn-primary" id="mc-connect-btn" onclick="submitManualConnect()">Connect</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <script>
     // =====================================================================
     // OVERLAY
@@ -288,6 +415,9 @@
     var lastChannels  = [];    // Most recent channel stats JSON array from CGI
     var wlanDisabled  = false; // True when main AP is disabled for selected band
     var clientTarget  = null;  // {type:'vxd'|'ap', label} — client-capable iface for this band, or null
+    var vxdEnabled    = false; // True when the VXD (idx 5) iface itself is enabled for this band
+    var vxdPollTimer  = null;
+    var vxdPollBand   = null;  // band the current poll timer is fetching for (5 or 24)
 
     // =====================================================================
     // HELPERS
@@ -354,12 +484,13 @@
         var band  = iface === 'wlan0' ? 5 : 24;
         try {
             var r = await fetch('/cgi-bin/wlanbasic.cgi?band=' + band + '&action=status');
-            if (!r.ok) { wlanDisabled = false; clientTarget = null; renderAPs(lastAPs); return; }
+            if (!r.ok) { wlanDisabled = false; clientTarget = null; vxdEnabled = false; updateVxdStatusVisibility(band); renderAPs(lastAPs); return; }
             var data = await r.json();
             var ifaces = data.ifaces || [];
             var ap  = ifaces.find(function(i) { return i.type === 'ap';  });
             var vxd = ifaces.find(function(i) { return i.type === 'vxd'; });
             wlanDisabled = ap ? (ap.disabled === 1) : false;
+            vxdEnabled = !!(vxd && vxd.disabled === 0);
 
             // A "Connect" action is possible when a client-capable interface is
             // enabled on this band: the dedicated VXD/repeater (idx 5), or the
@@ -374,13 +505,16 @@
         } catch (e) {
             wlanDisabled = false;
             clientTarget = null;
+            vxdEnabled = false;
         }
+        updateVxdStatusVisibility(band);
         applyWlanDisabledState();
         renderAPs(lastAPs);   // reflect Connect column availability
     }
 
     function applyWlanDisabledState() {
         var btn    = document.getElementById('refresh-btn');
+        var mcBtn  = document.getElementById('manual-connect-btn');
         var notice = document.getElementById('wlan-disabled-notice');
         if (wlanDisabled) {
             // Stop any active scan first
@@ -391,13 +525,92 @@
             }
             btn.disabled = true;
             btn.title    = 'WLAN is disabled for this band';
-            notice.style.display = '';
+            mcBtn.disabled = true;
+            mcBtn.title    = 'WLAN is disabled for this band';
+            notice.style.display = 'block';
             setStatus('WLAN disabled for this band');
         } else {
             btn.disabled = false;
             btn.title    = '';
+            mcBtn.disabled = false;
+            mcBtn.title    = '';
             notice.style.display = 'none';
         }
+    }
+
+    // =====================================================================
+    // CONNECTED NETWORK CARD (VXD/client) — Android WiFi-page style
+    // =====================================================================
+    var WIFI_ICON_SVG =
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" ' +
+        'stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' +
+        '<path d="M5 12.55a11 11 0 0 1 14.08 0"></path>' +
+        '<path d="M1.42 9a16 16 0 0 1 21.16 0"></path>' +
+        '<path d="M8.53 16.11a6 6 0 0 1 6.95 0"></path>' +
+        '<line x1="12" y1="20" x2="12.01" y2="20"></line></svg>';
+    var WIFI_OFF_ICON_SVG =
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" ' +
+        'stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' +
+        '<line x1="1" y1="1" x2="23" y2="23"></line>' +
+        '<path d="M16.72 11.06A10.94 10.94 0 0 1 19 12.55"></path>' +
+        '<path d="M5 12.55a10.94 10.94 0 0 1 5.17-2.39"></path>' +
+        '<path d="M10.71 5.05A16 16 0 0 1 22.58 9"></path>' +
+        '<path d="M1.42 9a15.91 15.91 0 0 1 4.7-2.88"></path>' +
+        '<path d="M8.53 16.11a6 6 0 0 1 6.95 0"></path>' +
+        '<line x1="12" y1="20" x2="12.01" y2="20"></line></svg>';
+
+    function applyVxdStatus(vs) {
+        if (!vxdEnabled) return; // band/iface state changed while this fetch was in-flight
+
+        var card  = document.getElementById('connected-network-card');
+        var icon  = document.getElementById('connected-net-icon');
+        var title = document.getElementById('connected-net-title');
+        var sub   = document.getElementById('connected-net-sub');
+        var rssiEl= document.getElementById('connected-net-rssi');
+
+        if (vs.connected) {
+            var authOk = vs.authFinished === 1 && vs.authStatus === 0;
+            icon.className = 'connected-net-icon ' + (authOk ? 'state-connected' : 'state-problem');
+            icon.innerHTML  = WIFI_ICON_SVG;
+            title.textContent = vs.ssid || '(hidden)';
+            sub.textContent = authOk ? 'Connected' : ('Connected \u2014 ' + vs.authText);
+            sub.className = 'connected-net-sub' + (authOk ? '' : ' problem');
+            rssiEl.style.display = '';
+            rssiEl.className = 'rssi-badge ' + rssiClass(vs.rssi);
+            rssiEl.textContent = vs.rssi + '%';
+        } else {
+            icon.className = 'connected-net-icon state-off';
+            icon.innerHTML  = WIFI_OFF_ICON_SVG;
+            title.textContent = 'Not connected';
+            sub.textContent = 'Repeater / VXD is on but not associated to any network';
+            sub.className = 'connected-net-sub';
+            rssiEl.style.display = 'none';
+        }
+        card.style.display = 'flex';
+    }
+
+    function loadVxdStatus(band) {
+        fetch('/cgi-bin/wlanbasic.cgi?band=' + band + '&action=vxd_status')
+            .then(function(r) { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
+            .then(applyVxdStatus)
+            .catch(function() {}); // silent — this is a background poll
+    }
+
+    // Show/hide the card and (re)start polling for the given band, per the
+    // current vxdEnabled flag set by checkWlanState().
+    function updateVxdStatusVisibility(band) {
+        var card = document.getElementById('connected-network-card');
+        if (!vxdEnabled) {
+            if (vxdPollTimer) { clearInterval(vxdPollTimer); vxdPollTimer = null; }
+            vxdPollBand = null;
+            card.style.display = 'none';
+            return;
+        }
+        if (vxdPollTimer && vxdPollBand === band) return; // already polling this band
+        if (vxdPollTimer) { clearInterval(vxdPollTimer); vxdPollTimer = null; }
+        vxdPollBand = band;
+        loadVxdStatus(band);
+        vxdPollTimer = setInterval(function() { loadVxdStatus(band); }, 5000);
     }
 
     // =====================================================================
@@ -927,7 +1140,11 @@
 
         var m = mapEnc(ap.encryption);
         if (m.wep) {
-            toastr["warning"]('WEP networks are not supported for client connections.', 'Unsupported');
+            var modal = getConnectModal();
+            if (modal) modal.hide();
+            toastr["warning"]('WEP requires typing in the key — opening manual connect for "' +
+                (ap.ssid || '') + '".', 'WEP network');
+            openManualConnectModal(ap.ssid, 'wep');
             return;
         }
 
@@ -981,6 +1198,186 @@
             _pendingAP = null;
             // Re-check state (the client interface may have changed) but do not
             // auto-resume scanning while the radio settles.
+            void wasRefreshing;
+            setTimeout(checkWlanState, 1500);
+        }
+    }
+
+    // =====================================================================
+    // MANUAL CONNECT — same sta_connect backend, hand-typed instead of
+    // picked from a scan result. Lets you join a hidden SSID the scan can't
+    // see, and optionally pin a specific BSSID up front.
+    // =====================================================================
+    var _manualConnectModal = null;
+
+    // Security select value -> router MIB security codes (same table as mapEnc)
+    var MANUAL_SEC_MAP = {
+        open:      { enc: 0,  uc: 0, u2c: 2, open: true,  wep: false },
+        wep:       { enc: 0,  uc: 0, u2c: 2, open: false, wep: true  },
+        wpa:       { enc: 2,  uc: 3, u2c: 2, open: false, wep: false },
+        wpa2:      { enc: 4,  uc: 0, u2c: 2, open: false, wep: false },
+        wpa_wpa2:  { enc: 6,  uc: 3, u2c: 2, open: false, wep: false },
+        wpa3:      { enc: 16, uc: 0, u2c: 2, open: false, wep: false },
+        wpa2_wpa3: { enc: 20, uc: 0, u2c: 2, open: false, wep: false }
+    };
+
+    function getManualConnectModal() {
+        if (!_manualConnectModal && window.bootstrap && bootstrap.Modal) {
+            _manualConnectModal = new bootstrap.Modal(document.getElementById('manual-connect-modal'));
+        }
+        return _manualConnectModal;
+    }
+
+    function onManualSecChange() {
+        var m = MANUAL_SEC_MAP[document.getElementById('mc-sec').value] || MANUAL_SEC_MAP.wpa2;
+        document.getElementById('mc-pw-wrap').style.display  = (!m.open && !m.wep) ? '' : 'none';
+        document.getElementById('mc-wep-wrap').style.display = m.wep ? '' : 'none';
+    }
+
+    function toggleShowPwManual() {
+        var t = document.getElementById('mc-show');
+        t.classList.toggle('on');
+        var on = t.classList.contains('on');
+        t.setAttribute('aria-checked', on ? 'true' : 'false');
+        document.getElementById('mc-pw').type = on ? 'text' : 'password';
+    }
+
+    function toggleShowWepManual() {
+        var t = document.getElementById('mc-wep-show');
+        t.classList.toggle('on');
+        var on = t.classList.contains('on');
+        t.setAttribute('aria-checked', on ? 'true' : 'false');
+        document.getElementById('mc-wepkey').type = on ? 'text' : 'password';
+    }
+
+    // ASCII passphrase -> hex byte string (WEP key typed as 5/13 ASCII chars
+    // instead of 10/26 hex digits)
+    function asciiToHex(s) {
+        var out = '';
+        for (var i = 0; i < s.length; i++) {
+            out += s.charCodeAt(i).toString(16).padStart(2, '0');
+        }
+        return out;
+    }
+
+    // presetSec/presetSsid let a blocked scan-result WEP entry hand off
+    // straight into this modal instead of a dead-end "unsupported" toast.
+    function openManualConnectModal(presetSsid, presetSec) {
+        if (!clientTarget) {
+            toastr["warning"]('Enable the VXD/repeater interface (or client mode on the main AP) for this band first.', 'No client interface');
+            return;
+        }
+        document.getElementById('mc-iface').textContent = clientTarget.label +
+            ' \u2014 ' + (getIs5G() ? '5 GHz (wlan0)' : '2.4 GHz (wlan1)');
+        document.getElementById('mc-ssid').value  = presetSsid || '';
+        document.getElementById('mc-sec').value   = presetSec  || 'wpa2';
+        document.getElementById('mc-pw').value    = '';
+        document.getElementById('mc-pw').type     = 'password';
+        document.getElementById('mc-wepkey').value = '';
+        document.getElementById('mc-wepkey').type  = 'password';
+        document.getElementById('mc-bssid').value = '';
+        document.getElementById('mc-show').classList.remove('on');
+        document.getElementById('mc-show').setAttribute('aria-checked', 'false');
+        document.getElementById('mc-wep-show').classList.remove('on');
+        document.getElementById('mc-wep-show').setAttribute('aria-checked', 'false');
+        onManualSecChange();
+
+        var modal = getManualConnectModal();
+        if (modal) modal.show();
+    }
+
+    // Enter submits (guard against IME composition)
+    document.getElementById('mc-pw').addEventListener('keydown', function(e) {
+        if (e.key === 'Enter' && !e.isComposing && e.keyCode !== 229) {
+            e.preventDefault();
+            submitManualConnect();
+        }
+    });
+
+    async function submitManualConnect() {
+        var ssid = document.getElementById('mc-ssid').value.trim();
+        if (!ssid) {
+            toastr["warning"]('Network name (SSID) is required.', 'Invalid input');
+            document.getElementById('mc-ssid').focus();
+            return;
+        }
+
+        var m = MANUAL_SEC_MAP[document.getElementById('mc-sec').value] || MANUAL_SEC_MAP.wpa2;
+
+        var psk = '';
+        if (!m.open && !m.wep) {
+            psk = document.getElementById('mc-pw').value || '';
+            if (psk.length < 8 || psk.length > 63) {
+                toastr["warning"]('Password must be 8-63 characters.', 'Invalid password');
+                document.getElementById('mc-pw').focus();
+                return;
+            }
+        }
+
+        var wepKeyType = 0, wepKeyHex = '';
+        if (m.wep) {
+            var rawKey = document.getElementById('mc-wepkey').value;
+            if (/^[0-9a-fA-F]{10}$/.test(rawKey))      { wepKeyHex = rawKey; wepKeyType = 0; }
+            else if (/^[0-9a-fA-F]{26}$/.test(rawKey)) { wepKeyHex = rawKey; wepKeyType = 1; }
+            else if (rawKey.length === 5)  { wepKeyHex = asciiToHex(rawKey); wepKeyType = 0; }
+            else if (rawKey.length === 13) { wepKeyHex = asciiToHex(rawKey); wepKeyType = 1; }
+            else {
+                toastr["warning"]('WEP key must be 5 or 13 ASCII characters, or 10 or 26 hex characters.', 'Invalid key');
+                document.getElementById('mc-wepkey').focus();
+                return;
+            }
+        }
+
+        var bssidRaw = document.getElementById('mc-bssid').value.trim();
+        var bssidHex = bssidRaw.toLowerCase().replace(/[^0-9a-f]/g, '');
+        if (bssidRaw && bssidHex.length !== 12) {
+            toastr["warning"]('BSSID must be a full MAC address (AA:BB:CC:DD:EE:FF), or leave it blank.', 'Invalid BSSID');
+            document.getElementById('mc-bssid').focus();
+            return;
+        }
+
+        var band = getIs5G() ? 5 : 24;
+        var body = 'ssid='               + encodeURIComponent(ssid) +
+                   '&encrypt='           + m.enc +
+                   '&unicastCipher='     + (m.uc  || 0) +
+                   '&wpa2UnicastCipher=' + (m.u2c || 2) +
+                   '&psk='               + encodeURIComponent(psk) +
+                   '&wep='               + (m.wep ? 1 : 0) +
+                   '&wepKeyType='        + wepKeyType +
+                   '&wepKeyIdx=0' +
+                   '&wepKey='            + wepKeyHex +
+                   '&bssid='             + bssidHex;
+
+        var btn = document.getElementById('mc-connect-btn');
+        btn.disabled = true;
+
+        // Stop the scan loop — applying client settings restarts the radio
+        var wasRefreshing = isRefreshing;
+        if (isRefreshing) { isRefreshing = false; clearTimeout(scanTimer); setRefreshBtn(false); }
+
+        var modal = getManualConnectModal();
+        if (modal) modal.hide();
+        showOverlay('Connecting to ' + ssid + '\u2026');
+
+        try {
+            var r = await fetch('/cgi-bin/wlanbasic.cgi?action=sta_connect&band=' + band, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                body: body
+            });
+            var txt = (await r.text()).trim();
+            if (r.ok) {
+                toastr["success"]('Applied. ' + (clientTarget ? clientTarget.label : 'Interface') +
+                    ' is now joining "' + ssid + '".', 'Connecting');
+                setStatus('Connecting to ' + ssid + '\u2026');
+            } else {
+                toastr["warning"](txt || ('HTTP ' + r.status), 'Connect failed');
+            }
+        } catch (e) {
+            toastr["warning"]('Connect request failed: ' + e.message, 'Error');
+        } finally {
+            hideOverlay();
+            btn.disabled = false;
             void wasRefreshing;
             setTimeout(checkWlanState, 1500);
         }
@@ -1115,6 +1512,13 @@
         clientTarget = null;
         document.getElementById('wlan-disabled-notice').style.display = 'none';
         document.getElementById('refresh-btn').disabled = false;
+
+        // Hide the connected-network card immediately too — don't let the old
+        // band's VXD status linger on screen while the new band's is fetched
+        vxdEnabled = false;
+        if (vxdPollTimer) { clearInterval(vxdPollTimer); vxdPollTimer = null; }
+        vxdPollBand = null;
+        document.getElementById('connected-network-card').style.display = 'none';
 
         // Clear cached data from the previous band — stale APs from the old
         // band must not bleed through while the new band's request is in-flight

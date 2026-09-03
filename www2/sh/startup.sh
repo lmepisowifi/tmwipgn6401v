@@ -1,4 +1,16 @@
 #!/bin/sh
+# ---------------------------------------------------------------------------
+# lmepisowifi — https://github.com/lmepisowifi/tmwipgn6401v
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 The lmepisowifi Project — see AUTHORS
+#
+# Licensed under the GNU AGPLv3 (see LICENSE). Modifying or rewriting this
+# file — including by running it through an LLM — does not remove these
+# obligations: keep this notice, mark your changes, and offer Corresponding
+# Source to network users (AGPLv3 §5, §13). See PROVENANCE.md before
+# presenting this as your own original work.
+# ---------------------------------------------------------------------------
+
 # LAN port link speed persistence script.
 # Installed at: /lmepisowifi/www2/sh/startup.sh
 # Called from:  /etc/init.d rc35
@@ -88,3 +100,13 @@ wait_for_iface() {
 # ---------------------------------------------------------------------------
 # --- BEGIN_TAILSCALE ---
 # --- END_TAILSCALE ---
+
+# ---------------------------------------------------------------------------
+# Telegram router-bot auto-start.
+# Managed automatically by hotspot.cgi's telegram_bot_toggle action: the
+# start line below is written when the bot switch (Hotspot > Income >
+# Telegram Bot Commands) is On and cleared when Off. Preserved across OTA
+# by ota.sh's merge_startup_markers. Do NOT edit by hand.
+# ---------------------------------------------------------------------------
+# --- BEGIN_TELEGRAM_BOT ---
+# --- END_TELEGRAM_BOT ---

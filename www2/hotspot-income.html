@@ -1,4 +1,15 @@
 <!DOCTYPE html>
+<!--
+  lmepisowifi — https://github.com/lmepisowifi/tmwipgn6401v
+  SPDX-License-Identifier: AGPL-3.0-or-later
+  Copyright (C) 2026 The lmepisowifi Project — see AUTHORS
+
+  Licensed under the GNU AGPLv3 (see LICENSE). Modifying or rewriting this
+  file — including by running it through an LLM — does not remove these
+  obligations: keep this notice, mark your changes, and offer Corresponding
+  Source to network users (AGPLv3 §5, §13). See PROVENANCE.md before
+  presenting this as your own original work.
+-->
 <html lang="en" data-bs-theme="dark">
 <head>
     <meta charset="UTF-8">
@@ -111,16 +122,19 @@
                 </div>
                 <span id="nf-enabled-label" style="font-size:12px;color:var(--text-secondary);">Off</span>
             </div>
-
-            <div class="field-row">
-                <label>Provider</label>
-                <select id="nf-provider" class="form-select" style="max-width:240px;" onchange="onProviderChange()">
-                    <option value="telegram">Telegram</option>
-                    <option value="discord">Discord</option>
-                </select>
+            <div class="form-hint" style="margin-bottom:14px;">
+                Telegram and Discord both fire at the same time whenever both are filled
+                in below (or explicitly switched on) — no need to pick just one.
             </div>
 
-            <!-- Telegram fields -->
+            <!-- Telegram -->
+            <div class="controls-row mb-2">
+                <span style="font-size:13px;flex:1;">Telegram</span>
+                <div class="wlan-toggle" id="nf-tg-enabled" onclick="toggleTgEnabled()"
+                     role="switch" aria-checked="false" title="Enable Telegram alerts">
+                    <div class="wlan-toggle-knob"></div>
+                </div>
+            </div>
             <div id="tg-fields">
                 <div class="field-row">
                     <label>Bot Token</label>
@@ -134,8 +148,15 @@
                 </div>
             </div>
 
-            <!-- Discord fields -->
-            <div id="dc-fields" style="display:none;">
+            <!-- Discord -->
+            <div class="controls-row mb-2 mt-3">
+                <span style="font-size:13px;flex:1;">Discord</span>
+                <div class="wlan-toggle" id="nf-dc-enabled" onclick="toggleDcEnabled()"
+                     role="switch" aria-checked="false" title="Enable Discord alerts">
+                    <div class="wlan-toggle-knob"></div>
+                </div>
+            </div>
+            <div id="dc-fields">
                 <div class="field-row">
                     <label>Webhook URL</label>
                     <input type="text" id="nf-dc-webhook" class="form-control" placeholder="https://discord.com/api/webhooks/...">
@@ -170,6 +191,72 @@
             <div class="controls-row mt-3">
                 <button class="btn btn-primary" id="evt-save" onclick="saveNotify()">Save</button>
                 <span class="status-txt" id="evt-status"></span>
+            </div>
+        </div>
+    </div>
+
+    <!-- ── Router-bot commands (add/remove which Telegram commands respond) ── -->
+    <div class="card mt-3">
+        <div class="card-header">Telegram Bot Commands</div>
+        <div class="card-body">
+            <div class="controls-row mb-2">
+                <span style="font-size:13px;flex:1;">
+                    Enable Commands <span class="form-hint" id="tgbot-status-txt">(bot stopped)</span>
+                </span>
+                <div class="wlan-toggle" id="tgbot-toggle" role="switch" aria-checked="false" onclick="toggleTelegramBot()">
+                    <div class="wlan-toggle-knob"></div>
+                </div>
+            </div>
+            <div class="form-hint" style="margin-bottom:14px;">
+                Turn individual router-bot commands on or off. A command switched
+                off disappears from the bot's Telegram menu and is refused if sent
+                anyway. This list is read directly from the bot script, so it always
+                matches what the bot actually supports.
+            </div>
+            <div id="tgcmd-missing" class="form-hint" style="display:none;">
+                Router bot script not found on this device — nothing to configure yet.
+            </div>
+            <div id="tgcmd-toggles"></div>
+            <div class="controls-row mt-3">
+                <button class="btn btn-primary" id="tgcmd-save" onclick="saveTelegramCmds()">Save</button>
+                <span class="status-txt" id="tgcmd-status"></span>
+            </div>
+        </div>
+    </div>
+
+    <!-- ── Bot Command Responses ── -->
+    <div class="card mt-3">
+        <div class="card-header">Bot Command Responses</div>
+        <div class="card-body">
+            <div class="form-hint" style="margin-bottom:14px;">
+                Customize what the router bot replies with for each command and error
+                case (usage hints, invalid MAC/minutes, unknown command, etc). Use
+                <code>*placeholder*</code> tokens for dynamic values and <code>%0A</code>
+                for line breaks (press Enter instead if you prefer, it's converted
+                automatically). Click a chip below to insert it. <code>*ramusage*</code>
+                and <code>*cpuusage*</code> are available in every response. Changes take
+                effect the next time the router bot is started/restarted.
+            </div>
+
+            <div class="field-row">
+                <label>Response</label>
+                <select id="btpl-select" class="form-select" style="max-width:360px;" onchange="onBotTplSelect()"></select>
+            </div>
+
+            <div id="btpl-chips" style="margin-bottom:8px;"></div>
+
+            <textarea id="btpl-text" class="form-control" rows="8" style="font-family:monospace;font-size:13px; min-height: 150px;"
+                      oninput="onBotTplEdit()"></textarea>
+
+            <div class="form-hint" style="margin-top:6px;margin-bottom:4px;">Preview</div>
+            <div id="btpl-preview"
+                 style="white-space:pre-wrap;font-family:monospace;font-size:13px;border:1px solid var(--border-color);
+                        border-radius:8px;padding:10px 12px;background:var(--bg-surface-hover);min-height:54px;"></div>
+
+            <div class="controls-row mt-3">
+                <button class="btn btn-primary" id="btpl-save" onclick="saveBotTemplates()">Save All</button>
+                <button class="btn btn-outline-secondary" onclick="resetBotTemplates()">Reset All to Default</button>
+                <span class="status-txt" id="btpl-status"></span>
             </div>
         </div>
     </div>
@@ -278,6 +365,25 @@ function setEnabledUI(on){
 }
 function toggleEnabled(){ setEnabledUI(!_enabled); }
 
+// ── Per-provider enable toggles (Telegram / Discord fire together when
+// both are configured/enabled — see buildNotifyBody) ──
+var _tgEnabled = false;
+var _dcEnabled = false;
+function setTgEnabledUI(on){
+    _tgEnabled = !!on;
+    var t = document.getElementById('nf-tg-enabled');
+    t.classList.toggle('on', _tgEnabled);
+    t.setAttribute('aria-checked', _tgEnabled ? 'true' : 'false');
+}
+function toggleTgEnabled(){ setTgEnabledUI(!_tgEnabled); }
+function setDcEnabledUI(on){
+    _dcEnabled = !!on;
+    var t = document.getElementById('nf-dc-enabled');
+    t.classList.toggle('on', _dcEnabled);
+    t.setAttribute('aria-checked', _dcEnabled ? 'true' : 'false');
+}
+function toggleDcEnabled(){ setDcEnabledUI(!_dcEnabled); }
+
 // ── Per-event alert toggles ──
 // Every muteable event and its friendly label. test_alert is intentionally
 // excluded — the Send Test button always bypasses per-event muting.
@@ -332,32 +438,26 @@ function setEvtStateFrom(events){
     buildEvtToggles();
 }
 
-function onProviderChange(){
-    var p = document.getElementById('nf-provider').value;
-    document.getElementById('tg-fields').style.display = (p==='telegram') ? '' : 'none';
-    document.getElementById('dc-fields').style.display = (p==='discord')  ? '' : 'none';
-}
-
 function loadNotify(){
     fetch('/cgi-bin/hotspot.cgi?action=notify_get', { cache:'no-store' })
         .then(function(r){ return r.json(); })
         .then(function(d){
             setEnabledUI(d.enabled);
-            document.getElementById('nf-provider').value = d.provider || 'telegram';
+            setTgEnabledUI(d.tg_enabled);
+            setDcEnabledUI(d.discord_enabled);
             document.getElementById('nf-tg-token').value  = d.tg_bot_token || '';
             document.getElementById('nf-tg-chat').value   = d.tg_chat_id || '';
             document.getElementById('nf-dc-webhook').value = d.discord_webhook || '';
             document.getElementById('nf-dedup').value = (d.dedup_window != null) ? d.dedup_window : 30;
             setEvtStateFrom(d.events);
-            onProviderChange();
         })
         .catch(function(){ toastr.error('Could not load notification settings'); });
 }
 
 function buildNotifyBody(){
-    var p = document.getElementById('nf-provider').value;
     var body = 'enabled='   + (_enabled ? '1' : '0') +
-           '&provider=' + encodeURIComponent(p) +
+           '&tg_enabled=' + (_tgEnabled ? '1' : '0') +
+           '&discord_enabled=' + (_dcEnabled ? '1' : '0') +
            '&tg_bot_token=' + encodeURIComponent(document.getElementById('nf-tg-token').value.trim()) +
            '&tg_chat_id='   + encodeURIComponent(document.getElementById('nf-tg-chat').value.trim()) +
            '&discord_webhook=' + encodeURIComponent(document.getElementById('nf-dc-webhook').value.trim());
@@ -401,11 +501,123 @@ function testNotify(){
         })
         .then(function(r){ return r.json(); })
         .then(function(d){
-            if (d.ok){ toastr.info('Test sent — check your '+document.getElementById('nf-provider').value+' chat.'); }
+            if (d.ok){ toastr.info('Test sent — check Telegram/Discord (whichever is enabled).'); }
             else { toastr.error('Test failed: '+(d.error||'')); }
         })
         .catch(function(){ toastr.error('Test request failed'); })
         .finally(function(){ hideOverlay(); btn.disabled = false; });
+}
+
+// ── Router-bot commands ──
+// Unlike EVT_LIST above, this isn't a hardcoded list — the command set is
+// read from the backend (which reads it straight from the bot script's
+// CMD_REGISTRY), so a command added there shows up here automatically.
+var _cmdDefs  = [];   // [{name, description, enabled}] as last loaded
+var _cmdState = {};   // name -> bool (true = enabled), edited live by the UI
+
+function buildCmdToggles(){
+    var box = document.getElementById('tgcmd-toggles');
+    if (!box) return;
+    box.innerHTML = '';
+    _cmdDefs.forEach(function(c){
+        var row = document.createElement('div');
+        row.className = 'controls-row mb-2';
+        var lbl = document.createElement('span');
+        lbl.style.cssText = 'font-size:13px;flex:1;';
+        lbl.textContent = c.description + '  (/' + c.name + ')';
+        var tog = document.createElement('div');
+        tog.className = 'wlan-toggle' + (_cmdState[c.name] ? ' on' : '');
+        tog.setAttribute('role', 'switch');
+        tog.setAttribute('aria-checked', _cmdState[c.name] ? 'true' : 'false');
+        var knob = document.createElement('div');
+        knob.className = 'wlan-toggle-knob';
+        tog.appendChild(knob);
+        tog.onclick = (function(name, t){ return function(){
+            _cmdState[name] = !_cmdState[name];
+            t.classList.toggle('on', _cmdState[name]);
+            t.setAttribute('aria-checked', _cmdState[name] ? 'true' : 'false');
+        }; })(c.name, tog);
+        row.appendChild(lbl);
+        row.appendChild(tog);
+        box.appendChild(row);
+    });
+}
+
+function loadTelegramCmds(){
+    fetch('/cgi-bin/hotspot.cgi?action=telegram_cmds_get', { cache:'no-store' })
+        .then(function(r){ return r.json(); })
+        .then(function(d){
+            var installed = !!d.installed;
+            document.getElementById('tgcmd-missing').style.display = installed ? 'none' : '';
+            document.getElementById('tgcmd-toggles').style.display = installed ? '' : 'none';
+            document.getElementById('tgcmd-save').disabled = !installed;
+            _cmdDefs = d.commands || [];
+            _cmdState = {};
+            _cmdDefs.forEach(function(c){ _cmdState[c.name] = !!c.enabled; });
+            buildCmdToggles();
+            setBotToggle(!!d.running);
+        })
+        .catch(function(){ toastr.error('Could not load router-bot commands'); });
+}
+
+// ── Router-bot start/stop ──
+// Separate from the per-command Save button above: this directly starts or
+// kills the `notify.sh --bot` process (no Save step — it takes effect
+// immediately), mirroring the Hotspot on/off toggle elsewhere in the admin UI.
+var _botRunning = false;
+
+function setBotToggle(running){
+    _botRunning = running;
+    var t = document.getElementById('tgbot-toggle');
+    var s = document.getElementById('tgbot-status-txt');
+    if (t){
+        t.classList.toggle('on', running);
+        t.setAttribute('aria-checked', running ? 'true' : 'false');
+    }
+    if (s) s.textContent = running ? '(bot running)' : '(bot stopped)';
+}
+
+function toggleTelegramBot(){
+    var t = document.getElementById('tgbot-toggle');
+    if (!t) return;
+    var next = !_botRunning;
+    t.style.pointerEvents = 'none';
+    fetch('/cgi-bin/hotspot.cgi?action=telegram_bot_toggle', {
+        method:'POST',
+        headers:{ 'Content-Type':'application/x-www-form-urlencoded' },
+        body: 'enabled=' + (next ? '1' : '0')
+    })
+    .then(function(r){ return r.json(); })
+    .then(function(d){
+        if (d.ok){
+            setBotToggle(!!d.running);
+            toastr.success(d.running ? 'Router bot started' : 'Router bot stopped');
+        } else {
+            toastr.error('Failed: ' + (d.error || ''));
+        }
+    })
+    .catch(function(){ toastr.error('Toggle request failed'); })
+    .finally(function(){ t.style.pointerEvents = ''; });
+}
+
+function saveTelegramCmds(){
+    var btn = document.getElementById('tgcmd-save');
+    btn.disabled = true;
+    var body = _cmdDefs.map(function(c){
+        return 'cmd_enabled_' + encodeURIComponent(c.name) + '=' + (_cmdState[c.name] ? '1' : '0');
+    }).join('&');
+    fetch('/cgi-bin/hotspot.cgi?action=telegram_cmds_set', {
+        method:'POST',
+        headers:{ 'Content-Type':'application/x-www-form-urlencoded' },
+        body: body
+    })
+    .then(function(r){ return r.json(); })
+    .then(function(d){
+        if (d.ok){ toastr.success('Router-bot commands saved'); }
+        else { toastr.error('Save failed: '+(d.error||'')); }
+    })
+    .catch(function(){ toastr.error('Save request failed'); })
+    .finally(function(){ btn.disabled = false; });
 }
 
 // ── Message Templates ──
@@ -550,11 +762,147 @@ function resetTemplates(){
         .catch(function(){ toastr.error('Reset request failed'); });
 }
 
+// ── Bot Command Responses ──
+// Separate template set from Message Templates above: different backing
+// file (bot_templates.env vs notify_templates.env) and different CGI
+// actions (bot_templates_get/set/reset), so saving one card never touches
+// the other's saved values. Rendered with the same *placeholder*/%0A
+// engine (renderBotTplPreview mirrors renderTplPreview) via tpl_render()
+// on the device side.
+var BOT_TPL_EVENTS = [
+    { key:'cmd_status', label:'/status',
+      sample:{ uptime:'10:32:01 up 3 days, 4:12, load average: 0.08, 0.05, 0.01' } },
+    { key:'cmd_reboot', label:'/reboot', sample:{} },
+    { key:'cmd_hotspotstats_notinstalled', label:'/hotspotstats — module not installed', sample:{} },
+    { key:'cmd_hotspotstats', label:'/hotspotstats',
+      sample:{ running:'Running', sessions:'3', daily:'150', monthly:'4200', yearly:'38500', total:'212000' } },
+    { key:'cmd_activeusers_empty', label:'/activeusers — none connected', sample:{} },
+    { key:'cmd_kick_usage', label:'/kick — usage', sample:{} },
+    { key:'cmd_kick_ok', label:'/kick — success', sample:{ mac:'AA:BB:CC:DD:EE:FF', remainingtime:'1h 45m' } },
+    { key:'cmd_kick_none', label:'/kick — no session found', sample:{ mac:'AA:BB:CC:DD:EE:FF' } },
+    { key:'cmd_addtime_usage', label:'/addtime — usage', sample:{} },
+    { key:'cmd_addtime_created', label:'/addtime — new session created', sample:{ mac:'AA:BB:CC:DD:EE:FF', minutes:'30' } },
+    { key:'cmd_addtime_ok', label:'/addtime — success', sample:{ mac:'AA:BB:CC:DD:EE:FF', minutes:'30', remainingtime:'2h 15m' } },
+    { key:'cmd_removetime_usage', label:'/removetime — usage', sample:{} },
+    { key:'cmd_removetime_none', label:'/removetime — no session found', sample:{ mac:'AA:BB:CC:DD:EE:FF' } },
+    { key:'cmd_removetime_ok', label:'/removetime — success', sample:{ mac:'AA:BB:CC:DD:EE:FF', minutes:'15', remainingtime:'1h 30m' } },
+    { key:'cmd_badmac', label:'Invalid MAC address (kick / addtime / removetime)', sample:{ input:'not-a-mac' } },
+    { key:'cmd_badminutes', label:'Invalid minutes (addtime / removetime)', sample:{} },
+    { key:'cmd_unknown', label:'Unknown command', sample:{} },
+    { key:'cmd_unauthorized', label:'Unauthorized user', sample:{} }
+];
+var botTplValues = {};
+var botTplCurKey = BOT_TPL_EVENTS[0].key;
+
+function botTplEventByKey(k){ for (var i=0;i<BOT_TPL_EVENTS.length;i++) if (BOT_TPL_EVENTS[i].key===k) return BOT_TPL_EVENTS[i]; }
+
+function renderBotTplPreview(text, sample){
+    var out = text || '';
+    var all = Object.assign({}, sample, UNIVERSAL_SAMPLE);
+    Object.keys(all).forEach(function(name){
+        out = out.split('*'+name+'*').join(all[name]);
+    });
+    out = out.split('%0A').join('\n');
+    return out;
+}
+
+function populateBotTplChips(ev){
+    var box = document.getElementById('btpl-chips');
+    box.innerHTML = '';
+    var names = Object.keys(ev.sample).concat(Object.keys(UNIVERSAL_SAMPLE));
+    names.concat(['↵ line break']).forEach(function(name){
+        var b = document.createElement('button');
+        b.type = 'button';
+        b.className = 'btn btn-outline-secondary btn-sm me-1 mb-1';
+        b.style.fontSize = '11px';
+        var token = (name === '↵ line break') ? '%0A' : ('*' + name + '*');
+        b.textContent = (name === '↵ line break') ? name : token;
+        b.onclick = function(){ insertAtCursor(document.getElementById('btpl-text'), token); onBotTplEdit(); };
+        box.appendChild(b);
+    });
+}
+
+function onBotTplSelect(){
+    botTplCurKey = document.getElementById('btpl-select').value;
+    var ev = botTplEventByKey(botTplCurKey);
+    document.getElementById('btpl-text').value = botTplValues[botTplCurKey] || '';
+    populateBotTplChips(ev);
+    updateBotTplPreview();
+}
+
+function onBotTplEdit(){
+    botTplValues[botTplCurKey] = document.getElementById('btpl-text').value;
+    updateBotTplPreview();
+}
+
+function updateBotTplPreview(){
+    var ev = botTplEventByKey(botTplCurKey);
+    var text = document.getElementById('btpl-text').value;
+    document.getElementById('btpl-preview').textContent = renderBotTplPreview(text, ev.sample) || '(empty — default will be used)';
+}
+
+function loadBotTemplates(){
+    var sel = document.getElementById('btpl-select');
+    sel.innerHTML = '';
+    BOT_TPL_EVENTS.forEach(function(ev){
+        var o = document.createElement('option');
+        o.value = ev.key; o.textContent = ev.label;
+        sel.appendChild(o);
+    });
+    return fetch('/cgi-bin/hotspot.cgi?action=bot_templates_get', { cache:'no-store' })
+        .then(function(r){ return r.json(); })
+        .then(function(d){
+            botTplValues = (d && d.templates) || {};
+            botTplCurKey = BOT_TPL_EVENTS[0].key;
+            sel.value = botTplCurKey;
+            onBotTplSelect();
+        })
+        .catch(function(){ toastr.error('Could not load bot command responses'); });
+}
+
+function saveBotTemplates(){
+    botTplValues[botTplCurKey] = document.getElementById('btpl-text').value;
+
+    var body = BOT_TPL_EVENTS.map(function(ev){
+        var v = (botTplValues[ev.key] || '').replace(/\r\n|\r|\n/g, '%0A');
+        return ev.key + '=' + encodeURIComponent(v);
+    }).join('&');
+
+    var btn = document.getElementById('btpl-save');
+    btn.disabled = true;
+    fetch('/cgi-bin/hotspot.cgi?action=bot_templates_set', {
+        method:'POST',
+        headers:{ 'Content-Type':'application/x-www-form-urlencoded' },
+        body: body
+    })
+    .then(function(r){ return r.json(); })
+    .then(function(d){
+        if (d.ok){ toastr.success('Bot command responses saved'); }
+        else { toastr.error('Save failed: '+(d.error||'')); }
+    })
+    .catch(function(){ toastr.error('Save request failed'); })
+    .finally(function(){ btn.disabled = false; });
+}
+
+function resetBotTemplates(){
+    if (!confirm('Reset ALL bot command responses to their default wording? This discards your customizations.')) return;
+    fetch('/cgi-bin/hotspot.cgi?action=bot_templates_reset', { method:'POST',
+        headers:{ 'Content-Type':'application/x-www-form-urlencoded' }, body:'' })
+        .then(function(r){ return r.json(); })
+        .then(function(d){
+            if (d.ok){ toastr.success('Responses reset to default'); loadBotTemplates(); }
+            else { toastr.error('Reset failed: '+(d.error||'')); }
+        })
+        .catch(function(){ toastr.error('Reset request failed'); });
+}
+
 // ── Init ──
 window.addEventListener('DOMContentLoaded', function(){
     loadIncome();
     loadNotify();
+    loadTelegramCmds();
     loadTemplates();
+    loadBotTemplates();
     _incomeTimer = setInterval(loadIncome, 15000);
 });
 window.addEventListener('beforeunload', function(){ if(_incomeTimer) clearInterval(_incomeTimer); });

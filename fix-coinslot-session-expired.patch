@@ -1,0 +1,232 @@
+diff --git a/hotspot/cgi-bin/coin.sh b/hotspot/cgi-bin/coin.sh
+index 2893cf0..f826bca 100755
+--- a/hotspot/cgi-bin/coin.sh
++++ b/hotspot/cgi-bin/coin.sh
+@@ -97,9 +97,14 @@ BANKED=$(_bank_get "$CLIENT_MAC")
+ 
+ # Adds (not replaces) $2 pesos to $1 (MAC)'s banked balance — same
+ # exclude-then-recommit idiom as coin_result.sh's own _bank_set, kept
+-# additive here rather than mirroring its "replace" signature since this
+-# caller is always folding an amount IN, never resetting a balance. Only
+-# used by the RESUME_NODEMCU_OFFLINE rescue below. Call inside _lock.
++# additive here rather than mirroring its "replace" signature since every
++# caller here is always folding a newly-rescued amount IN, never resetting
++# a balance — coin.sh never consumes/converts a tier itself (no
++# SESSION_FILE/USERS_FILE of its own — see mf_reconcile's comment up top),
++# so there's never a leftover-after-tiers to replace the balance with, only
++# ever more to add to it. Used by the RESUME_NODEMCU_OFFLINE rescue in
++# "start" and the LIVE_ACTIVE:false/give-up rescues in "poll" below. Call
++# inside _lock.
+ _bank_add() {
+     _ba_mac="$1"; _ba_add="${2:-0}"
+     case "$_ba_add" in ''|*[!0-9]*) _ba_add=0 ;; esac
+@@ -368,6 +373,35 @@ _calc_time() {
+     }'
+ }
+ 
++# Same greedy evaluation as _calc_time, but also prints the leftover pesos
++# after tiers as a second field (mirroring coin_result.sh's own inline
++# calculator), for symmetry — the poll handler's LIVE_ACTIVE:false rescue
++# below is the only current caller, and only reads the minutes field, to
++# preview whether folding a newly-rescued amount against whatever's already
++# in COIN_BANK_FILE would cross a tier — exactly like coin_result.sh's own
++# fold-through logic — so it knows whether to hold off and give
++# coin_result.sh's real grant a chance to land, instead of deciding purely
++# off the live amount while blind to the existing bank balance. coin.sh
++# never actually consumes a tier itself, so whatever's rescued always gets
++# banked in full via _bank_add regardless of what this previews.
++_calc_fold() {
++    printf '%s %s\n' "$COIN_RATES" "$1" | awk '
++    {
++        amt=$NF; n=NF-1
++        for(i=1;i<=n;i++){split($i,a,":");pesos[i]=a[1]+0;mins[i]=a[2]+0}
++        for(i=1;i<n;i++) for(j=i+1;j<=n;j++)
++            if(pesos[j]>pesos[i]){
++                tp=pesos[i];pesos[i]=pesos[j];pesos[j]=tp
++                tm=mins[i]; mins[i]=mins[j]; mins[j]=tm
++            }
++        rem=amt+0; total=0
++        for(i=1;i<=n;i++) if(pesos[i]>0){
++            c=int(rem/pesos[i]); total+=c*mins[i]; rem-=c*pesos[i]
++        }
++        print total, rem
++    }'
++}
++
+ case "$ACTION" in
+ 
+ # ----------------------------------------------------------------
+@@ -718,9 +752,28 @@ poll)
+     # elapsed, and even then hand back the preserved amount rather than zero.
+     if [ "$SINCE_SEEN" -gt $(( COIN_TIMEOUT + 25 + RECONNECT_GRACE )) ]; then
+         GIVEUP_AMT=$(cat "$AMT_PATH" 2>/dev/null); GIVEUP_AMT=${GIVEUP_AMT:-0}
++        # Fold against BANKED (same reasoning as the LIVE_ACTIVE:false
++        # rescue below) and bank the combined total — NodeMCU has been
++        # completely silent for a full RECONNECT_GRACE window at this
++        # point, so unlike that rescue there's no realistic real
++        # end-of-session POST left to wait for. This file never grants
++        # time itself (see mf_reconcile's comment up top), so the money
++        # stays banked rather than lost outright just because it happens
++        # not to reach a tier on its own — it'll be picked up next time
++        # the customer tops up or ends a session normally through
++        # coin_result.sh.
++        GIVEUP_TOTAL=$(( BANKED + GIVEUP_AMT ))
++        if [ "$GIVEUP_AMT" -gt 0 ]; then
++            _lock
++            _bank_add "$SESSION_MAC" "$GIVEUP_AMT"
++            _unlock
++            /lmepisowifi/hotspot/income.sh add "$GIVEUP_AMT" >/dev/null 2>&1
++            _G_MSG=$(tpl_render "$TPL_COINS_INSERTED" insertcoinamt "$GIVEUP_AMT" mac "$SESSION_MAC")
++            ( /lmepisowifi/hotspot/notify.sh "$_G_MSG" "" coins_inserted >/dev/null 2>&1 </dev/null & )
++        fi
+         rm -f "$SESSION_PATH" "$MISS_PATH" "$AMT_PATH" "$REM_PATH" "/tmp/coin_lock_${SESSION_NODE}"
+         _clear_pending "$SID"   # session abandoned → drop the non-volatile mirror
+-        _ok "{\"status\":\"expired\",\"amount\":${GIVEUP_AMT},\"minutes\":$(_calc_time "$GIVEUP_AMT")}"
++        _ok "{\"status\":\"expired\",\"amount\":${GIVEUP_TOTAL},\"minutes\":0}"
+     fi
+ 
+     # Query NodeMCU for live coin count — verify its response signature
+@@ -749,19 +802,51 @@ poll)
+             if [ "$LIVE_ACTIVE" -eq 0 ]; then
+                 # NodeMCU has AUTHORITATIVELY confirmed this sid is no
+                 # longer live there — a normal timeout/Done/Cancel already
+-                # finalized it, or it rebooted. Bank whatever we last
+-                # verified for it (same rescue the resume-check's offline
+-                # path uses) and stamp the same .result duplicate-guard, so
+-                # a late-arriving real grant for this exact sid (a normal
+-                # end POST that got delayed, or a flash-crash recovery
+-                # replay) becomes a no-op instead of a double credit.
+-                # Resolves in one round trip instead of waiting out 4
+-                # misses and then the full RECONNECT_GRACE window to reach
+-                # the same conclusion the slow way.
++                # finalized it, or it rebooted.
++                #
++                # LIVE_AMOUNT alone is only this session's own coins — fold
++                # in whatever's already banked (BANKED, resolved up top) to
++                # see whether the COMBINED total actually crosses a rate
++                # tier, the same way coin_result.sh's own fold-through logic
++                # would (and the same way the active/reconnecting responses
++                # below already fold BANKED into TOTAL_AMOUNT).
++                _RESCUE_TOTAL=$(( BANKED + LIVE_AMOUNT ))
++                _RF=$(_calc_fold "$_RESCUE_TOTAL")
++                _RESCUE_MIN=${_RF%% *}
++                GRANTWAIT_PATH="${SESSION_PATH}.grantwait"
++
++                if [ "${_RESCUE_MIN:-0}" -gt 0 ]; then
++                    # Real time is owed here. This file never grants it
++                    # itself — no SESSION_FILE/USERS_FILE of its own to
++                    # touch (see mf_reconcile's comment up top) — only
++                    # coin_result.sh's normal end-of-session POST can
++                    # actually extend the session, and NodeMCU sends that
++                    # "a moment later" per its own comments elsewhere in
++                    # this file. Deleting SESSION_PATH right now would
++                    # strand that POST with nothing left to attach the
++                    # grant to (Session not found), turning a real grant
++                    # into a silently-dropped one. Give it a short, bounded
++                    # window — a few more ~1s polls, not a blocking sleep —
++                    # before falling back to the old "just bank it" rescue.
++                    GRANTWAIT=$(cat "$GRANTWAIT_PATH" 2>/dev/null); GRANTWAIT=$(( ${GRANTWAIT:-0} + 1 ))
++                    echo "$GRANTWAIT" > "$GRANTWAIT_PATH" 2>/dev/null
++                    if [ "$GRANTWAIT" -lt 4 ]; then
++                        FROZEN_REM=$(cat "$REM_PATH" 2>/dev/null); FROZEN_REM=${FROZEN_REM:-$REMAINING}
++                        _ok "{\"status\":\"reconnecting\",\"amount\":${_RESCUE_TOTAL},\"minutes\":${_RESCUE_MIN},\"remaining\":${FROZEN_REM}}"
++                    fi
++                fi
++
++                # Either nothing crosses a tier, or coin_result.sh's own
++                # POST never showed up within the grace window above — bank
++                # whatever we last verified (same rescue the resume-check's
++                # offline path uses) and stamp the same .result
++                # duplicate-guard, so a late-arriving real grant for this
++                # exact sid (a normal end POST that got delayed further
++                # still, or a flash-crash recovery replay) becomes a no-op
++                # instead of a double credit.
+                 if [ "$LIVE_AMOUNT" -gt 0 ]; then
+                     _lock
+                     _bank_add "$SESSION_MAC" "$LIVE_AMOUNT"
+-                    printf '%s 0\n' "$LIVE_AMOUNT" > "$RESULT_PATH"
+                     _unlock
+                     # Same income/notification gap as the resume-check
+                     # rescue above: this bypasses coin_result.sh, so record
+@@ -770,9 +855,15 @@ poll)
+                     _L_MSG=$(tpl_render "$TPL_COINS_INSERTED" insertcoinamt "$LIVE_AMOUNT" mac "$SESSION_MAC")
+                     ( /lmepisowifi/hotspot/notify.sh "$_L_MSG" "" coins_inserted >/dev/null 2>&1 </dev/null & )
+                 fi
+-                rm -f "$SESSION_PATH" "$MISS_PATH" "$AMT_PATH" "$REM_PATH" "/tmp/coin_lock_${SESSION_NODE}"
++                # Nothing was actually consumed into time by this file, so
++                # the .result mirrors coin_result.sh's own "0 0" convention
++                # for a below-tier no-op rather than the pre-tier total —
++                # the still-banked balance is what the NEXT session preview
++                # (BANKED, via _bank_get) will correctly show again.
++                printf '0 0\n' > "$RESULT_PATH"
++                rm -f "$SESSION_PATH" "$MISS_PATH" "$AMT_PATH" "$REM_PATH" "$GRANTWAIT_PATH" "/tmp/coin_lock_${SESSION_NODE}"
+                 _clear_pending "$SID"
+-                _ok "{\"status\":\"expired\",\"amount\":${LIVE_AMOUNT},\"minutes\":$(_calc_time "$LIVE_AMOUNT")}"
++                _ok "{\"status\":\"expired\",\"amount\":${_RESCUE_TOTAL},\"minutes\":0}"
+             fi
+             PREV_AMOUNT=$LIVE_AMOUNT          # what we had before this poll
+             LIVE_AMOUNT=${RAW_AMT:-0}
+@@ -816,7 +907,7 @@ poll)
+     TOTAL_AMOUNT=$(( BANKED + LIVE_AMOUNT ))
+ 
+     if [ "$LIVE_OK" -eq 1 ]; then
+-        rm -f "$MISS_PATH"
++        rm -f "$MISS_PATH" "${SESSION_PATH}.grantwait"
+     else
+         # NodeMCU didn't answer this poll. Tolerate a few consecutive misses
+         # (polling runs about once a second, so ~4s) to absorb a one-off wifi
+@@ -904,8 +995,20 @@ cancel)
+     CANCEL_RESP=$(wget -q -T 5 -O - \
+         "http://${_N_IP}:${_N_PORT}/cancel?sid=${SID}&sig=${CANCEL_SIG}" \
+         2>/dev/null)
+-    [ -z "$CANCEL_RESP" ] && \
+-        _coin_alert "CANCEL_NO_RESPONSE" "SID=${SID} NodeMCU (node ${SESSION_NODE}) did not respond to /cancel — may be offline or mid-reboot"
++    if [ -z "$CANCEL_RESP" ]; then
++        # A blank response only means THIS particular HTTP round trip
++        # didn't come back within the timeout — it does NOT mean the
++        # cancel failed. NodeMCU finalizes and posts to coin_result.sh
++        # asynchronously (see the normal end-of-session path's comments),
++        # so by the time wget gives up, the session may already have been
++        # wrapped up successfully by that POST, or by poll's own
++        # LIVE_ACTIVE:false rescue running concurrently. Only alert if
++        # there's no sign either of those happened.
++        CANCEL_RESULT_PATH="/tmp/coin_sessions/${SID}.result"
++        if [ -f "$SESSION_PATH" ] && [ ! -f "$CANCEL_RESULT_PATH" ]; then
++            _coin_alert "CANCEL_NO_RESPONSE" "SID=${SID} NodeMCU (node ${SESSION_NODE}) did not respond to /cancel — may be offline or mid-reboot"
++        fi
++    fi
+ 
+     _ok '{"ok":true}'    ;;
+ 
+diff --git a/hotspot/cgi-bin/coin_result.sh b/hotspot/cgi-bin/coin_result.sh
+index 01f2bfc..acc6f8c 100755
+--- a/hotspot/cgi-bin/coin_result.sh
++++ b/hotspot/cgi-bin/coin_result.sh
+@@ -289,14 +289,25 @@ else
+     EXP_SIG=$(_md5 "${N_PSK}:${SID}:${AMOUNT}:end")
+     [ "$SIG" = "$EXP_SIG" ] || _err "Bad sig"
+ 
+-    [ -f "$SESSION_PATH" ] || _err "Session not found"
+-
++    # Check for an already-posted result BEFORE requiring SESSION_PATH to
++    # still exist. coin.sh's poll-driven rescues (the LIVE_ACTIVE:false
++    # branch and the give-up-after-RECONNECT_GRACE branch) can win the race
++    # against this normal end-of-session POST: NodeMCU answers /status
++    # "active:false" as soon as it finalizes locally, before it gets around
++    # to actually sending US this POST ("a moment later" per those rescues'
++    # own comments) — so by the time we're called, a rescue may have
++    # already banked the coins, written RESULT_PATH, AND deleted
++    # SESSION_PATH. Requiring SESSION_PATH first would turn every one of
++    # those races into a silently-dropped "Session not found" instead of
++    # the graceful duplicate no-op this is meant to be.
+     if [ -f "$RESULT_PATH" ]; then
+         PREV_MIN=$(awk '{print $2}' "$RESULT_PATH")
+         _clear_pending "$SID"
+         _ok "{\"ok\":true,\"minutes\":${PREV_MIN},\"duplicate\":true}"
+     fi
+ 
++    [ -f "$SESSION_PATH" ] || _err "Session not found"
++
+     # --- Guard 4: Reject stale replays ---
+     LAST_SEEN=$(awk '{print ($3==""?$2:$3)}' "$SESSION_PATH")
+     SESSION_AGE=$(( NOW - LAST_SEEN ))

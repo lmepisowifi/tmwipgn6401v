@@ -1,4 +1,16 @@
 #!/bin/sh
+# ---------------------------------------------------------------------------
+# lmepisowifi — https://github.com/lmepisowifi/tmwipgn6401v
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 The lmepisowifi Project — see AUTHORS
+#
+# Licensed under the GNU AGPLv3 (see LICENSE). Modifying or rewriting this
+# file — including by running it through an LLM — does not remove these
+# obligations: keep this notice, mark your changes, and offer Corresponding
+# Source to network users (AGPLv3 §5, §13). See PROVENANCE.md before
+# presenting this as your own original work.
+# ---------------------------------------------------------------------------
+
 
 BB="busybox"
 SESSION_FILE="/tmp/active_sessions.txt"
@@ -228,9 +240,60 @@ if [ -n "$RESUME" ] && [ "$RESUME" = "1" ]; then
     NEW_EXPIRY=$(( NOW + DURATION ))
     NEW_TOTAL=$TOTAL
 else
+    # Master switch: voucher input entirely disabled by the admin. Checked
+    # before anything else in this branch (strikes, internet gate, code
+    # lookup) so a disabled device doesn't accumulate strikes or burn a
+    # code lookup for a feature it can't use. Resuming an already-paused
+    # session (the branch above) is untouched by this toggle, same as
+    # COIN_ENABLED never blocks resuming an already-paid coin session.
+    if [ "${VOUCHER_ENABLED:-1}" = "0" ]; then
+        echo '{"ok":false,"error":"voucher_disabled"}'
+        exit 0
+    fi
+
     # Verify regular voucher inputs
     if [ -z "$VOUCHER" ]; then
         echo '{"ok":false,"error":"no_voucher"}'
+        exit 0
+    fi
+
+    # --- Wrong-voucher anti-troll strike system (mirrors coin.sh's) ---
+    # Tracks repeated incorrect voucher submissions per-device in
+    # /tmp/voucher_strikes.txt ("MAC STRIKES LAST_STRIKE_UPTIME") and, once
+    # VOUCHER_STRIKE_ENABLED is on, temporarily blocks further attempts from
+    # that device after VOUCHER_STRIKE_THRESHOLD wrong codes in a row, for
+    # VOUCHER_COOLDOWN seconds — same shape as coin.sh's /tmp/coin_strikes.txt
+    # anti-griefing suspension. Off by default (opt-in) so existing installs
+    # keep today's unlimited-attempts behavior until the admin turns it on.
+    touch /tmp/voucher_strikes.txt
+    if [ "${VOUCHER_STRIKE_ENABLED:-0}" = "1" ]; then
+        VSTRIKE_DATA=$($BB grep "^$CLIENT_MAC " /tmp/voucher_strikes.txt 2>/dev/null)
+        if [ -n "$VSTRIKE_DATA" ]; then
+            VSTRIKES=$(printf '%s' "$VSTRIKE_DATA" | $BB awk '{print $2}')
+            VLAST_STRIKE=$(printf '%s' "$VSTRIKE_DATA" | $BB awk '{print $3}')
+            _VST=${VOUCHER_STRIKE_THRESHOLD:-3}
+            _VCD=${VOUCHER_COOLDOWN:-60}
+            if [ "${VSTRIKES:-0}" -ge "$_VST" ]; then
+                _VSINCE=$(( NOW - VLAST_STRIKE ))
+                if [ "$_VSINCE" -lt "$_VCD" ]; then
+                    _VWAIT_MINS=$(( (_VCD - _VSINCE + 59) / 60 ))
+                    echo "{\"ok\":false,\"error\":\"voucher_suspended\",\"wait_minutes\":${_VWAIT_MINS},\"cooldown_remaining\":$(( _VCD - _VSINCE ))}"
+                    exit 0
+                else
+                    # Cooldown elapsed — clear the slate for this device.
+                    $BB grep -v "^$CLIENT_MAC " /tmp/voucher_strikes.txt > /tmp/vs.tmp 2>/dev/null
+                    $BB mv /tmp/vs.tmp /tmp/voucher_strikes.txt
+                fi
+            fi
+        fi
+    fi
+
+    # Refuse to convert (burn) a voucher code while the router has no
+    # internet, if the operator has opted into that. Only gates a fresh
+    # voucher redemption — resuming an already-paused session (the branch
+    # above) never touches VOUCHER_FILE, so it's unaffected.
+    if [ "${VOUCHER_REQUIRE_INTERNET:-0}" = "1" ] && [ ! -f "${INTERNET_UP_FILE:-/tmp/internet_up}" ]; then
+        echo '{"ok":false,"error":"no_internet"}'
         exit 0
     fi
 
@@ -241,9 +304,31 @@ else
     )
 
     if [ -z "$VOUCHER_LINE" ]; then
+        if [ "${VOUCHER_STRIKE_ENABLED:-0}" = "1" ]; then
+            VSTRIKES=$($BB grep "^$CLIENT_MAC " /tmp/voucher_strikes.txt 2>/dev/null | $BB awk '{print $2}')
+            VSTRIKES=$(( ${VSTRIKES:-0} + 1 ))
+            $BB grep -v "^$CLIENT_MAC " /tmp/voucher_strikes.txt > /tmp/vs.tmp 2>/dev/null
+            printf '%s %s %s\n' "$CLIENT_MAC" "$VSTRIKES" "$NOW" >> /tmp/vs.tmp
+            $BB mv /tmp/vs.tmp /tmp/voucher_strikes.txt
+
+            # Notify once when suspension is first triggered (strikes exactly == threshold)
+            _VST=${VOUCHER_STRIKE_THRESHOLD:-3}
+            if [ "$VSTRIKES" -eq "$_VST" ]; then
+                _VCD=${VOUCHER_COOLDOWN:-60}
+                _VCD_MINS=$(( _VCD / 60 ))
+                _VSUSP_MSG=$(tpl_render "$TPL_VOUCHER_ANTI_TROLL" \
+                    mac "$CLIENT_MAC" strikes "$VSTRIKES" strikemax "$_VST" cooldownmins "$_VCD_MINS")
+                ( /lmepisowifi/hotspot/notify.sh "$_VSUSP_MSG" "" voucher_anti_troll >/dev/null 2>&1 </dev/null & )
+            fi
+        fi
         echo '{"ok":false,"error":"invalid"}'
         exit 0
     fi
+
+    # Valid code entered — a legitimate customer, not a troll. Clear any
+    # wrong-voucher strikes this device had accumulated.
+    $BB grep -v "^$CLIENT_MAC " /tmp/voucher_strikes.txt > /tmp/vs.tmp 2>/dev/null
+    $BB mv /tmp/vs.tmp /tmp/voucher_strikes.txt
 
     DURATION=$($BB echo "$VOUCHER_LINE" | $BB awk '{print $2}')
     VALID_UNTIL=$($BB echo "$VOUCHER_LINE" | $BB awk '{print $3}')

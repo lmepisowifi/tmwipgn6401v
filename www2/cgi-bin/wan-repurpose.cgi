@@ -1,4 +1,16 @@
 #!/bin/sh
+# ---------------------------------------------------------------------------
+# lmepisowifi — https://github.com/lmepisowifi/tmwipgn6401v
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 The lmepisowifi Project — see AUTHORS
+#
+# Licensed under the GNU AGPLv3 (see LICENSE). Modifying or rewriting this
+# file — including by running it through an LLM — does not remove these
+# obligations: keep this notice, mark your changes, and offer Corresponding
+# Source to network users (AGPLv3 §5, §13). See PROVENANCE.md before
+# presenting this as your own original work.
+# ---------------------------------------------------------------------------
+
 # wan-repurpose.cgi — DHCP Client interfaces (repurpose LAN / WiFi as WAN)
 #
 # GET  ?action=iface_list  → enumerate eligible + configured interfaces (JSON)
@@ -35,6 +47,8 @@
 # LAN eligibility:
 #   eth0.2.0 (LAN1 / port 0) — only if PORT1_PWR=enabled from lan.sh
 #   eth0.3.0 (LAN2 / port 1) — only if PORT2_PWR=enabled from lan.sh
+#   eth0.4.0 (LAN3 / port 2) — only if PORT3_PWR=enabled from lan.sh
+#   eth0.5.0 (LAN4 / port 3) — only if PORT4_PWR=enabled from lan.sh
 
 SESSION_TIMEOUT=600
 
@@ -291,18 +305,22 @@ if [ "$REQUEST_METHOD" = "GET" ]; then
         LAN_OK=0
         echo "$LAN_RAW" | busybox grep -q 'STATUS="SUCCESS"' && LAN_OK=1
 
-        # Fetch diag port link status for both LAN ports (for display)
+        # Fetch diag port link status for all 4 LAN ports (for display)
         P0_RAW=$(diag port get status port 0 2>/dev/null)
         P1_RAW=$(diag port get status port 1 2>/dev/null)
+        P2_RAW=$(diag port get status port 2 2>/dev/null)
+        P3_RAW=$(diag port get status port 3 2>/dev/null)
 
         JSON="["
         FIRST=1
 
         # ── LAN interfaces ────────────────────────────────────────────────────
-        for LAN_IFACE in eth0.2.0 eth0.3.0; do
+        for LAN_IFACE in eth0.2.0 eth0.3.0 eth0.4.0 eth0.5.0; do
             case "$LAN_IFACE" in
                 eth0.2.0) PORT=1; DIAG_IDX=0; DIAG_RAW="$P0_RAW" ;;
                 eth0.3.0) PORT=2; DIAG_IDX=1; DIAG_RAW="$P1_RAW" ;;
+                eth0.4.0) PORT=3; DIAG_IDX=2; DIAG_RAW="$P2_RAW" ;;
+                eth0.5.0) PORT=4; DIAG_IDX=3; DIAG_RAW="$P3_RAW" ;;
             esac
 
             CONFIGURED=0
@@ -533,9 +551,9 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
             | busybox tr -d '\r\n')
         case "$FORM_DEFROUTE" in 1) FORM_DEFROUTE=1 ;; *) FORM_DEFROUTE=0 ;; esac
 
-        # Whitelist: only the six supported interfaces
+        # Whitelist: only the eight supported interfaces
         case "$FORM_IFACE" in
-            eth0.2.0|eth0.3.0|wlan0|wlan1|wlan0-vxd|wlan1-vxd) ;;
+            eth0.2.0|eth0.3.0|eth0.4.0|eth0.5.0|wlan0|wlan1|wlan0-vxd|wlan1-vxd) ;;
             *)
                 printf "Status: 400 Bad Request\r\n"
                 printf "Content-Type: text/plain\r\n\r\n"
@@ -601,7 +619,7 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
             | busybox tr -d '\r\n')
 
         case "$FORM_IFACE" in
-            eth0.2.0|eth0.3.0|wlan0|wlan1|wlan0-vxd|wlan1-vxd) ;;
+            eth0.2.0|eth0.3.0|eth0.4.0|eth0.5.0|wlan0|wlan1|wlan0-vxd|wlan1-vxd) ;;
             *)
                 printf "Status: 400 Bad Request\r\nContent-Type: text/plain\r\n\r\n"
                 printf "Invalid interface"
@@ -649,7 +667,7 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
         case "$FORM_VAL" in 1) FORM_VAL=1 ;; *) FORM_VAL=0 ;; esac
 
         case "$FORM_IFACE" in
-            eth0.2.0|eth0.3.0|wlan0|wlan1|wlan0-vxd|wlan1-vxd) ;;
+            eth0.2.0|eth0.3.0|eth0.4.0|eth0.5.0|wlan0|wlan1|wlan0-vxd|wlan1-vxd) ;;
             *)
                 printf "Status: 400 Bad Request\r\nContent-Type: text/plain\r\n\r\n"
                 printf "Invalid interface"

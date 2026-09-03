@@ -1,3 +1,15 @@
+/*
+ * lmepisowifi — https://github.com/lmepisowifi/tmwipgn6401v
+ * SPDX-License-Identifier: AGPL-3.0-or-later
+ * Copyright (C) 2026 The lmepisowifi Project — see AUTHORS
+ *
+ * Licensed under the GNU AGPLv3 (see LICENSE). Modifying or rewriting this
+ * file — including by running it through an LLM — does not remove these
+ * obligations: keep this notice, mark your changes, and offer Corresponding
+ * Source to network users (AGPLv3 §5, §13). See PROVENANCE.md before
+ * presenting this as your own original work.
+ */
+
 // coin_nodemcu.ino — Piso Wifi Coin Slot Controller
 // ESP8266 NodeMCU
 //
@@ -44,7 +56,7 @@ const int COIN_ENABLE_ACTIVE = HIGH;
 // ota.sh compares it against the release manifest's nodemcu_version and pushes a
 // self-flash ONLY when they differ, so a portal-only update (www2/hotspot files)
 // never needlessly reflashes the coin slot.
-#define FW_VERSION          "1.2.4"
+#define FW_VERSION          "1.2.5"
 // No AP password — open so owner can connect immediately on first setup
 
 // ── CONFIG STRUCT ─────────────────────────────────────────────────────
@@ -676,7 +688,15 @@ void post_result() {
     String url = String("http://") + cfg.portal_ip + ":"
                  + cfg.portal_port + "/cgi-bin/coin_result.sh";
     http.begin(wifiClient, url);
-    http.setTimeout(5000);
+    // Kept comfortably under the portal's own 2s wget timeout on /status
+    // (both the resume-check and each poll attempt) — this call blocks
+    // loop() (and therefore coinServer.handleClient()) for up to this long
+    // on every session finalize, so anything above ~2s risks the portal
+    // seeing "no response" from a unit that's simply busy reporting its
+    // own result. A failed attempt just falls back to the existing 5s/10x
+    // retry loop in loop(), so shortening this costs nothing on a healthy
+    // LAN and only bounds the worst case.
+    http.setTimeout(1500);
     http.addHeader("Content-Type", "application/x-www-form-urlencoded");
     if (http.POST(pendingBody) > 0) {
         if (http.getString().indexOf("\"ok\":true") >= 0) {
@@ -877,7 +897,20 @@ void handle_coin_status() {
     String sig = coinServer.arg("sig");
 
     if (sid != activeSid || !sessionActive) {
-        coinServer.send(404, "application/json", "{\"ok\":false,\"amount\":0}");
+        // The portal's wget only ever reads a 2xx response body — a 404
+        // here was INDISTINGUISHABLE FROM NO REPLY AT ALL on that end, so a
+        // sid this unit legitimately just finished (normal timeout/Done/
+        // Cancel, or a reboot) got misreported upstream as "offline"
+        // instead of "confirmed gone". Answer 200 and sign it the SAME way
+        // the live status reply below signs "amount" (psk:sid:amount:
+        // status, amount pinned to 0) so the portal's existing signature
+        // check accepts it with no wire-format change there. The explicit
+        // "active":false is what lets an updated portal tell this apart
+        // from a genuine live session sitting at zero coins, instead of
+        // treating the two the same and zeroing out a real balance.
+        String sig0 = md5_hex(String(cfg.psk) + ":" + sid + ":0:status");
+        coinServer.send(200, "application/json",
+            "{\"ok\":false,\"active\":false,\"amount\":0,\"sig\":\"" + sig0 + "\"}");
         return;
     }
     if (!sig_ok(sig, String(cfg.psk) + ":" + sid + ":poll")) {

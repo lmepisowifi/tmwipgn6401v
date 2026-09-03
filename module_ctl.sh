@@ -1,4 +1,16 @@
 #!/bin/sh
+# ---------------------------------------------------------------------------
+# lmepisowifi — https://github.com/lmepisowifi/tmwipgn6401v
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 The lmepisowifi Project — see AUTHORS
+#
+# Licensed under the GNU AGPLv3 (see LICENSE). Modifying or rewriting this
+# file — including by running it through an LLM — does not remove these
+# obligations: keep this notice, mark your changes, and offer Corresponding
+# Source to network users (AGPLv3 §5, §13). See PROVENANCE.md before
+# presenting this as your own original work.
+# ---------------------------------------------------------------------------
+
 # ============================================================
 # module_ctl.sh — www2 module manager for lmepisowifi
 # RTL9607C ONT | /lmepisowifi = ubifs (rw)
@@ -332,15 +344,28 @@ do_install() {
         echo '{"ok":false,"error":"install_in_progress"}'; return 1
     fi
 
-    mkdir -p "$DL"; : > "$LOG"
+    # Per-module download dir, wiped clean on every attempt. Previously this
+    # all lived directly under $DL, which do_list()/do_status() also read
+    # into ("$DL/modules.txt") and which do_auto_update()'s cron loop writes
+    # into via this same do_install() — so loading/refreshing the Modules
+    # page, or the 6-hour auto-update tick, while an install was running
+    # could overwrite the very file this function was mid-read on, or (via
+    # fetch_large's `-c` resume) let a later attempt splice new download
+    # bytes onto a stale/foreign leftover from a previous extract_failed or
+    # bad_module_payload run — either of which reliably shows up to the user
+    # as "checksum_mismatch" and clears up on a later, uncontended retry.
+    # Namespacing by $_id and starting from a clean directory every time
+    # removes both the cross-process collision and the -c resume hazard.
+    _DL="$DL/$_id"
+    rm -rf "$_DL"; mkdir -p "$_DL"; : > "$LOG"
 
     set_mod_status "fetching_registry"
-    if ! fetch "$(modules_url)" "$DL/modules.txt"; then
+    if ! fetch "$(modules_url)" "$_DL/modules.txt"; then
         release_install_lock "$_id"; echo '{"ok":false,"error":"registry_fetch_failed"}'; return 1
     fi
-    _ver=$(reg_field "$DL/modules.txt" "$_id" version)
-    _url=$(reg_field "$DL/modules.txt" "$_id" url)
-    _sum=$(reg_field "$DL/modules.txt" "$_id" sha256)
+    _ver=$(reg_field "$_DL/modules.txt" "$_id" version)
+    _url=$(reg_field "$_DL/modules.txt" "$_id" url)
+    _sum=$(reg_field "$_DL/modules.txt" "$_id" sha256)
     [ -n "$_reqver" ] && log "install: requested $_reqver, registry has $_ver"
     if [ -z "$_url" ] || [ -z "$_sum" ]; then
         release_install_lock "$_id"; echo '{"ok":false,"error":"registry_incomplete"}'; return 1
@@ -354,30 +379,30 @@ do_install() {
     # fetch_large_retry sets its own "downloading"/"download_retry_N" status
     # as it goes — see its definition above for why a single stall no longer
     # means giving up immediately.
-    if ! fetch_large_retry "$_url" "$DL/mod.tar.gz"; then
+    if ! fetch_large_retry "$_url" "$_DL/mod.tar.gz"; then
         release_install_lock "$_id"; echo '{"ok":false,"error":"download_failed"}'; return 1
     fi
     set_mod_status "verifying"
-    _got=$(sha256sum "$DL/mod.tar.gz" 2>/dev/null | $BB awk '{print $1}')
+    _got=$(sha256sum "$_DL/mod.tar.gz" 2>/dev/null | $BB awk '{print $1}')
     if [ -z "$_got" ] || [ "$_got" != "$_sum" ]; then
-        rm -f "$DL/mod.tar.gz"
+        rm -rf "$_DL"
         release_install_lock "$_id"; echo '{"ok":false,"error":"checksum_mismatch"}'; return 1
     fi
 
     set_mod_status "extracting"
-    rm -rf "$DL/stage"; mkdir -p "$DL/stage"
-    if ! tar -xzf "$DL/mod.tar.gz" -C "$DL/stage" 2>>"$LOG"; then
-        rm -rf "$DL/stage"
+    rm -rf "$_DL/stage"; mkdir -p "$_DL/stage"
+    if ! tar -xzf "$_DL/mod.tar.gz" -C "$_DL/stage" 2>>"$LOG"; then
+        rm -rf "$_DL"
         release_install_lock "$_id"; echo '{"ok":false,"error":"extract_failed"}'; return 1
     fi
     _sent=$(module_sentinel "$_id")
-    _base="$DL/stage"
+    _base="$_DL/stage"
     if [ ! -e "$_base/$_sent" ]; then
-        _inner=$(find "$DL/stage" -maxdepth 3 -path "*/$_sent" 2>/dev/null | head -1)
+        _inner=$(find "$_DL/stage" -maxdepth 3 -path "*/$_sent" 2>/dev/null | head -1)
         [ -n "$_inner" ] && _base=$(printf '%s' "$_inner" | $BB sed "s#/$_sent\$##")
     fi
     if [ ! -e "$_base/$_sent" ]; then
-        rm -rf "$DL/stage"
+        rm -rf "$_DL"
         release_install_lock "$_id"; echo '{"ok":false,"error":"bad_module_payload"}'; return 1
     fi
 
@@ -387,7 +412,7 @@ do_install() {
     chmod +x "$ROOT"/www2/cgi-bin/* 2>/dev/null
     [ "$_id" = hotspot ]   && { chmod +x "$ROOT/lmehspt.sh" "$ROOT"/hotspot/cgi-bin/*.sh 2>/dev/null; restore_assets hotspot; }
     [ "$_id" = tailscale ] && chmod +x "$ROOT"/tailscale/* 2>/dev/null
-    rm -rf "$DL/stage" "$DL/mod.tar.gz"
+    rm -rf "$_DL"
 
     set_state "$_id" installed
     set_version "$_id" "${_ver:-unknown}"

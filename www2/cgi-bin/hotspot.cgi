@@ -1,4 +1,16 @@
 #!/bin/sh
+# ---------------------------------------------------------------------------
+# lmepisowifi — https://github.com/lmepisowifi/tmwipgn6401v
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 The lmepisowifi Project — see AUTHORS
+#
+# Licensed under the GNU AGPLv3 (see LICENSE). Modifying or rewriting this
+# file — including by running it through an LLM — does not remove these
+# obligations: keep this notice, mark your changes, and offer Corresponding
+# Source to network users (AGPLv3 §5, §13). See PROVENANCE.md before
+# presenting this as your own original work.
+# ---------------------------------------------------------------------------
+
 
 SESSION_TIMEOUT=600
 
@@ -54,6 +66,9 @@ HDATA="/lmepisowifi/hotspot_data"
 SESSION_DATA="/tmp/active_sessions.txt"
 USERS_FILE="$HDATA/users.txt"
 WHITELIST_FILE="$HDATA/whitelist.txt"
+# Below-minimum-tier coin balances banked per-MAC by coin_result.sh — see
+# that file's COIN_BANK_FILE comment for the full explanation.
+COIN_BANK_FILE="$HDATA/coin_bank.txt"
 
 _unlock() { rm -f /tmp/hotspot_session.lock/pid 2>/dev/null; rmdir /tmp/hotspot_session.lock 2>/dev/null; }
 _lock() {
@@ -296,6 +311,108 @@ _dhcp_renormalize_ips() {
         $BB mv /tmp/nm_renorm.tmp "$NODEMCU_EXTRA_FILE"; sync
     fi
 }
+# ── DHCP dynamic lease helpers (leases page: list/renew/delete) ────────────
+# busybox udhcpd's lease file is a binary struct dump (see upstream
+# networking/udhcp/dhcpd.h):
+#   [8-byte big-endian "written_at" unix time]
+#   then repeating 36-byte records: expires(4,BE) + lease_nip(4,BE) +
+#   mac(6) + hostname(20) + pad(2)
+# "expires" on disk is REMAINING seconds as of written_at, not absolute
+# time (busybox rewrites it that way on every flush so a device with no
+# RTC across reboots doesn't lose leases). We never trust this layout
+# blind: every write below is cross-checked against `busybox dumpleases`
+# (the same binary's own parser) before a byte is touched, and falls back
+# to "unsupported"/"not_found" rather than risk corrupting the file.
+LEASES_FILE="/tmp/udhcpd.leases"
+LEASE_REC_SIZE=36
+
+# Is $1 a compiled-in busybox applet? (bare `busybox` lists its applets.)
+_bb_has() { $BB 2>&1 | $BB grep -qw "$1"; }
+
+# Lowercase, colon-stripped MACs of every configured NodeMCU (static
+# leases) — dumpleases dumps the raw file regardless of static_lease
+# config, so a MAC that's since been pinned static can leave a stale
+# dynamic-looking row in the file. Hide those rather than offer
+# renew/delete on a unit that's actually served statically.
+_static_lease_macs() {
+    _slm="${NODEMCU_MAC:-$(read_lmehspt_var NODEMCU_MAC)}"
+    [ -n "$_slm" ] && printf '%s\n' "$_slm" | $BB tr 'A-F' 'a-f' | $BB tr -d ':'
+    [ -f "$NODEMCU_EXTRA_FILE" ] && $BB awk -F'|' '$1 ~ /^[0-9]+$/ && $4!="" {print $4}' "$NODEMCU_EXTRA_FILE" \
+        | $BB tr 'A-F' 'a-f' | $BB tr -d ':'
+}
+
+# Decimal value of the big-endian uint32 at byte offset $2 in file $1.
+_read_be32() {
+    $BB dd if="$1" bs=1 skip="$2" count=4 2>/dev/null \
+        | $BB od -An -tu1 -v \
+        | $BB awk '{print ($1*16777216)+($2*65536)+($3*256)+$4}'
+}
+
+# Overwrite the 4 bytes at byte offset $2 in file $1 with decimal value
+# $3, big-endian, in place — every other byte in the file is untouched.
+_write_be32() {
+    _wf="$1"; _woff="$2"; _wval="$3"
+    _wb0=$(( (_wval / 16777216) % 256 )); _wb1=$(( (_wval / 65536) % 256 ))
+    _wb2=$(( (_wval / 256)      % 256 )); _wb3=$(( _wval           % 256 ))
+    $BB printf "\\$(printf '%03o' "$_wb0")\\$(printf '%03o' "$_wb1")\\$(printf '%03o' "$_wb2")\\$(printf '%03o' "$_wb3")" \
+        | $BB dd of="$_wf" bs=1 seek="$_woff" count=4 conv=notrunc 2>/dev/null
+}
+
+# Lowercase hex (no separators) of the 6 MAC bytes at byte offset $2 in
+# file $1.
+_read_mac_hex() {
+    $BB dd if="$1" bs=1 skip="$2" count=6 2>/dev/null | $BB od -An -tx1 -v | $BB tr -d ' \n'
+}
+
+# Header size in bytes: 8 for every busybox in real-world use (the
+# "written_at" format), 0 for the pre-written_at format some very old
+# builds used. Empty = file size doesn't cleanly divide either way —
+# treat as unreadable rather than guess.
+_lease_header_size() {
+    _lfsz=$($BB wc -c < "$LEASES_FILE" 2>/dev/null); _lfsz=${_lfsz:-0}
+    [ "$_lfsz" -eq 0 ] && { printf ''; return; }
+    if [ "$_lfsz" -ge 8 ] && [ $(( (_lfsz - 8) % LEASE_REC_SIZE )) -eq 0 ]; then
+        printf '8'
+    elif [ $(( _lfsz % LEASE_REC_SIZE )) -eq 0 ]; then
+        printf '0'
+    else
+        printf ''
+    fi
+}
+
+# Dedicated lock for lease-file edits — separate from the session _lock
+# above (a different resource; sharing that one would serialize unrelated
+# kicks/add_time calls behind a udhcpd restart for no reason).
+_dhcp_lease_unlock() { rm -f /tmp/hotspot_dhcp_lease.lock/pid 2>/dev/null; rmdir /tmp/hotspot_dhcp_lease.lock 2>/dev/null; }
+_dhcp_lease_lock() {
+    _dli=0
+    while ! mkdir /tmp/hotspot_dhcp_lease.lock 2>/dev/null; do
+        if [ "$((_dli % 10))" -eq 0 ] && [ "$_dli" -gt 0 ]; then
+            _DLPID=$($BB cat /tmp/hotspot_dhcp_lease.lock/pid 2>/dev/null)
+            if [ -z "$_DLPID" ] || ! kill -0 "$_DLPID" 2>/dev/null || [ "$_dli" -ge 100 ]; then
+                rm -f /tmp/hotspot_dhcp_lease.lock/pid 2>/dev/null
+                rmdir /tmp/hotspot_dhcp_lease.lock 2>/dev/null
+            fi
+        fi
+        $BB sleep 0.1 2>/dev/null || sleep 0.1
+        _dli=$(( _dli + 1 ))
+    done
+    $BB echo $$ > /tmp/hotspot_dhcp_lease.lock/pid 2>/dev/null
+}
+
+# Kill + relaunch udhcpd WITHOUT wiping the lease file (unlike the
+# hotspot_dhcp_reload path elsewhere, which intentionally wipes every
+# lease because the pool itself moved). Caller must already have
+# `load_coin_env`'d and sourced lmehspt.sh --lib so start_dhcp() is in
+# scope.
+_dhcp_restart_preserving_leases() {
+    [ -f /tmp/hotspot_dhcp.pid ] && kill -9 "$(cat /tmp/hotspot_dhcp.pid)" 2>/dev/null
+    for _rpid in $($BB ps ww | $BB grep "hotspot_dhcp.conf" | $BB grep -v grep | $BB awk '{print $1}'); do
+        kill -9 "$_rpid" 2>/dev/null
+    done
+    start_dhcp
+}
+
 LMEHSPT="/lmepisowifi/lmehspt.sh"
 COIN_CONFIG="/tmp/coin_config.env"
 GLOBALS_ENV="/lmepisowifi/globals.env"
@@ -365,6 +482,14 @@ set_globals_var() {
 hotspot_running() {
     [ -f /tmp/hotspot_watchdog.pid ] || return 1
     local pid; pid=$(cat /tmp/hotspot_watchdog.pid)
+    $BB kill -0 "$pid" 2>/dev/null
+}
+
+# Is the interactive Telegram router bot (notify.sh --bot) currently
+# running? Same pidfile-based check as hotspot_running() above.
+bot_running() {
+    [ -f /tmp/telegram_bot.pid ] || return 1
+    local pid; pid=$(cat /tmp/telegram_bot.pid)
     $BB kill -0 "$pid" 2>/dev/null
 }
 
@@ -464,7 +589,12 @@ if echo "$QS" | $BB grep -q "action=config_get"; then
     IT="${INACTIVITY_TIMEOUT:-$(read_lmehspt_var INACTIVITY_TIMEOUT)}"
     AP="${AUTO_PAUSE_ENABLED:-$(read_lmehspt_var AUTO_PAUSE_ENABLED)}"
     AP_BOOL="false"; [ "${AP:-1}" = "1" ] && AP_BOOL="true"
+    AR="${AUTO_RESUME_ENABLED:-$(read_lmehspt_var AUTO_RESUME_ENABLED)}"
+    AR_BOOL="false"; [ "${AR:-0}" = "1" ] && AR_BOOL="true"
+    ES="${EQUAL_SHARING_ENABLED:-$(read_lmehspt_var EQUAL_SHARING_ENABLED)}"
+    ES_BOOL="false"; [ "${ES:-0}" = "1" ] && ES_BOOL="true"
     CE="${COIN_ENABLED:-$(read_lmehspt_var COIN_ENABLED)}"
+    VE="${VOUCHER_ENABLED:-$(read_lmehspt_var VOUCHER_ENABLED)}"
     NIP="${NODEMCU_IP:-$(read_lmehspt_var NODEMCU_IP)}"
     NMC="${NODEMCU_MAC:-$(read_lmehspt_var NODEMCU_MAC)}"
     NPT="${NODEMCU_PORT:-$(read_lmehspt_var NODEMCU_PORT)}"
@@ -476,6 +606,10 @@ if echo "$QS" | $BB grep -q "action=config_get"; then
     CPSK="${COIN_PSK:-$(read_lmehspt_var COIN_PSK)}"
     CST="${COIN_STRIKE_THRESHOLD:-$(read_lmehspt_var COIN_STRIKE_THRESHOLD)}"
     CCD="${COIN_COOLDOWN:-$(read_lmehspt_var COIN_COOLDOWN)}"
+    CSE="${COIN_STRIKE_ENABLED:-$(read_lmehspt_var COIN_STRIKE_ENABLED)}"
+    CSE_BOOL="true"; [ "${CSE:-1}" = "0" ] && CSE_BOOL="false"
+    CQE="${COIN_QUEUE_ENABLED:-$(read_lmehspt_var COIN_QUEUE_ENABLED)}"
+    CQE_BOOL="true"; [ "${CQE:-1}" = "0" ] && CQE_BOOL="false"
     PIP="${PORTAL_IP:-$(read_lmehspt_var PORTAL_IP)}"
     PPT="${PORTAL_PORT:-$(read_lmehspt_var PORTAL_PORT)}"
     HBR="${HOTSPOT_BR:-$(read_lmehspt_var HOTSPOT_BR)}"
@@ -486,9 +620,21 @@ if echo "$QS" | $BB grep -q "action=config_get"; then
     LI_BOOL="true"; [ "${LI:-1}" = "0" ] && LI_BOOL="false"
     MRF="${MAC_RANDOMIZATION_FIX:-$(read_lmehspt_var MAC_RANDOMIZATION_FIX)}"
     MRF_BOOL="true"; [ "${MRF:-1}" = "0" ] && MRF_BOOL="false"
+    POB="${PAUSE_ON_BOOT:-$(read_lmehspt_var PAUSE_ON_BOOT)}"
+    POB_BOOL="true"; [ "${POB:-1}" = "0" ] && POB_BOOL="false"
+    CRI="${COIN_REQUIRE_INTERNET:-$(read_lmehspt_var COIN_REQUIRE_INTERNET)}"
+    CRI_BOOL="true"; [ "${CRI:-0}" = "0" ] && CRI_BOOL="false"
+    VRI="${VOUCHER_REQUIRE_INTERNET:-$(read_lmehspt_var VOUCHER_REQUIRE_INTERNET)}"
+    VRI_BOOL="true"; [ "${VRI:-0}" = "0" ] && VRI_BOOL="false"
+    VSE="${VOUCHER_STRIKE_ENABLED:-$(read_lmehspt_var VOUCHER_STRIKE_ENABLED)}"
+    VSE_BOOL="false"; [ "${VSE:-0}" = "1" ] && VSE_BOOL="true"
+    VST="${VOUCHER_STRIKE_THRESHOLD:-$(read_lmehspt_var VOUCHER_STRIKE_THRESHOLD)}"
+    VCD="${VOUCHER_COOLDOWN:-$(read_lmehspt_var VOUCHER_COOLDOWN)}"
 
     HSP_RUNNING="false"; hotspot_running && HSP_RUNNING="true"
     COIN_ON="false"; [ -f /tmp/coin_enabled ] && COIN_ON="true"
+    VOUCHER_ON="true"; [ "${VE:-1}" = "0" ] && VOUCHER_ON="false"
+    INET_UP="false"; [ -f "${INTERNET_UP_FILE:-/tmp/internet_up}" ] && INET_UP="true"
 
     ok_json "{\"ok\":true,
 \"global_rate\":\"$(esc_json "$GR")\",
@@ -497,8 +643,11 @@ if echo "$QS" | $BB grep -q "action=config_get"; then
 \"unauth_rate\":\"$(esc_json "$UAR")\",
 \"inactivity_timeout\":\"$(esc_json "$IT")\",
 \"auto_pause_enabled\":$AP_BOOL,
+\"auto_resume_enabled\":$AR_BOOL,
+\"equal_sharing_enabled\":$ES_BOOL,
 \"coin_enabled\":\"$(esc_json "$CE")\",
 \"coin_on\":$COIN_ON,
+\"voucher_on\":$VOUCHER_ON,
 \"nodemcu_ip\":\"$(esc_json "$NIP")\",
 \"nodemcu_mac\":\"$(esc_json "$NMC")\",
 \"nodemcu_port\":\"$(esc_json "$NPT")\",
@@ -509,6 +658,8 @@ if echo "$QS" | $BB grep -q "action=config_get"; then
 \"coin_psk\":\"$(esc_json "$CPSK")\",
 \"coin_strike_threshold\":\"$(esc_json "$CST")\",
 \"coin_cooldown\":\"$(esc_json "$CCD")\",
+\"coin_strike_enabled\":$CSE_BOOL,
+\"coin_queue_enabled\":$CQE_BOOL,
 \"portal_ip\":\"$(esc_json "$PIP")\",
 \"portal_port\":\"$(esc_json "$PPT")\",
 \"hotspot_br\":\"$(esc_json "$HBR")\",
@@ -516,6 +667,13 @@ if echo "$QS" | $BB grep -q "action=config_get"; then
 \"anti_tether\":$AT_BOOL,
 \"lan_isolate\":$LI_BOOL,
 \"mac_randomization_fix\":$MRF_BOOL,
+\"pause_on_boot\":$POB_BOOL,
+\"coin_require_internet\":$CRI_BOOL,
+\"voucher_require_internet\":$VRI_BOOL,
+\"voucher_strike_enabled\":$VSE_BOOL,
+\"voucher_strike_threshold\":\"$(esc_json "$VST")\",
+\"voucher_cooldown\":\"$(esc_json "$VCD")\",
+\"internet_up\":$INET_UP,
 \"hotspot_running\":$HSP_RUNNING}"
 fi
 
@@ -557,6 +715,8 @@ if echo "$QS" | $BB grep -q "action=config_set"; then
     apply_if "UNAUTH_RATE"         "$(fget unauth_rate)"
     apply_if "INACTIVITY_TIMEOUT"  "$(fget inactivity_timeout)"
     apply_if "AUTO_PAUSE_ENABLED"  "$(fget auto_pause_enabled)"
+    apply_if "AUTO_RESUME_ENABLED" "$(fget auto_resume_enabled)"
+    apply_if "EQUAL_SHARING_ENABLED" "$(fget equal_sharing_enabled)"
     apply_if "NODEMCU_IP"          "$(fget nodemcu_ip)"
     apply_if "NODEMCU_MAC"         "$(fget nodemcu_mac)"
     apply_if "NODEMCU_PORT"        "$(fget nodemcu_port)"
@@ -567,6 +727,8 @@ if echo "$QS" | $BB grep -q "action=config_set"; then
     apply_if "COIN_PSK"            "$(fget coin_psk)"
     apply_if "COIN_STRIKE_THRESHOLD" "$(fget coin_strike_threshold)"
     apply_if "COIN_COOLDOWN"       "$(fget coin_cooldown)"
+    apply_if "VOUCHER_STRIKE_THRESHOLD" "$(fget voucher_strike_threshold)"
+    apply_if "VOUCHER_COOLDOWN"    "$(fget voucher_cooldown)"
     apply_if "PORTAL_IP"           "$(fget portal_ip)"
     apply_if "PORTAL_PORT"         "$(fget portal_port)"
 
@@ -706,7 +868,7 @@ fi
 if echo "$QS" | $BB grep -q "action=sessions"; then
     _lock
     UPTIME=$($BB awk '{print int($1)}' /proc/uptime)
-    OUT="["; SEP=""
+    OUT="["; SEP=""; SEEN_MACS=" "
     if [ -f "$SESSION_DATA" ]; then
         while read -r mac expiry total; do
             [ -n "$mac" ] || continue
@@ -717,8 +879,12 @@ if echo "$QS" | $BB grep -q "action=sessions"; then
             ip=""
             [ -f /tmp/hotspot_ip_map.txt ] && ip=$($BB grep "^$mac " /tmp/hotspot_ip_map.txt | $BB awk '{print $2}' | head -1)
             [ -z "$ip" ] && ip=$($BB awk -v m="$mac" '$4==m{print $1;exit}' /proc/net/arp 2>/dev/null)
-            OUT="${OUT}${SEP}{\"mac\":\"$mac\",\"ip\":\"${ip:-?}\",\"remaining\":$rem,\"total\":$total,\"used\":$used,\"paused\":false}"
+            bank=0
+            [ -f "$COIN_BANK_FILE" ] && bank=$($BB awk -v m="$mac" '$1==m{print $2;exit}' "$COIN_BANK_FILE")
+            case "$bank" in ''|*[!0-9]*) bank=0 ;; esac
+            OUT="${OUT}${SEP}{\"mac\":\"$mac\",\"ip\":\"${ip:-?}\",\"remaining\":$rem,\"total\":$total,\"used\":$used,\"paused\":false,\"available_coins\":$bank}"
             SEP=","
+            SEEN_MACS="${SEEN_MACS}${mac} "
         done < "$SESSION_DATA"
     fi
     if [ -f "$USERS_FILE" ]; then
@@ -727,9 +893,28 @@ if echo "$QS" | $BB grep -q "action=sessions"; then
             [ -z "$total" ] && total=$rem
             used=$(( total - rem )); [ "$used" -lt 0 ] && used=0
             ip=$($BB awk -v m="$mac" '$4==m{print $1;exit}' /proc/net/arp 2>/dev/null)
-            OUT="${OUT}${SEP}{\"mac\":\"$mac\",\"ip\":\"${ip:-?}\",\"remaining\":$rem,\"total\":$total,\"used\":$used,\"paused\":true}"
+            bank=0
+            [ -f "$COIN_BANK_FILE" ] && bank=$($BB awk -v m="$mac" '$1==m{print $2;exit}' "$COIN_BANK_FILE")
+            case "$bank" in ''|*[!0-9]*) bank=0 ;; esac
+            OUT="${OUT}${SEP}{\"mac\":\"$mac\",\"ip\":\"${ip:-?}\",\"remaining\":$rem,\"total\":$total,\"used\":$used,\"paused\":true,\"available_coins\":$bank}"
             SEP=","
+            SEEN_MACS="${SEEN_MACS}${mac} "
         done < "$USERS_FILE"
+    fi
+    # A MAC that inserted coins below the minimum tier has no active/paused
+    # session at all until it crosses one — nothing above would otherwise
+    # surface it, so the admin would have no way to see the balance is
+    # sitting there. Give it its own row instead.
+    if [ -f "$COIN_BANK_FILE" ]; then
+        while read -r mac bank; do
+            [ -n "$mac" ] || continue
+            case "$bank" in ''|*[!0-9]*) bank=0 ;; esac
+            [ "$bank" -gt 0 ] || continue
+            case "$SEEN_MACS" in *" ${mac} "*) continue ;; esac
+            ip=$($BB awk -v m="$mac" '$4==m{print $1;exit}' /proc/net/arp 2>/dev/null)
+            OUT="${OUT}${SEP}{\"mac\":\"$mac\",\"ip\":\"${ip:-?}\",\"remaining\":0,\"total\":0,\"used\":0,\"paused\":false,\"coins_only\":true,\"available_coins\":$bank}"
+            SEP=","
+        done < "$COIN_BANK_FILE"
     fi
     _unlock
     ok_json "${OUT}]"
@@ -1016,6 +1201,7 @@ if echo "$QS" | $BB grep -q "action=remove_user"; then
     # Clean up auxiliary files
     [ -f "$RM_ACTIVITY" ]         && { $BB grep -v "^$MAC " "$RM_ACTIVITY"         > /tmp/rm_a.tmp 2>/dev/null; $BB mv /tmp/rm_a.tmp "$RM_ACTIVITY"; }
     [ -f /tmp/hotspot_ip_map.txt ] && { $BB grep -v "^$MAC " /tmp/hotspot_ip_map.txt > /tmp/rm_i.tmp;           $BB mv /tmp/rm_i.tmp /tmp/hotspot_ip_map.txt; }
+    [ -f "$COIN_BANK_FILE" ]       && { $BB grep -v "^$MAC " "$COIN_BANK_FILE"       > /tmp/rm_b.tmp 2>/dev/null; $BB mv /tmp/rm_b.tmp "$COIN_BANK_FILE"; }
 
     ok_json "{\"ok\":true,\"mac\":\"$MAC\"}"
 fi
@@ -1585,6 +1771,165 @@ if echo "$QS" | $BB grep -q "action=dhcp_set"; then
     fi
     ok_json "{\"ok\":true,\"max_nodemcus\":$NEW_POOL}"
 fi
+
+# ================================================================
+# GET ?action=dhcp_leases  -> current dynamic DHCP leases on the hotspot
+# subnet (NOT NodeMCU/static units — see the NodeMCUs page for those).
+# Reads via `busybox dumpleases`, the same binary that wrote the file, so
+# this is immune to guessing the on-disk struct layout.
+# ================================================================
+if echo "$QS" | $BB grep -q "action=dhcp_leases"; then
+    if ! _bb_has dumpleases; then
+        ok_json "{\"ok\":true,\"supported\":false,\"leases\":[]}"
+    fi
+    load_coin_env
+    OUT="["; SEP=""
+    if [ -s "$LEASES_FILE" ]; then
+        STATIC_MACS=$(_static_lease_macs)
+        $BB dumpleases -r -d -f "$LEASES_FILE" 2>/dev/null \
+            | $BB grep -E '^([0-9a-f]{2}:){5}[0-9a-f]{2}[[:space:]]' \
+            > /tmp/dhcp_leases_dump.tmp
+        while IFS= read -r LN; do
+            LMAC=$(printf '%s' "$LN" | $BB awk '{print $1}')
+            LMAC_HEX=$(printf '%s' "$LMAC" | $BB tr -d ':')
+            printf '%s\n' "$STATIC_MACS" | $BB grep -qx "$LMAC_HEX" && continue
+            LIP=$(printf '%s' "$LN" | $BB awk '{print $2}')
+            LTAIL=$(printf '%s' "$LN" | $BB awk '{print $NF}')
+            case "$LTAIL" in
+                expired)   LREM=0; LEXP=true ;;
+                *[!0-9]*)  continue ;;
+                *)         LREM=$LTAIL; LEXP=false ;;
+            esac
+            OUT="${OUT}${SEP}{\"mac\":\"$(esc_json "$LMAC")\",\"ip\":\"$(esc_json "$LIP")\",\"remaining\":$LREM,\"expired\":$LEXP}"
+            SEP=","
+        done < /tmp/dhcp_leases_dump.tmp
+        rm -f /tmp/dhcp_leases_dump.tmp
+    fi
+    ok_json "{\"ok\":true,\"supported\":true,\"leases\":${OUT}]}"
+fi
+
+# ================================================================
+# POST ?action=dhcp_lease_renew   body: mac, minutes
+# Extends one lease's expiry and restarts udhcpd so it takes effect —
+# busybox udhcpd only reads the lease file at startup, so an on-disk-only
+# edit would get silently overwritten by the daemon's own next flush.
+# Only the matched record's 4-byte "expires" field is modified; every
+# other byte (and every other lease) is copied through untouched, and the
+# target MAC is cross-checked against `dumpleases` before anything is
+# written, so a layout surprise on some other busybox build fails safely
+# ("not_found"/"unsupported") instead of corrupting the file. No station
+# kick here on purpose — the device's association is undisturbed, only
+# the server-side timer for its lease resets.
+# ================================================================
+if echo "$QS" | $BB grep -q "action=dhcp_lease_renew"; then
+    read -n "$CONTENT_LENGTH" POST_DATA
+    RMAC=$(printf '%s' "$POST_DATA" | $BB sed -n 's/.*mac=\([^&]*\).*/\1/p' | urldecode | $BB tr 'A-Z' 'a-z' | $BB tr -cd 'a-f0-9:')
+    RMIN=$(printf '%s' "$POST_DATA" | $BB sed -n 's/.*minutes=\([^&]*\).*/\1/p' | $BB tr -cd '0-9')
+    case "$RMAC" in
+        [0-9a-f][0-9a-f]:[0-9a-f][0-9a-f]:[0-9a-f][0-9a-f]:[0-9a-f][0-9a-f]:[0-9a-f][0-9a-f]:[0-9a-f][0-9a-f]) ;;
+        *) err_json "bad_mac" ;;
+    esac
+    [ -z "$RMIN" ] && err_json "missing_minutes"
+    [ "$RMIN" -le 0 ] 2>/dev/null && err_json "bad_minutes"
+
+    _bb_has dumpleases && _bb_has dd && _bb_has od || err_json "unsupported"
+    [ -s "$LEASES_FILE" ] || err_json "not_found"
+    H=$(_lease_header_size)
+    [ "$H" = "8" ] || err_json "unsupported"   # relative-expiry math needs the written_at header
+
+    $BB dumpleases -f "$LEASES_FILE" 2>/dev/null | $BB grep -q "^$RMAC[[:space:]]" || err_json "not_found"
+
+    RMAC_HEX=$(printf '%s' "$RMAC" | $BB tr -d ':')
+    FSZ=$($BB wc -c < "$LEASES_FILE"); N=$(( (FSZ - H) / LEASE_REC_SIZE ))
+    IDX=-1; _ri=0
+    while [ "$_ri" -lt "$N" ]; do
+        _roff=$(( H + _ri * LEASE_REC_SIZE ))
+        [ "$(_read_mac_hex "$LEASES_FILE" $(( _roff + 8 )))" = "$RMAC_HEX" ] && { IDX=$_ri; break; }
+        _ri=$(( _ri + 1 ))
+    done
+    [ "$IDX" -ge 0 ] || err_json "not_found"
+
+    _dhcp_lease_lock
+    HI=$(_read_be32 "$LEASES_FILE" 0)
+    WRITTEN_AT=$(_read_be32 "$LEASES_FILE" 4)
+    if [ "$HI" != "0" ] || [ -z "$WRITTEN_AT" ]; then
+        _dhcp_lease_unlock; err_json "unreadable_lease_file"
+    fi
+    NOW=$($BB date +%s)
+    NEWVAL=$(( RMIN * 60 + (NOW - WRITTEN_AT) ))
+    [ "$NEWVAL" -lt 0 ] && NEWVAL=$(( RMIN * 60 ))
+    _write_be32 "$LEASES_FILE" "$(( H + IDX * LEASE_REC_SIZE ))" "$NEWVAL"
+
+    load_coin_env
+    LMEHSPT_LIB_ONLY=1
+    . /lmepisowifi/lmehspt.sh --lib
+    _dhcp_restart_preserving_leases
+    _dhcp_lease_unlock
+
+    ok_json "{\"ok\":true}"
+fi
+
+# ================================================================
+# POST ?action=dhcp_lease_delete   body: mac
+# Drops one lease record entirely (freeing its IP for reuse) and restarts
+# udhcpd so it takes effect, then kicks the station off wifi so the
+# device actually loses its connection rather than quietly keeping an IP
+# the server no longer remembers. Every other lease is copied through
+# byte-for-byte untouched — delete doesn't need to interpret the record
+# at all beyond its length, so (unlike renew) it works even on the older
+# no-header lease format.
+# ================================================================
+if echo "$QS" | $BB grep -q "action=dhcp_lease_delete"; then
+    read -n "$CONTENT_LENGTH" POST_DATA
+    DMAC=$(printf '%s' "$POST_DATA" | $BB sed -n 's/.*mac=\([^&]*\).*/\1/p' | urldecode | $BB tr 'A-Z' 'a-z' | $BB tr -cd 'a-f0-9:')
+    case "$DMAC" in
+        [0-9a-f][0-9a-f]:[0-9a-f][0-9a-f]:[0-9a-f][0-9a-f]:[0-9a-f][0-9a-f]:[0-9a-f][0-9a-f]:[0-9a-f][0-9a-f]) ;;
+        *) err_json "bad_mac" ;;
+    esac
+
+    _bb_has dumpleases && _bb_has dd && _bb_has od || err_json "unsupported"
+    [ -s "$LEASES_FILE" ] || err_json "not_found"
+    H=$(_lease_header_size)
+    [ -n "$H" ] || err_json "unsupported"
+
+    DIP=$($BB dumpleases -f "$LEASES_FILE" 2>/dev/null | $BB awk -v m="$DMAC" '$1==m{print $2; exit}')
+    [ -n "$DIP" ] || err_json "not_found"
+
+    DMAC_HEX=$(printf '%s' "$DMAC" | $BB tr -d ':')
+    FSZ=$($BB wc -c < "$LEASES_FILE"); N=$(( (FSZ - H) / LEASE_REC_SIZE ))
+    IDX=-1; _di=0
+    while [ "$_di" -lt "$N" ]; do
+        _doff=$(( H + _di * LEASE_REC_SIZE ))
+        [ "$(_read_mac_hex "$LEASES_FILE" $(( _doff + 8 )))" = "$DMAC_HEX" ] && { IDX=$_di; break; }
+        _di=$(( _di + 1 ))
+    done
+    [ "$IDX" -ge 0 ] || err_json "not_found"
+
+    _dhcp_lease_lock
+    rm -f /tmp/udhcpd_leases.tmp
+    [ "$H" -gt 0 ] && $BB dd if="$LEASES_FILE" of=/tmp/udhcpd_leases.tmp bs=1 count="$H" 2>/dev/null
+    _di=0
+    while [ "$_di" -lt "$N" ]; do
+        if [ "$_di" -ne "$IDX" ]; then
+            $BB dd if="$LEASES_FILE" bs=1 skip=$(( H + _di * LEASE_REC_SIZE )) count="$LEASE_REC_SIZE" 2>/dev/null >> /tmp/udhcpd_leases.tmp
+        fi
+        _di=$(( _di + 1 ))
+    done
+    $BB mv /tmp/udhcpd_leases.tmp "$LEASES_FILE"
+
+    load_coin_env
+    LMEHSPT_LIB_ONLY=1
+    . /lmepisowifi/lmehspt.sh --lib
+    _dhcp_restart_preserving_leases
+    ip neigh del "$DIP" dev "$HOTSPOT_BR" 2>/dev/null
+    $BB arp -d "$DIP" 2>/dev/null
+    kick_sta_mac "$DMAC"
+    ping -c 1 -W 1 "$DIP" >/dev/null 2>&1
+    _dhcp_lease_unlock
+
+    ok_json "{\"ok\":true}"
+fi
+
 # ================================================================
 # POST ?action=nodemcu_del  body: id
 # ================================================================
@@ -1642,6 +1987,33 @@ if echo "$QS" | $BB grep -q "action=nodemcu_del"; then
     _order_remove_id "$NID"
     ok_json "{\"ok\":true,\"id\":$NID}"
 fi
+# ================================================================
+# POST ?action=voucher_toggle  body: enabled=1|0
+# Master switch for voucher code redemption (see login.sh). When off,
+# login.sh refuses all new voucher submissions with "voucher_disabled" and
+# the portal hides the voucher-code input entirely — same shape as
+# coin_toggle below, but persisted the three-way way (coin_config.env +
+# lmehspt.sh + globals.env) like voucher_strike_set, so the setting
+# actually survives a hotspot restart/reboot.
+# ================================================================
+if echo "$QS" | $BB grep -q "action=voucher_toggle"; then
+    read -n "$CONTENT_LENGTH" POST_DATA
+    VAL=$($BB echo "$POST_DATA" | $BB sed -n 's/.*enabled=\([^&]*\).*/\1/p')
+    if [ "$VAL" = "1" ]; then
+        save_coin_env_var "VOUCHER_ENABLED" "1"
+        set_lmehspt_var   "VOUCHER_ENABLED" "1"
+        set_globals_var   "VOUCHER_ENABLED" "1"
+        ok_json "{\"ok\":true,\"voucher_on\":true}"
+    elif [ "$VAL" = "0" ]; then
+        save_coin_env_var "VOUCHER_ENABLED" "0"
+        set_lmehspt_var   "VOUCHER_ENABLED" "0"
+        set_globals_var   "VOUCHER_ENABLED" "0"
+        ok_json "{\"ok\":true,\"voucher_on\":false}"
+    else
+        err_json "bad_value"
+    fi
+fi
+
 # ================================================================
 # POST ?action=coin_toggle  body: enabled=1|0
 # ================================================================
@@ -1756,6 +2128,175 @@ if echo "$QS" | $BB grep -q "action=mac_fix_set"; then
 fi
 
 # ================================================================
+# POST ?action=pause_on_boot_set   body: enabled=1|0
+# Toggles whether the boot-time sync (BOOT_MARKER block in lmehspt.sh)
+# converts any users.txt row still "active" from before a reboot into
+# "paused". Same save_coin_env_var/set_lmehspt_var/set_globals_var pattern
+# as every other simple on/off toggle here — no firewall chain or
+# running-daemon effect to apply live, this only changes what the boot
+# sequence does the *next* time the box actually reboots.
+# ================================================================
+if echo "$QS" | $BB grep -q "action=pause_on_boot_set"; then
+    read -n "${CONTENT_LENGTH:-0}" POST_DATA
+    VAL=$(printf '%s' "$POST_DATA" | $BB sed -n 's/.*enabled=\([^&]*\).*/\1/p')
+    case "$VAL" in
+        1)
+            save_coin_env_var "PAUSE_ON_BOOT" "1"
+            set_lmehspt_var   "PAUSE_ON_BOOT" "1"
+            set_globals_var   "PAUSE_ON_BOOT" "1"
+            ok_json '{"ok":true,"pause_on_boot":true}'
+            ;;
+        0)
+            save_coin_env_var "PAUSE_ON_BOOT" "0"
+            set_lmehspt_var   "PAUSE_ON_BOOT" "0"
+            set_globals_var   "PAUSE_ON_BOOT" "0"
+            ok_json '{"ok":true,"pause_on_boot":false}'
+            ;;
+        *) err_json "bad_value" ;;
+    esac
+fi
+
+# ================================================================
+# POST ?action=coin_internet_set   body: enabled=1|0
+# When on, coin.sh's "start" action refuses to open a brand new coin
+# session while the router has no internet connectivity (an in-flight
+# session someone already paid for is never interrupted by this — see
+# coin.sh's own comments). Same simple three-tier persistence as every
+# other on/off toggle here.
+# ================================================================
+if echo "$QS" | $BB grep -q "action=coin_internet_set"; then
+    read -n "${CONTENT_LENGTH:-0}" POST_DATA
+    VAL=$(printf '%s' "$POST_DATA" | $BB sed -n 's/.*enabled=\([^&]*\).*/\1/p')
+    case "$VAL" in
+        1)
+            save_coin_env_var "COIN_REQUIRE_INTERNET" "1"
+            set_lmehspt_var   "COIN_REQUIRE_INTERNET" "1"
+            set_globals_var   "COIN_REQUIRE_INTERNET" "1"
+            ok_json '{"ok":true,"coin_require_internet":true}'
+            ;;
+        0)
+            save_coin_env_var "COIN_REQUIRE_INTERNET" "0"
+            set_lmehspt_var   "COIN_REQUIRE_INTERNET" "0"
+            set_globals_var   "COIN_REQUIRE_INTERNET" "0"
+            ok_json '{"ok":true,"coin_require_internet":false}'
+            ;;
+        *) err_json "bad_value" ;;
+    esac
+fi
+
+# ================================================================
+# POST ?action=voucher_internet_set   body: enabled=1|0
+# When on, login.sh refuses to redeem (burn) a voucher code while the
+# router has no internet connectivity — returns error "no_internet"
+# instead. Resuming an already-paused session is unaffected.
+# ================================================================
+if echo "$QS" | $BB grep -q "action=voucher_internet_set"; then
+    read -n "${CONTENT_LENGTH:-0}" POST_DATA
+    VAL=$(printf '%s' "$POST_DATA" | $BB sed -n 's/.*enabled=\([^&]*\).*/\1/p')
+    case "$VAL" in
+        1)
+            save_coin_env_var "VOUCHER_REQUIRE_INTERNET" "1"
+            set_lmehspt_var   "VOUCHER_REQUIRE_INTERNET" "1"
+            set_globals_var   "VOUCHER_REQUIRE_INTERNET" "1"
+            ok_json '{"ok":true,"voucher_require_internet":true}'
+            ;;
+        0)
+            save_coin_env_var "VOUCHER_REQUIRE_INTERNET" "0"
+            set_lmehspt_var   "VOUCHER_REQUIRE_INTERNET" "0"
+            set_globals_var   "VOUCHER_REQUIRE_INTERNET" "0"
+            ok_json '{"ok":true,"voucher_require_internet":false}'
+            ;;
+        *) err_json "bad_value" ;;
+    esac
+fi
+
+# ================================================================
+# POST ?action=voucher_strike_set   body: enabled=1|0
+# Master switch for the wrong-voucher anti-troll strike system (see
+# login.sh). When on, login.sh temporarily suspends further voucher
+# attempts from a device after VOUCHER_STRIKE_THRESHOLD wrong codes in a
+# row, for VOUCHER_COOLDOWN seconds — same shape as the coin acceptor's
+# own anti-griefing strike system. Same simple three-tier persistence as
+# every other on/off toggle here.
+# ================================================================
+if echo "$QS" | $BB grep -q "action=voucher_strike_set"; then
+    read -n "${CONTENT_LENGTH:-0}" POST_DATA
+    VAL=$(printf '%s' "$POST_DATA" | $BB sed -n 's/.*enabled=\([^&]*\).*/\1/p')
+    case "$VAL" in
+        1)
+            save_coin_env_var "VOUCHER_STRIKE_ENABLED" "1"
+            set_lmehspt_var   "VOUCHER_STRIKE_ENABLED" "1"
+            set_globals_var   "VOUCHER_STRIKE_ENABLED" "1"
+            ok_json '{"ok":true,"voucher_strike_enabled":true}'
+            ;;
+        0)
+            save_coin_env_var "VOUCHER_STRIKE_ENABLED" "0"
+            set_lmehspt_var   "VOUCHER_STRIKE_ENABLED" "0"
+            set_globals_var   "VOUCHER_STRIKE_ENABLED" "0"
+            ok_json '{"ok":true,"voucher_strike_enabled":false}'
+            ;;
+        *) err_json "bad_value" ;;
+    esac
+fi
+
+# ================================================================
+# POST ?action=coin_strike_set   body: enabled=1|0
+# Master switch for the coin acceptor's own anti-griefing strike system
+# (see coin.sh / coin_result.sh). When off, repeated empty coin sessions
+# never accumulate strikes or trigger a suspension — the coin acceptor
+# itself stays on and works normally, only this specific check is
+# skipped. On by default, matching the system's original always-on
+# behavior. Same simple three-tier persistence as every other toggle.
+# ================================================================
+if echo "$QS" | $BB grep -q "action=coin_strike_set"; then
+    read -n "${CONTENT_LENGTH:-0}" POST_DATA
+    VAL=$(printf '%s' "$POST_DATA" | $BB sed -n 's/.*enabled=\([^&]*\).*/\1/p')
+    case "$VAL" in
+        1)
+            save_coin_env_var "COIN_STRIKE_ENABLED" "1"
+            set_lmehspt_var   "COIN_STRIKE_ENABLED" "1"
+            set_globals_var   "COIN_STRIKE_ENABLED" "1"
+            ok_json '{"ok":true,"coin_strike_enabled":true}'
+            ;;
+        0)
+            save_coin_env_var "COIN_STRIKE_ENABLED" "0"
+            set_lmehspt_var   "COIN_STRIKE_ENABLED" "0"
+            set_globals_var   "COIN_STRIKE_ENABLED" "0"
+            ok_json '{"ok":true,"coin_strike_enabled":false}'
+            ;;
+        *) err_json "bad_value" ;;
+    esac
+fi
+
+# ================================================================
+# POST ?action=coin_queue_set   body: enabled=1|0
+# Master switch for the Insert Coin waiting line (see coin.sh's "start"
+# action). On by default: a client who finds the slot busy is placed in
+# line and notified when it's their turn. When off, a busy slot is reported
+# immediately as "Coin slot is in use, try again later." and no one is
+# queued. Same simple three-tier persistence as every other on/off toggle.
+# ================================================================
+if echo "$QS" | $BB grep -q "action=coin_queue_set"; then
+    read -n "${CONTENT_LENGTH:-0}" POST_DATA
+    VAL=$(printf '%s' "$POST_DATA" | $BB sed -n 's/.*enabled=\([^&]*\).*/\1/p')
+    case "$VAL" in
+        1)
+            save_coin_env_var "COIN_QUEUE_ENABLED" "1"
+            set_lmehspt_var   "COIN_QUEUE_ENABLED" "1"
+            set_globals_var   "COIN_QUEUE_ENABLED" "1"
+            ok_json '{"ok":true,"coin_queue_enabled":true}'
+            ;;
+        0)
+            save_coin_env_var "COIN_QUEUE_ENABLED" "0"
+            set_lmehspt_var   "COIN_QUEUE_ENABLED" "0"
+            set_globals_var   "COIN_QUEUE_ENABLED" "0"
+            ok_json '{"ok":true,"coin_queue_enabled":false}'
+            ;;
+        *) err_json "bad_value" ;;
+    esac
+fi
+
+# ================================================================
 # POST ?action=coin_reset
 # Wipes the NodeMCU's WiFi config and drops it back into the open
 # PisoWifi-Setup AP for re-provisioning. This replaces the old
@@ -1825,7 +2366,7 @@ if echo "$QS" | $BB grep -q "action=ifaces_get"; then
             lo|br*|sit*|ip6*|ppp*|tunl*|gre*|dummy*|mon.*|nas*|eth0|pwlan0) continue ;;
             eth0.*)
                 case "$iface" in
-                    eth0.2.0|eth0.3.0) ;;
+                    eth0.2.0|eth0.3.0|eth0.4.0|eth0.5.0) ;;
                     *) continue ;;
                 esac
                 ;;
@@ -1953,8 +2494,9 @@ fi
 # ================================================================
 if echo "$QS" | $BB grep -q "action=notify_get"; then
     NF="$HDATA/notify.env"
-    NOTIFY_ENABLED=0; NOTIFY_PROVIDER="telegram"
+    NOTIFY_ENABLED=0
     TG_BOT_TOKEN=""; TG_CHAT_ID=""; DISCORD_WEBHOOK=""
+    NOTIFY_TG_ENABLED=""; NOTIFY_DISCORD_ENABLED=""
     # Per-event flags default to enabled (unset -> "1") so existing configs
     # keep every alert firing until the admin explicitly mutes one.
     NOTIFY_EVT_NEW_SALE=1; NOTIFY_EVT_COINS_INSERTED=1; NOTIFY_EVT_ANTI_TROLL=1
@@ -1964,11 +2506,24 @@ if echo "$QS" | $BB grep -q "action=notify_get"; then
     NOTIFY_DEDUP_WINDOW=30
     [ -f "$NF" ] && . "$NF" 2>/dev/null
     EN_STR="false"; [ "${NOTIFY_ENABLED:-0}" = "1" ] && EN_STR="true"
-    case "${NOTIFY_PROVIDER:-telegram}" in discord) PROV="discord" ;; *) PROV="telegram" ;; esac
+    # A provider is "enabled" (and, per notify.sh, actually fires) when its
+    # own flag is explicitly set, OR — if it was never explicitly set —
+    # when its required fields are already filled in. Telegram and Discord
+    # are independent: both can report true and both will send together.
+    case "${NOTIFY_TG_ENABLED:-}" in
+        0) TG_EN="false" ;;
+        1) TG_EN="true" ;;
+        *) if [ -n "$TG_BOT_TOKEN" ] && [ -n "$TG_CHAT_ID" ]; then TG_EN="true"; else TG_EN="false"; fi ;;
+    esac
+    case "${NOTIFY_DISCORD_ENABLED:-}" in
+        0) DC_EN="false" ;;
+        1) DC_EN="true" ;;
+        *) if [ -n "$DISCORD_WEBHOOK" ]; then DC_EN="true"; else DC_EN="false"; fi ;;
+    esac
     case "${NOTIFY_DEDUP_WINDOW:-30}" in ''|*[!0-9]*) DDW=30 ;; *) DDW="$NOTIFY_DEDUP_WINDOW" ;; esac
     # Emit each event flag as a JSON boolean ("1" -> true, anything else -> false)
     _evb() { [ "${1:-1}" = "1" ] && printf 'true' || printf 'false'; }
-    ok_json "{\"enabled\":$EN_STR,\"provider\":\"$PROV\",\"tg_bot_token\":\"$(esc_json "$TG_BOT_TOKEN")\",\"tg_chat_id\":\"$(esc_json "$TG_CHAT_ID")\",\"discord_webhook\":\"$(esc_json "$DISCORD_WEBHOOK")\",\"dedup_window\":$DDW,\"events\":{\
+    ok_json "{\"enabled\":$EN_STR,\"tg_enabled\":$TG_EN,\"discord_enabled\":$DC_EN,\"tg_bot_token\":\"$(esc_json "$TG_BOT_TOKEN")\",\"tg_chat_id\":\"$(esc_json "$TG_CHAT_ID")\",\"discord_webhook\":\"$(esc_json "$DISCORD_WEBHOOK")\",\"dedup_window\":$DDW,\"events\":{\
 \"new_sale\":$(_evb "$NOTIFY_EVT_NEW_SALE"),\
 \"coins_inserted\":$(_evb "$NOTIFY_EVT_COINS_INSERTED"),\
 \"anti_troll\":$(_evb "$NOTIFY_EVT_ANTI_TROLL"),\
@@ -1998,13 +2553,20 @@ if echo "$QS" | $BB grep -q "action=notify_set"; then
     # Strip chars that could break the sourced env file / inject commands.
     san() { printf '%s' "$1" | $BB tr -d '\r\n"\\$\140'; }
 
-    EN=$(fget enabled);       PROV=$(fget provider)
+    EN=$(fget enabled)
+    TGEN=$(fget tg_enabled); DCEN=$(fget discord_enabled)
     TGT=$(san "$(fget tg_bot_token)")
     TGC=$(san "$(fget tg_chat_id)")
     DWH=$(san "$(fget discord_webhook)")
 
     case "$EN"   in 1|true|on|yes) EN=1 ;; *) EN=0 ;; esac
-    case "$PROV" in discord) PROV="discord" ;; *) PROV="telegram" ;; esac
+    # Explicit per-provider switches - always written as a definite 1/0 from
+    # here on (never left blank/"auto"), since the admin panel always sends
+    # both fields. A pre-dual-provider notify.env with neither key set yet
+    # stays in "auto" mode (see notify.sh/notify_get) only until the first
+    # Save through this action.
+    case "$TGEN" in 1|true|on|yes) TGEN=1 ;; *) TGEN=0 ;; esac
+    case "$DCEN" in 1|true|on|yes) DCEN=1 ;; *) DCEN=0 ;; esac
 
     # Anti-spam cooldown window (seconds). Non-numeric -> default 30;
     # clamp to a sane 0..3600 so a typo can't wedge notifications for hours.
@@ -2029,7 +2591,8 @@ if echo "$QS" | $BB grep -q "action=notify_set"; then
     mkdir -p "$HDATA"
     {
         echo "NOTIFY_ENABLED=\"$EN\""
-        echo "NOTIFY_PROVIDER=\"$PROV\""
+        echo "NOTIFY_TG_ENABLED=\"$TGEN\""
+        echo "NOTIFY_DISCORD_ENABLED=\"$DCEN\""
         echo "TG_BOT_TOKEN=\"$TGT\""
         echo "TG_CHAT_ID=\"$TGC\""
         echo "DISCORD_WEBHOOK=\"$DWH\""
@@ -2129,6 +2692,280 @@ if echo "$QS" | $BB grep -q "action=notify_templates_reset"; then
 fi
 
 # ================================================================
+# GET ?action=bot_templates_get  -> current router-bot command-response
+# templates (falls back to built-in defaults for anything not customized).
+# Separate file/action from notify_templates_* above -- saving the "Bot
+# Command Responses" card can never clobber the "Message Templates" card
+# or vice versa.
+# ================================================================
+if echo "$QS" | $BB grep -q "action=bot_templates_get"; then
+    . /lmepisowifi/hotspot/notify_templates.sh
+    ok_json "{\"templates\":{\
+\"cmd_status\":\"$(esc_json "$TPL_CMD_STATUS")\",\
+\"cmd_reboot\":\"$(esc_json "$TPL_CMD_REBOOT")\",\
+\"cmd_hotspotstats_notinstalled\":\"$(esc_json "$TPL_CMD_HOTSPOTSTATS_NOTINSTALLED")\",\
+\"cmd_hotspotstats\":\"$(esc_json "$TPL_CMD_HOTSPOTSTATS")\",\
+\"cmd_activeusers_empty\":\"$(esc_json "$TPL_CMD_ACTIVEUSERS_EMPTY")\",\
+\"cmd_kick_usage\":\"$(esc_json "$TPL_CMD_KICK_USAGE")\",\
+\"cmd_kick_ok\":\"$(esc_json "$TPL_CMD_KICK_OK")\",\
+\"cmd_kick_none\":\"$(esc_json "$TPL_CMD_KICK_NONE")\",\
+\"cmd_addtime_usage\":\"$(esc_json "$TPL_CMD_ADDTIME_USAGE")\",\
+\"cmd_addtime_created\":\"$(esc_json "$TPL_CMD_ADDTIME_CREATED")\",\
+\"cmd_addtime_ok\":\"$(esc_json "$TPL_CMD_ADDTIME_OK")\",\
+\"cmd_removetime_usage\":\"$(esc_json "$TPL_CMD_REMOVETIME_USAGE")\",\
+\"cmd_removetime_none\":\"$(esc_json "$TPL_CMD_REMOVETIME_NONE")\",\
+\"cmd_removetime_ok\":\"$(esc_json "$TPL_CMD_REMOVETIME_OK")\",\
+\"cmd_badmac\":\"$(esc_json "$TPL_CMD_BADMAC")\",\
+\"cmd_badminutes\":\"$(esc_json "$TPL_CMD_BADMINUTES")\",\
+\"cmd_unknown\":\"$(esc_json "$TPL_CMD_UNKNOWN")\",\
+\"cmd_unauthorized\":\"$(esc_json "$TPL_CMD_UNAUTHORIZED")\"\
+}}"
+fi
+
+# ================================================================
+# POST ?action=bot_templates_set  (form-encoded) -> save customized
+# router-bot command responses. Any field left blank reverts that
+# response to its built-in default (handled by notify_templates.sh at
+# render time). Takes effect the next time the bot is (re)started --
+# same as any other telegram_bot.env-adjacent change.
+# ================================================================
+if echo "$QS" | $BB grep -q "action=bot_templates_set"; then
+    read -n "$CONTENT_LENGTH" POST_DATA
+
+    fget() {
+        printf '%s' "$POST_DATA" \
+            | $BB tr '&' '\n' \
+            | $BB grep "^$1=" \
+            | $BB sed 's/^[^=]*=//' \
+            | urldecode \
+            | head -1
+    }
+    # Same sanitizer as notify_templates_set -- strips CR/LF, quotes,
+    # backslashes, $ and backticks so a saved value can't break out of the
+    # sourced env file or inject shell commands. Still supports multi-line
+    # layout via the %0A token.
+    san() { printf '%s' "$1" | $BB tr -d '\r\n"\\$\140'; }
+
+    mkdir -p "$HDATA"
+    {
+        echo "TPL_CMD_STATUS=\"$(san "$(fget cmd_status)")\""
+        echo "TPL_CMD_REBOOT=\"$(san "$(fget cmd_reboot)")\""
+        echo "TPL_CMD_HOTSPOTSTATS_NOTINSTALLED=\"$(san "$(fget cmd_hotspotstats_notinstalled)")\""
+        echo "TPL_CMD_HOTSPOTSTATS=\"$(san "$(fget cmd_hotspotstats)")\""
+        echo "TPL_CMD_ACTIVEUSERS_EMPTY=\"$(san "$(fget cmd_activeusers_empty)")\""
+        echo "TPL_CMD_KICK_USAGE=\"$(san "$(fget cmd_kick_usage)")\""
+        echo "TPL_CMD_KICK_OK=\"$(san "$(fget cmd_kick_ok)")\""
+        echo "TPL_CMD_KICK_NONE=\"$(san "$(fget cmd_kick_none)")\""
+        echo "TPL_CMD_ADDTIME_USAGE=\"$(san "$(fget cmd_addtime_usage)")\""
+        echo "TPL_CMD_ADDTIME_CREATED=\"$(san "$(fget cmd_addtime_created)")\""
+        echo "TPL_CMD_ADDTIME_OK=\"$(san "$(fget cmd_addtime_ok)")\""
+        echo "TPL_CMD_REMOVETIME_USAGE=\"$(san "$(fget cmd_removetime_usage)")\""
+        echo "TPL_CMD_REMOVETIME_NONE=\"$(san "$(fget cmd_removetime_none)")\""
+        echo "TPL_CMD_REMOVETIME_OK=\"$(san "$(fget cmd_removetime_ok)")\""
+        echo "TPL_CMD_BADMAC=\"$(san "$(fget cmd_badmac)")\""
+        echo "TPL_CMD_BADMINUTES=\"$(san "$(fget cmd_badminutes)")\""
+        echo "TPL_CMD_UNKNOWN=\"$(san "$(fget cmd_unknown)")\""
+        echo "TPL_CMD_UNAUTHORIZED=\"$(san "$(fget cmd_unauthorized)")\""
+    } > "$HDATA/bot_templates.env.tmp"
+    $BB mv "$HDATA/bot_templates.env.tmp" "$HDATA/bot_templates.env"
+    ok_json "{\"ok\":true}"
+fi
+
+# ================================================================
+# POST ?action=bot_templates_reset  -> restore all router-bot command
+# responses to their built-in defaults (deletes the override file)
+# ================================================================
+if echo "$QS" | $BB grep -q "action=bot_templates_reset"; then
+    rm -f "$HDATA/bot_templates.env"
+    ok_json "{\"ok\":true}"
+fi
+
+# Where the router-bot code lives on this device. Merged into notify.sh
+# (run as `notify.sh --bot`) rather than a standalone script — kept as
+# one constant used by both actions below, update here if that changes.
+TGBOT_SCRIPT="/lmepisowifi/hotspot/notify.sh"
+TGBOT_ENV="$HDATA/telegram_bot.env"
+TGBOT_STARTUP="/lmepisowifi/www2/sh/startup.sh"
+
+# Write / update a key in telegram_bot.env. Adds the key if absent,
+# replaces it if present; creates the file if it doesn't exist yet (e.g.
+# the bot has never been started, so notify.sh's own first-run heredoc
+# hasn't fired). Same add-or-replace pattern as set_globals_var above,
+# just pointed at $TGBOT_ENV.
+set_tgbot_var() {
+    local var="$1" val="$2"
+    local esc
+    mkdir -p "$HDATA" 2>/dev/null
+    touch "$TGBOT_ENV" 2>/dev/null
+    esc=$(printf '%s' "$val" | $BB sed 's/[\\/&]/\\&/g')
+    if $BB grep -q "^${var}=" "$TGBOT_ENV" 2>/dev/null; then
+        $BB sed -i "s|^${var}=.*|${var}=\"${esc}\"|" "$TGBOT_ENV"
+    else
+        printf '%s="%s"\n' "$var" "$val" >> "$TGBOT_ENV"
+    fi
+}
+
+# Boot-marker plumbing for the router-bot switch, so it survives a
+# reboot -- same BEGIN_X/END_X convention www2/sh/startup.sh already uses
+# for Tailscale/WAN-repurpose/IP-ACL (see tailscale_ctl.sh's
+# add_boot_marker/remove_boot_marker). ota.sh's merge_startup_markers()
+# discovers any BEGIN_/END_ pair automatically, so this survives an OTA
+# update too without needing to be registered anywhere else.
+_tgbot_has_marker() {
+    [ -f "$TGBOT_STARTUP" ] && $BB grep -q 'BEGIN_TELEGRAM_BOT' "$TGBOT_STARTUP"
+}
+
+_tgbot_set_marker() {
+    [ -f "$TGBOT_STARTUP" ] || return 0
+    $BB awk -v line="$1" '
+        /BEGIN_TELEGRAM_BOT/ { print; if (line != "") print line; inblk = 1; next }
+        /END_TELEGRAM_BOT/   { inblk = 0; print; next }
+        inblk { next }
+        { print }
+    ' "$TGBOT_STARTUP" > "$TGBOT_STARTUP.tmp" 2>/dev/null && $BB mv "$TGBOT_STARTUP.tmp" "$TGBOT_STARTUP"
+}
+
+add_tgbot_boot_marker() {
+    [ -f "$TGBOT_STARTUP" ] || return 0
+    if _tgbot_has_marker; then
+        _tgbot_set_marker '( /lmepisowifi/hotspot/notify.sh --bot-autostart ) &'
+    else
+        printf '\n# --- BEGIN_TELEGRAM_BOT ---\n( /lmepisowifi/hotspot/notify.sh --bot-autostart ) &\n# --- END_TELEGRAM_BOT ---\n' >> "$TGBOT_STARTUP"
+    fi
+}
+
+remove_tgbot_boot_marker() {
+    _tgbot_has_marker || return 0
+    _tgbot_set_marker ''
+}
+
+# Pull the raw "name|description|handler" lines out of CMD_REGISTRY in
+# the bot script itself (not hand-duplicated here), so this list can
+# never drift from what the bot actually runs.
+_tgbot_registry() {
+    $BB sed -n '/^CMD_REGISTRY="/,/"[[:space:]]*$/p' "$TGBOT_SCRIPT" \
+        | $BB sed '1s/^CMD_REGISTRY="//; $s/"[[:space:]]*$//'
+}
+
+# ================================================================
+# GET ?action=telegram_cmds_get  -> router-bot command list + enabled
+# state. A command's enabled state comes from telegram_bot.env's
+# CMD_ENABLED_* flags -- unset/missing defaults to enabled, same
+# convention as NOTIFY_EVT_* above, so a config predating a newly
+# added command still runs it.
+# ================================================================
+if echo "$QS" | $BB grep -q "action=telegram_cmds_get"; then
+    if [ ! -f "$TGBOT_SCRIPT" ]; then
+        ok_json "{\"installed\":false,\"running\":false,\"commands\":[]}"
+    fi
+
+    [ -f "$TGBOT_ENV" ] && . "$TGBOT_ENV" 2>/dev/null
+
+    _cmd_en() {
+        local key flag
+        key=$(echo "$1" | $BB tr 'a-z' 'A-Z' | $BB tr -cd 'A-Z0-9_')
+        eval "flag=\"\${CMD_ENABLED_${key}:-1}\""
+        [ "$flag" = "0" ] && printf 'false' || printf 'true'
+    }
+
+    OUT="" FIRST=1
+    while IFS='|' read -r NAME DESC HANDLER; do
+        [ -z "$NAME" ] && continue
+        if [ "$FIRST" = "1" ]; then FIRST=0; else OUT="${OUT},"; fi
+        OUT="${OUT}{\"name\":\"$(esc_json "$NAME")\",\"description\":\"$(esc_json "$DESC")\",\"enabled\":$(_cmd_en "$NAME")}"
+    done <<EOF
+$(_tgbot_registry)
+EOF
+    RUNNING="false"; bot_running && RUNNING="true"
+    ok_json "{\"installed\":true,\"running\":$RUNNING,\"commands\":[$OUT]}"
+fi
+
+# ================================================================
+# POST ?action=telegram_bot_toggle   body: enabled=1|0
+# Starts/stops the interactive Telegram command-router bot in the
+# background (`notify.sh --bot`), tracked via /tmp/telegram_bot.pid —
+# same pidfile pattern as hotspot_start/hotspot_stop above. Also persists
+# the switch (BOT_AUTOSTART in telegram_bot.env) and adds/removes a boot
+# marker in www2/sh/startup.sh that calls `notify.sh --bot-autostart` —
+# same mechanism the Tailscale switch uses — so a device that reboots
+# with the bot on comes back up with it running instead of needing a
+# manual re-toggle.
+# ================================================================
+if echo "$QS" | $BB grep -q "action=telegram_bot_toggle"; then
+    read -n "$CONTENT_LENGTH" POST_DATA
+    VAL=$($BB echo "$POST_DATA" | $BB sed -n 's/.*enabled=\([^&]*\).*/\1/p')
+
+    if [ "$VAL" = "1" ]; then
+        [ -f "$TGBOT_SCRIPT" ] || err_json "bot_not_installed"
+        set_tgbot_var "BOT_AUTOSTART" "1"
+        add_tgbot_boot_marker
+        if bot_running; then
+            ok_json "{\"ok\":true,\"running\":true,\"msg\":\"already running\"}"
+        fi
+        "$TGBOT_SCRIPT" --bot >/tmp/telegram_bot_start.log 2>&1 &
+        echo $! > /tmp/telegram_bot.pid
+        $BB sleep 1
+        RUNNING="false"; bot_running && RUNNING="true"
+        ok_json "{\"ok\":true,\"running\":$RUNNING}"
+    elif [ "$VAL" = "0" ]; then
+        set_tgbot_var "BOT_AUTOSTART" "0"
+        remove_tgbot_boot_marker
+        if [ -f /tmp/telegram_bot.pid ]; then
+            kill -9 "$(cat /tmp/telegram_bot.pid)" 2>/dev/null
+            rm -f /tmp/telegram_bot.pid
+        fi
+        ok_json "{\"ok\":true,\"running\":false}"
+    else
+        err_json "bad_value"
+    fi
+fi
+
+# ================================================================
+# POST ?action=telegram_cmds_set  (form-encoded) -> save which router-
+# bot commands are enabled. Expects cmd_enabled_<name>=1|0 per command.
+# Only ever writes CMD_ENABLED_* -- the BOT_TOKEN / ALLOWED_USER_IDS
+# lines already in telegram_bot.env are read back and re-written
+# unchanged, since this page doesn't manage bot credentials.
+# ================================================================
+if echo "$QS" | $BB grep -q "action=telegram_cmds_set"; then
+    [ -f "$TGBOT_SCRIPT" ] || err_json "bot_not_installed"
+    read -n "$CONTENT_LENGTH" POST_DATA
+
+    fget() {
+        printf '%s' "$POST_DATA" \
+            | $BB tr '&' '\n' \
+            | $BB grep "^$1=" \
+            | $BB sed 's/^[^=]*=//' \
+            | urldecode \
+            | head -1
+    }
+
+    BOT_TOKEN=""; ALLOWED_USER_IDS=""; BOT_AUTOSTART="0"
+    [ -f "$TGBOT_ENV" ] && . "$TGBOT_ENV" 2>/dev/null
+
+    mkdir -p "$HDATA"
+    {
+        echo "BOT_TOKEN=\"$BOT_TOKEN\""
+        echo "ALLOWED_USER_IDS=\"$ALLOWED_USER_IDS\""
+        echo "BOT_AUTOSTART=\"$BOT_AUTOSTART\""
+        while IFS='|' read -r NAME DESC HANDLER; do
+            [ -z "$NAME" ] && continue
+            KEY=$(echo "$NAME" | $BB tr 'a-z' 'A-Z' | $BB tr -cd 'A-Z0-9_')
+            [ -n "$KEY" ] || continue
+            case "$(fget "cmd_enabled_${NAME}")" in
+                0|false|off|no) VAL=0 ;;
+                *) VAL=1 ;;
+            esac
+            echo "CMD_ENABLED_${KEY}=\"$VAL\""
+        done <<EOF
+$(_tgbot_registry)
+EOF
+    } > "$TGBOT_ENV.tmp"
+    $BB mv "$TGBOT_ENV.tmp" "$TGBOT_ENV"
+    ok_json "{\"ok\":true}"
+fi
+
+# ================================================================
 # GET ?action=hotspot_stats  -> running state + session count + income
 # ================================================================
 if echo "$QS" | $BB grep -q "action=hotspot_stats"; then
@@ -2146,7 +2983,7 @@ fi
 
 # ================================================================
 # GET ?action=portal_disk_space  -> UBIFS size/used/avail/usable bytes
-# usable_bytes = avail_bytes − 10 MB reserve (0 when at or below floor)
+# usable_bytes = avail_bytes − 3 MB reserve (0 when at or below floor)
 # ================================================================
 if echo "$QS" | $BB grep -q "action=portal_disk_space"; then
     _dfline=$($BB df -k /lmepisowifi 2>/dev/null | $BB awk 'NR==2')
@@ -2156,7 +2993,7 @@ if echo "$QS" | $BB grep -q "action=portal_disk_space"; then
     _sz_b=$(( ${_dfl:-0} * 1024 ))
     _used_b=$(( ${_dfu:-0} * 1024 ))
     _avail_b=$(( ${_dfa:-0} * 1024 ))
-    _reserve_b=10485760
+    _reserve_b=3145728
     _usable_b=$(( _avail_b - _reserve_b ))
     [ "$_usable_b" -lt 0 ] && _usable_b=0
     ok_json "{\"ok\":true,\"size_bytes\":${_sz_b},\"used_bytes\":${_used_b},\"avail_bytes\":${_avail_b},\"usable_bytes\":${_usable_b},\"reserve_bytes\":${_reserve_b}}"
@@ -2286,13 +3123,13 @@ if echo "$QS" | $BB grep -q "action=portal_upload"; then
             ;;
     esac
 
-    # Disk-space guard: reject before writing if the file would breach the 10 MB floor
+    # Disk-space guard: reject before writing if the file would breach the 3 MB floor
     # B64 chars × 3/4 ≈ decoded bytes (slight overestimate — safe to use for comparison)
     _img_avkb=$($BB df -k /lmepisowifi 2>/dev/null | $BB awk 'NR==2 {print $4+0}')
     _img_avail=$(( ${_img_avkb:-0} * 1024 ))
     _img_b64len=$(printf '%s' "$B64" | $BB wc -c | $BB tr -cd '0-9')
     _img_fsize=$(( (${_img_b64len:-0} * 3 + 3) / 4 ))
-    [ $(( _img_avail - _img_fsize )) -lt 10485760 ] && err_json "insufficient_space"
+    [ $(( _img_avail - _img_fsize )) -lt 3145728 ] && err_json "insufficient_space"
 
     if ! printf '%s' "$B64" | $BB base64 -d > "${DEST}.tmp" 2>/dev/null; then
         printf '%s' "$B64" | openssl enc -d -base64 -A > "${DEST}.tmp" 2>/dev/null \
@@ -2375,12 +3212,12 @@ if echo "$QS" | $BB grep -q "action=portal_audio_upload"; then
     rm -f "/lmepisowifi/hotspot/audio/${SLOT}".* 2>/dev/null
     DEST="/lmepisowifi/hotspot/audio/${SLOT}.${EXT}"
 
-    # Disk-space guard: reject before writing if the file would breach the 10 MB floor
+    # Disk-space guard: reject before writing if the file would breach the 3 MB floor
     _aud_avkb=$($BB df -k /lmepisowifi 2>/dev/null | $BB awk 'NR==2 {print $4+0}')
     _aud_avail=$(( ${_aud_avkb:-0} * 1024 ))
     _aud_b64len=$(printf '%s' "$B64" | $BB wc -c | $BB tr -cd '0-9')
     _aud_fsize=$(( (${_aud_b64len:-0} * 3 + 3) / 4 ))
-    [ $(( _aud_avail - _aud_fsize )) -lt 10485760 ] && err_json "insufficient_space"
+    [ $(( _aud_avail - _aud_fsize )) -lt 3145728 ] && err_json "insufficient_space"
 
     if ! printf '%s' "$B64" | $BB base64 -d > "${DEST}.tmp" 2>/dev/null; then
         printf '%s' "$B64" | openssl enc -d -base64 -A > "${DEST}.tmp" 2>/dev/null \

@@ -1,3 +1,15 @@
+/*
+ * lmepisowifi — https://github.com/lmepisowifi/tmwipgn6401v
+ * SPDX-License-Identifier: AGPL-3.0-or-later
+ * Copyright (C) 2026 The lmepisowifi Project — see AUTHORS
+ *
+ * Licensed under the GNU AGPLv3 (see LICENSE). Modifying or rewriting this
+ * file — including by running it through an LLM — does not remove these
+ * obligations: keep this notice, mark your changes, and offer Corresponding
+ * Source to network users (AGPLv3 §5, §13). See PROVENANCE.md before
+ * presenting this as your own original work.
+ */
+
 (function () {
     // ----------------------------------------------------------------
     // Auth — runs on every page that loads this file
@@ -21,6 +33,7 @@ setInterval(function () {
     // ================================================================
     var SITE_TITLE  = 'PGN6401V';
     var FAVICON_URL = '/img/logo.png'; // change to .png if needed
+    var REPO_URL    = 'https://github.com/lmepisowifi/tmwipgn6401v'; // AGPLv3 §13 source-offer link, see PROVENANCE.md
 
     // Inject or replace favicon
     (function () {
@@ -52,9 +65,10 @@ setInterval(function () {
         ]},
         { label: 'Domain Blocking', href: '/domainblk.html' },
         { label: 'Hotspot', module: 'hotspot', children: [
-            { label: 'Overview',        href: '/hotspot.html',           hotspot: 'always'  },
+            { label: 'Controls',        href: '/hotspot.html',           hotspot: 'always'  },
             { label: 'Interfaces',      href: '/hotspot-ifaces.html',    hotspot: 'always'  },
             { label: 'DHCP Settings',   href: '/hotspot-dhcp.html',      hotspot: 'always'  },
+            { label: 'DHCP Leases',     href: '/hotspot-leases.html',    hotspot: 'enabled' },
             { label: 'Income & Alerts', href: '/hotspot-income.html',    hotspot: 'always'  },
             { label: 'Portal',          href: '/hotspot-portal.html',    hotspot: 'always'  },
             { label: 'WiFi Rates',      href: '/hotspot-rates.html',     hotspot: 'enabled' },
@@ -113,7 +127,7 @@ setInterval(function () {
                 // Filter hotspot sub-items based on running state
                 var visibleChildren = item.children.filter(function (c) {
                     if (!c.hotspot) return true;             // non-hotspot items always show
-                    if (c.hotspot === 'always') return true; // always visible (overview, interfaces)
+                    if (c.hotspot === 'always') return true; // always visible (controls, interfaces)
                     return hotspotRunning;                   // 'enabled' items only when running
                 });
                 if (visibleChildren.length === 0) return '';
@@ -159,6 +173,12 @@ setInterval(function () {
             '    </div>',
             '  </div>',
             '</nav>',
+            '<div id="lme-source-notice" style="position:fixed;right:6px;bottom:4px;z-index:1050;' +
+                'font-size:10px;line-height:1.4;opacity:.45;pointer-events:auto;">' +
+                'lmepisowifi &middot; AGPLv3 &middot; ' +
+                '<a href="' + esc(REPO_URL) + '" target="_blank" rel="noopener" ' +
+                    'style="color:inherit;text-decoration:underline;">Source</a>' +
+            '</div>',
         ].join('\n');
     }
 
