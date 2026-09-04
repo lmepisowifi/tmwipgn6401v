@@ -1,6 +1,6 @@
 #!/bin/sh
 # ---------------------------------------------------------------------------
-# lmepisowifi — https://github.com/lmepisowifi/tmwipgn6401v
+# lmepisowifi — https://github.com/lmepisowifi/tmwim2-2050-g40
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 The lmepisowifi Project — see AUTHORS
 #
