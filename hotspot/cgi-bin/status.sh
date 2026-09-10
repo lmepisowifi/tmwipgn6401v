@@ -16,6 +16,9 @@ BB="busybox"
 SESSION_FILE="/tmp/active_sessions.txt"
 USERS_FILE="/lmepisowifi/hotspot_data/users.txt"
 COIN_BANK_FILE="/lmepisowifi/hotspot_data/coin_bank.txt"
+# See lmehspt.sh's AUTO_PAUSED_FILE comment — read-only here, used below to
+# scope auto_resume to sessions the system itself paused.
+AUTO_PAUSED_FILE="/lmepisowifi/hotspot_data/auto_paused.txt"
 HOTSPOT_BR="br1"
 
 # Live-updatable toggles (MAC_RANDOMIZATION_FIX among them) written by
@@ -23,6 +26,11 @@ HOTSPOT_BR="br1"
 [ -f /tmp/coin_config.env ] && . /tmp/coin_config.env
 # MAC-randomization session-continuity fix (cookie-based device fingerprint)
 [ -f /lmepisowifi/hotspot/macfix.sh ] && . /lmepisowifi/hotspot/macfix.sh
+
+# Admin-configured (see hotspot.cgi's config_set / RELOAD_AFTER_TIME_ADDED_ENABLED).
+# Surfaced on every status poll, logged-in or not, so index.html has it
+# cached before the coin-complete/resume codepaths that actually act on it.
+RELOAD_BOOL="false"; [ "${RELOAD_AFTER_TIME_ADDED_ENABLED:-0}" = "1" ] && RELOAD_BOOL="true"
 
 _unlock() { rm -f /tmp/hotspot_session.lock/pid 2>/dev/null; rmdir /tmp/hotspot_session.lock 2>/dev/null; }
 _lock() {
@@ -138,7 +146,7 @@ if [ -n "$SESSION" ]; then
         USED=$(( TOTAL - REMAINING ))
         [ "$USED" -lt 0 ] && USED=0
 
-        $BB echo "{\"logged_in\":true,\"mac\":\"$CLIENT_MAC\",\"ip\":\"$CLIENT_IP\",\"remaining\":$REMAINING,\"total\":$TOTAL,\"used\":$USED,${CONN_JSON}${AVAIL_JSON}}"
+        $BB echo "{\"logged_in\":true,\"mac\":\"$CLIENT_MAC\",\"ip\":\"$CLIENT_IP\",\"remaining\":$REMAINING,\"total\":$TOTAL,\"used\":$USED,\"reload_after_time_added\":$RELOAD_BOOL,${CONN_JSON}${AVAIL_JSON}}"
         _unlock
         exit 0
     fi
@@ -156,9 +164,23 @@ if [ -n "$PAUSED" ]; then
     # button sends, on this same status poll — no tap needed. login.sh
     # still does the actual resume, so this flag never bypasses its
     # locking/atomic-write path, just who clicks the button.
-    AR_BOOL="false"; [ "${AUTO_RESUME_ENABLED:-0}" = "1" ] && AR_BOOL="true"
-    $BB echo "{\"logged_in\":false,\"mac\":\"$CLIENT_MAC\",\"ip\":\"$CLIENT_IP\",\"has_paused\":true,\"remaining\":$REMAINING,\"total\":$TOTAL,\"auto_resume\":$AR_BOOL,${CONN_JSON}${AVAIL_JSON}}"
+    #
+    # Gated three ways so this can only ever fire for a session the SYSTEM
+    # itself paused (lmehspt.sh's inactivity watchdog) — never one the
+    # customer paused with their own Pause Time tap, or an admin paused
+    # with Kick: (1) the admin's Auto-Resume toggle, (2) Auto-Resume is
+    # tied to Auto-Pause being on too — Auto-Resume only ever makes sense
+    # for pauses Auto-Pause itself causes, and www2/hotspot.html hides the
+    # toggle whenever Auto-Pause is off to match, (3) this exact MAC is
+    # listed in AUTO_PAUSED_FILE, written only by lmehspt.sh's
+    # pause_session() and cleared by every manual-pause/resume/removal
+    # code path — see that file's AUTO_PAUSED_FILE comment.
+    AR_BOOL="false"
+    if [ "${AUTO_RESUME_ENABLED:-0}" = "1" ] && [ "${AUTO_PAUSE_ENABLED:-1}" = "1" ]; then
+        [ -f "$AUTO_PAUSED_FILE" ] && $BB grep -qx "$CLIENT_MAC" "$AUTO_PAUSED_FILE" 2>/dev/null && AR_BOOL="true"
+    fi
+    $BB echo "{\"logged_in\":false,\"mac\":\"$CLIENT_MAC\",\"ip\":\"$CLIENT_IP\",\"has_paused\":true,\"remaining\":$REMAINING,\"total\":$TOTAL,\"auto_resume\":$AR_BOOL,\"reload_after_time_added\":$RELOAD_BOOL,${CONN_JSON}${AVAIL_JSON}}"
 else
-    $BB echo "{\"logged_in\":false,\"mac\":\"$CLIENT_MAC\",\"ip\":\"$CLIENT_IP\",${CONN_JSON}${AVAIL_JSON}}"
+    $BB echo "{\"logged_in\":false,\"mac\":\"$CLIENT_MAC\",\"ip\":\"$CLIENT_IP\",\"reload_after_time_added\":$RELOAD_BOOL,${CONN_JSON}${AVAIL_JSON}}"
 fi
 _unlock

@@ -45,7 +45,7 @@
 </head>
 <body>
 <div id="overlay"><div id="overlay-blur"></div><div id="overlay-msg"><div id="overlay-spinner"></div><span id="overlay-text"></span></div></div>
-<script>document.write('<script src="/js/nav.js?t=' + Date.now() + '"><\/script>');</script>
+<script src="/js/nav.js?v=1.0.0"></script>
 
 <div class="container mt-4" style="max-width:820px;">
 
@@ -222,8 +222,11 @@
                         <div class="field-hint">Idle time before session auto-pauses</div>
                     </div>
                 </div>
-                <!-- Auto-resume on reconnect -->
-                <div class="col-sm-6">
+                <!-- Auto-resume on reconnect (only meaningful — and only shown —
+                     while Auto-Pause Session is on, since it's the only thing
+                     that ever produces a system-paused session for it to act
+                     on; see setAutoPauseUI()) -->
+                <div class="col-sm-6" id="ar-wrap">
                     <div class="d-flex align-items-center justify-content-between">
                         <div style="font-weight:500;">Auto-Resume on Reconnect</div>
                         <div id="ar-toggle" class="wlan-toggle" onclick="toggleAutoResumeUI()" title="Automatically resume a paused session the moment the device reconnects">
@@ -231,6 +234,16 @@
                         </div>
                     </div>
                     <div class="field-hint">Skip the Resume Time button — restore remaining time as soon as a paused device is back online</div>
+                </div>
+                <!-- Reload page after coin/resume success (device compatibility) -->
+                <div class="col-sm-6">
+                    <div class="d-flex align-items-center justify-content-between">
+                        <div style="font-weight:500;">Reload Page After Success</div>
+                        <div id="rl-toggle" class="wlan-toggle" onclick="toggleReloadAfterSuccessUI()" title="Force a page reload right after coins/vouchers add time or a session is resumed">
+                            <div class="wlan-toggle-knob"></div>
+                        </div>
+                    </div>
+                    <div class="field-hint">Off by default. Turn on only if some of your customers' phones keep the "Sign in to network" prompt open after paying — this forces a reload so the OS re-checks internet access.</div>
                 </div>
             </div>
             <hr class="my-3" style="border-color:var(--border-color);">
@@ -462,6 +475,7 @@ function loadConfig(){
             document.getElementById('r-inactivity').value = d.inactivity_timeout||'300';
             setAutoPauseUI(d.auto_pause_enabled===true||d.auto_pause_enabled==='1'||d.auto_pause_enabled===1);
             setAutoResumeUI(d.auto_resume_enabled===true||d.auto_resume_enabled==='1'||d.auto_resume_enabled===1);
+            setReloadAfterSuccessUI(d.reload_after_time_added===true||d.reload_after_time_added==='1'||d.reload_after_time_added===1);
             setEqualShareUI(d.equal_sharing_enabled===true||d.equal_sharing_enabled==='1'||d.equal_sharing_enabled===1);
             document.getElementById('c-coin-timeout').value  = d.coin_timeout||'';
             document.getElementById('c-strike-threshold').value = d.coin_strike_threshold||'';
@@ -524,10 +538,12 @@ function saveSessionSettings(){
     var ina = document.getElementById('r-inactivity').value.trim();
     var apOn = document.getElementById('ap-toggle').classList.contains('on');
     var arOn = document.getElementById('ar-toggle').classList.contains('on');
+    var rlOn = document.getElementById('rl-toggle').classList.contains('on');
     showOverlay('Saving…');
     var body='inactivity_timeout='+encodeURIComponent(ina)
             +'&auto_pause_enabled='+(apOn?'1':'0')
-            +'&auto_resume_enabled='+(arOn?'1':'0');
+            +'&auto_resume_enabled='+(arOn?'1':'0')
+            +'&reload_after_time_added='+(rlOn?'1':'0');
     postForm('config_set', body, function(d){
         hideOverlay();
         if(d.ok) toastr.success('Session settings saved');
@@ -539,8 +555,9 @@ function saveSessionSettings(){
 function setAutoPauseUI(on){
     var tog=document.getElementById('ap-toggle');
     var wrap=document.getElementById('ap-timeout-wrap');
-    if(on){ tog.classList.add('on'); wrap.style.display=''; }
-    else  { tog.classList.remove('on'); wrap.style.display='none'; }
+    var arWrap=document.getElementById('ar-wrap');
+    if(on){ tog.classList.add('on'); wrap.style.display=''; arWrap.style.display=''; }
+    else  { tog.classList.remove('on'); wrap.style.display='none'; arWrap.style.display='none'; }
 }
 function toggleAutoPauseUI(){
     var tog=document.getElementById('ap-toggle');
@@ -555,6 +572,16 @@ function setAutoResumeUI(on){
 function toggleAutoResumeUI(){
     var tog=document.getElementById('ar-toggle');
     setAutoResumeUI(!tog.classList.contains('on'));
+}
+
+/* ── Reload-after-success switch (local UI state; persisted via Save & Apply) ── */
+function setReloadAfterSuccessUI(on){
+    var tog=document.getElementById('rl-toggle');
+    if(on) tog.classList.add('on'); else tog.classList.remove('on');
+}
+function toggleReloadAfterSuccessUI(){
+    var tog=document.getElementById('rl-toggle');
+    setReloadAfterSuccessUI(!tog.classList.contains('on'));
 }
 
 /* ── Anti-tethering toggle ── */

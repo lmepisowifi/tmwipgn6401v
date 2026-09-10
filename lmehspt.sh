@@ -28,6 +28,14 @@ DHCP_DNS="1.1.1.1"  # space-separated DNS servers pushed to clients (udhcpd "opt
 WWW2_PORT="8080"   # busybox httpd -h /lmepisowifi/www2 -p 8080 (admin UI). /admin on the portal redirects here.
 SESSION_FILE="/tmp/active_sessions.txt"
 USERS_FILE="/lmepisowifi/hotspot_data/users.txt"
+# One MAC per line: whoever's CURRENT paused entry in USERS_FILE was paused
+# by check_inactivity()'s watchdog (system/automatic), as opposed to a
+# customer's own Pause Time tap or an admin Kick (both manual). Consulted
+# by status.sh so AUTO_RESUME_ENABLED only ever auto-resumes a session the
+# system itself paused - see pause_session()'s reason param below, and the
+# "manual pause" write sites in logout.sh / hotspot.cgi (kick, users_import)
+# that clear a MAC's line here instead of adding one.
+AUTO_PAUSED_FILE="/lmepisowifi/hotspot_data/auto_paused.txt"
 # Two alternating backup generations (refreshed every 5 min, see
 # backup_users_file) rather than one — so a crash mid-write to one
 # generation still leaves the other, already-durable, copy intact.
@@ -60,11 +68,33 @@ AUTO_PAUSE_ENABLED="1"
 # same resume=1 request the button would, the moment the device's next
 # status poll lands after it reconnects — no tap needed.
 AUTO_RESUME_ENABLED="0"
+# Off by default — see defaults.env for the full rationale. When on,
+# index.html forces a full page reload right after a coin top-up finishes
+# ("Done" closing the Insert Coin modal with time added) or a paused
+# session is resumed, instead of just re-polling status.sh in place. Some
+# devices' captive-portal UI otherwise never notices it already has
+# internet access until the page itself reloads and the OS re-probes.
+RELOAD_AFTER_TIME_ADDED_ENABLED="0"
 BOOT_MARKER="/tmp/hotspot_boot.mark"
 ACTIVITY_FILE="/tmp/hotspot_activity.txt"
 PER_USER_RATE="5mbit"
 PER_USER_BURST="100k"
 UNAUTH_RATE="1000kbit"
+# Band 1 (realtime lane) tuning for add_user_qos()'s per-user leaf classes.
+# QOS_VIP_CEIL_PCT caps how much of GLOBAL_RATE Band 1 can ever reach for a
+# single user - Band 1 is a real rate-limited HTB child now, not an
+# unbounded strict-priority band, so a sustained gaming/call stream can no
+# longer starve that same user's own bulk downloads. QOS_VIP_FLOOR_PCT is
+# the slice of the user's own guaranteed floor rate reserved for Band 1 so
+# it still gets served promptly under contention.
+QOS_VIP_CEIL_PCT="40"
+QOS_VIP_FLOOR_PCT="20"
+# Target max self-queueing delay (ms), used by _qos_sfq_limit() to size each
+# band's SFQ packet limit to the rate actually assigned instead of the old
+# fixed limit 32/64 - that pair only holds ~80ms around 5mbit and balloons
+# past 500ms well under 1mbit (e.g. slower LTE backhaul).
+QOS_VIP_TARGET_MS="40"
+QOS_BULK_TARGET_MS="80"
 # Off by default: existing deployments keep today's fixed PER_USER_RATE
 # guarantee unless the admin opts in via www2. When on, each online
 # session's guaranteed HTB "rate" is recomputed as GLOBAL_RATE divided by
@@ -1041,6 +1071,37 @@ _rate_to_kbit() {
     esac
 }
 
+# Cached result of the tc -batch capability probe below (empty = not yet
+# checked, "1" = supported, "0" = not supported).
+_TC_BATCH_SUPPORTED=""
+
+# True if this tc build accepts "-batch -" (bulk rule application from
+# stdin). Probed once per daemon lifetime and cached, since
+# qos_rebalance_equal_share() may hit this on every join/pause/expiry while
+# Equal Bandwidth Sharing is on.
+_tc_batch_ok() {
+    if [ -z "$_TC_BATCH_SUPPORTED" ]; then
+        if printf '' | tc -batch - >/dev/null 2>&1; then
+            _TC_BATCH_SUPPORTED=1
+        else
+            _TC_BATCH_SUPPORTED=0
+        fi
+    fi
+    [ "$_TC_BATCH_SUPPORTED" = "1" ]
+}
+
+# SFQ packet limit sized to hold roughly $2 milliseconds of queueing at the
+# rate $1 (kbit) actually assigned to a class, assuming ~1000B average
+# packets, clamped to [4, $3]. Keeps worst-case self-queueing delay roughly
+# constant across fast and slow deployments instead of a fixed count.
+_qos_sfq_limit() {
+    local rate_kbit=$1 target_ms=$2 cap=$3 n
+    n=$(( target_ms * rate_kbit / 8000 ))
+    [ "$n" -lt 4 ] && n=4
+    [ "$n" -gt "$cap" ] && n=$cap
+    echo "$n"
+}
+
 # Each online (non-expired) session's fair-share guaranteed rate, in kbit,
 # when Equal Bandwidth Sharing is on: GLOBAL_RATE split evenly across
 # however many sessions are currently online. Callers always keep "ceil"
@@ -1074,9 +1135,10 @@ _qos_equal_share_kbit() {
 qos_rebalance_equal_share() {
     case "${EQUAL_SHARING_ENABLED:-0}" in 1|yes|true) ;; *) return ;; esac
     [ -f "$SESSION_FILE" ] || return
-    local NOW mac expiry _rest ip cid share
+    local NOW mac expiry _rest ip cid share batch="" use_batch=0
     share="$(_qos_equal_share_kbit)kbit"
     NOW=$($BB awk '{print int($1)}' /proc/uptime)
+    _tc_batch_ok && use_batch=1
     while read -r mac expiry _rest; do
         [ -n "$mac" ] && [ -n "$expiry" ] || continue
         [ "$expiry" -gt "$NOW" ] || continue
@@ -1084,9 +1146,20 @@ qos_rebalance_equal_share() {
         [ -z "$ip" ] && continue
         cid=$(ip_to_cid "$ip")
         [ -z "$cid" ] && continue
-        tc class change dev $WAN_INT    classid 1:$cid htb rate $share ceil $GLOBAL_RATE burst $PER_USER_BURST quantum 1500 2>/dev/null
-        tc class change dev $HOTSPOT_BR classid 2:$cid htb rate $share ceil $GLOBAL_RATE burst $PER_USER_BURST quantum 1500 2>/dev/null
+        if [ "$use_batch" = "1" ]; then
+            batch="${batch}class change dev $WAN_INT classid 1:$cid htb rate $share ceil $GLOBAL_RATE burst $PER_USER_BURST quantum 1500
+class change dev $HOTSPOT_BR classid 2:$cid htb rate $share ceil $GLOBAL_RATE burst $PER_USER_BURST quantum 1500
+"
+        else
+            tc class change dev $WAN_INT    classid 1:$cid htb rate $share ceil $GLOBAL_RATE burst $PER_USER_BURST quantum 1500 2>/dev/null
+            tc class change dev $HOTSPOT_BR classid 2:$cid htb rate $share ceil $GLOBAL_RATE burst $PER_USER_BURST quantum 1500 2>/dev/null
+        fi
     done < "$SESSION_FILE"
+    # One tc invocation for every online session instead of two forks per
+    # session - avoids CPU spikes during connect/disconnect churn on a busy
+    # box. Falls back to the per-call loop above if this tc build (or a
+    # future BusyBox-tc swap) doesn't support -batch.
+    [ "$use_batch" = "1" ] && [ -n "$batch" ] && printf '%s' "$batch" | tc -batch - 2>/dev/null
 }
 
 add_user_qos() {
@@ -1109,6 +1182,29 @@ add_user_qos() {
         *)          _rate="$PER_USER_RATE" ;;
     esac
 
+    # Split this user's own guaranteed rate/ceil between two real HTB child
+    # classes instead of an unbounded strict-priority prio qdisc: Band 1
+    # (realtime) gets a small guaranteed floor and a ceil capped at
+    # QOS_VIP_CEIL_PCT of GLOBAL_RATE; Band 2 (bulk) gets the rest of the
+    # floor and can still borrow up to GLOBAL_RATE when Band 1 is idle. A
+    # sustained realtime stream (games, calls) can no longer fully starve
+    # this same user's own downloads the way the old plain prio qdisc could.
+    local _rate_kbit _global_kbit _vip_rate _vip_ceil _bulk_rate _vip_limit _bulk_limit
+    _rate_kbit=$(_rate_to_kbit "$_rate")
+    _global_kbit=$(_rate_to_kbit "$GLOBAL_RATE")
+    _vip_rate=$(( _rate_kbit * ${QOS_VIP_FLOOR_PCT:-20} / 100 ))
+    [ "$_vip_rate" -lt 4 ] && _vip_rate=4
+    _bulk_rate=$(( _rate_kbit - _vip_rate ))
+    [ "$_bulk_rate" -lt 4 ] && _bulk_rate=4
+    _vip_ceil=$(( _global_kbit * ${QOS_VIP_CEIL_PCT:-40} / 100 ))
+    [ "$_vip_ceil" -lt "$_vip_rate" ] && _vip_ceil=$_vip_rate
+    # OPTIMIZATION: SFQ limits sized to the rate actually assigned instead of
+    # a fixed count, so worst-case self-queueing delay stays roughly constant
+    # instead of ballooning on slower (e.g. LTE) links. fq_codel would be
+    # preferable but isn't available on this kernel/tc build.
+    _vip_limit=$(_qos_sfq_limit "$_rate_kbit" "${QOS_VIP_TARGET_MS:-40}" 32)
+    _bulk_limit=$(_qos_sfq_limit "$_rate_kbit" "${QOS_BULK_TARGET_MS:-80}" 64)
+
     iptables -t mangle -I FORWARD 1 -i $HOTSPOT_BR -m mac --mac-source "$mac" -j MARK --set-mark $cid 2>/dev/null
     
     # ============================================================
@@ -1116,14 +1212,15 @@ add_user_qos() {
     # ============================================================
     tc class add dev $WAN_INT parent 1:1 classid 1:$cid htb rate $_rate ceil $GLOBAL_RATE burst $PER_USER_BURST quantum 1500 2>/dev/null
     
-    # Create 2 priority bands (Band 1 = Gaming/VIP, Band 2 = Bulk). Priomap defaults everything to Band 2.
-    tc qdisc add dev $WAN_INT parent 1:$cid handle ${cid}: prio bands 2 priomap 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 2>/dev/null
-    
-    # OPTIMIZATION: Lowered limits enforce early tail-drop (pseudo-AQM) since fq_codel is missing.
-    # Band 1 (Gaming/VIP) gets limit 32 so queued latency never exceeds ~15-20ms.
-    # Band 2 (Bulk) gets limit 64 to prevent TCP starvation while keeping bloat reasonable.
-    tc qdisc add dev $WAN_INT parent ${cid}:1 handle $((cid+1000)): sfq perturb 10 limit 32 2>/dev/null
-    tc qdisc add dev $WAN_INT parent ${cid}:2 handle $((cid+2000)): sfq perturb 10 limit 64 2>/dev/null
+    # Band 1 (Gaming/VIP) and Band 2 (Bulk) as real rate-limited HTB
+    # children - see comment above on why this replaced the old unbounded
+    # prio qdisc. Unmatched traffic defaults to Band 2 ("default 2").
+    tc qdisc add dev $WAN_INT parent 1:$cid handle ${cid}: htb default 2 r2q 1 2>/dev/null
+    tc class add dev $WAN_INT parent ${cid}: classid $cid:1 htb rate ${_vip_rate}kbit ceil ${_vip_ceil}kbit burst 4k quantum 1500 prio 0 2>/dev/null
+    tc class add dev $WAN_INT parent ${cid}: classid $cid:2 htb rate ${_bulk_rate}kbit ceil $GLOBAL_RATE burst $PER_USER_BURST quantum 1500 prio 1 2>/dev/null
+
+    tc qdisc add dev $WAN_INT parent ${cid}:1 handle $((cid+1000)): sfq perturb 10 limit $_vip_limit 2>/dev/null
+    tc qdisc add dev $WAN_INT parent ${cid}:2 handle $((cid+2000)): sfq perturb 10 limit $_bulk_limit 2>/dev/null
     
     tc filter add dev $WAN_INT parent 1:0 prio $cid handle $cid fw flowid 1:$cid 2>/dev/null
     
@@ -1133,17 +1230,27 @@ add_user_qos() {
     tc filter add dev $WAN_INT parent ${cid}:0 protocol ip prio 3 u32 match ip protocol 6 0xff match u16 0x0000 0xff80 at 2 flowid ${cid}:1 2>/dev/null
     # OPTIMIZATION: Catch outbound DNS (UDP 53) for fast domain resolution
     tc filter add dev $WAN_INT parent ${cid}:0 protocol ip prio 4 u32 match ip protocol 17 0xff match ip dport 53 0xffff flowid ${cid}:1 2>/dev/null
+    # DSCP EF (VoIP/video, e.g. Zoom/Meet/Messenger RTP - typically
+    # ~1000-1200B, misses the <512B rule above) and AF41. DSCP is the top 6
+    # bits of the TOS byte, so match the shifted byte value with the bottom
+    # 2 ECN bits masked off: EF=0x2e<<2=0xb8, AF41=0x22<<2=0x88. Only catches
+    # traffic actually marked - many Android/browser WebRTC stacks don't set
+    # DSCP at all, so this is a partial win on top of the size-based rules.
+    tc filter add dev $WAN_INT parent ${cid}:0 protocol ip prio 5 u32 match ip tos 0xb8 0xfc flowid ${cid}:1 2>/dev/null
+    tc filter add dev $WAN_INT parent ${cid}:0 protocol ip prio 6 u32 match ip tos 0x88 0xfc flowid ${cid}:1 2>/dev/null
 
     # ============================================================
     # DOWNLOAD (LAN Bridge) Leaf QoS - Gaming Prioritization
     # ============================================================
     tc class add dev $HOTSPOT_BR parent 2:1 classid 2:$cid htb rate $_rate ceil $GLOBAL_RATE burst $PER_USER_BURST quantum 1500 2>/dev/null
     
-    tc qdisc add dev $HOTSPOT_BR parent 2:$cid handle $((cid+500)): prio bands 2 priomap 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 2>/dev/null
+    tc qdisc add dev $HOTSPOT_BR parent 2:$cid handle $((cid+500)): htb default 2 r2q 1 2>/dev/null
+    tc class add dev $HOTSPOT_BR parent $((cid+500)): classid $((cid+500)):1 htb rate ${_vip_rate}kbit ceil ${_vip_ceil}kbit burst 4k quantum 1500 prio 0 2>/dev/null
+    tc class add dev $HOTSPOT_BR parent $((cid+500)): classid $((cid+500)):2 htb rate ${_bulk_rate}kbit ceil $GLOBAL_RATE burst $PER_USER_BURST quantum 1500 prio 1 2>/dev/null
     
-    # OPTIMIZATION: Same strict limits for download (Bridge)
-    tc qdisc add dev $HOTSPOT_BR parent $((cid+500)):1 handle $((cid+3000)): sfq perturb 10 limit 32 2>/dev/null
-    tc qdisc add dev $HOTSPOT_BR parent $((cid+500)):2 handle $((cid+4000)): sfq perturb 10 limit 64 2>/dev/null
+    # OPTIMIZATION: Same rate-scaled limits for download (Bridge)
+    tc qdisc add dev $HOTSPOT_BR parent $((cid+500)):1 handle $((cid+3000)): sfq perturb 10 limit $_vip_limit 2>/dev/null
+    tc qdisc add dev $HOTSPOT_BR parent $((cid+500)):2 handle $((cid+4000)): sfq perturb 10 limit $_bulk_limit 2>/dev/null
 
     tc filter add dev $HOTSPOT_BR protocol ip parent 2:0 prio $cid u32 match ip dst $ip/32 flowid 2:$cid 2>/dev/null
     
@@ -1153,6 +1260,9 @@ add_user_qos() {
     tc filter add dev $HOTSPOT_BR parent $((cid+500)):0 protocol ip prio 3 u32 match ip protocol 6 0xff match u16 0x0000 0xff80 at 2 flowid $((cid+500)):1 2>/dev/null
     # OPTIMIZATION: Catch inbound DNS replies (UDP 53)
     tc filter add dev $HOTSPOT_BR parent $((cid+500)):0 protocol ip prio 4 u32 match ip protocol 17 0xff match ip sport 53 0xffff flowid $((cid+500)):1 2>/dev/null
+    # DSCP: same EF/AF41 rationale as the upload side above.
+    tc filter add dev $HOTSPOT_BR parent $((cid+500)):0 protocol ip prio 5 u32 match ip tos 0xb8 0xfc flowid $((cid+500)):1 2>/dev/null
+    tc filter add dev $HOTSPOT_BR parent $((cid+500)):0 protocol ip prio 6 u32 match ip tos 0x88 0xfc flowid $((cid+500)):1 2>/dev/null
 }
 
 
@@ -1373,6 +1483,16 @@ pause_session() {
     iptables -t nat -D HOTSPOT -m mac --mac-source "$mac" -j RETURN 2>/dev/null
     iptables -t filter -D HOTSPOT_FWD -m mac --mac-source "$mac" -j ACCEPT 2>/dev/null
 
+    # Release this session's HTB class + mangle MARK rule too - otherwise a
+    # paused (not expired) session's QoS class lingers forever under its
+    # current IP. cid is derived from that (dynamically-leased) IP, so a
+    # different device later handed the same IP computes the same cid,
+    # collides with the stale class, and gets silently skipped by
+    # restore_qos_sessions' cid-exists check - its uplink then never gets
+    # marked and falls through to the unauth bucket. Resuming re-adds this
+    # mac cleanly via the next restore_qos_sessions pass.
+    del_user_qos "$mac"
+
     _lock
     $BB grep -v "^$mac " "$SESSION_FILE" > "${SESSION_FILE}.tmp" 2>/dev/null
     $BB mv "${SESSION_FILE}.tmp" "$SESSION_FILE"
@@ -1380,6 +1500,15 @@ pause_session() {
     if _users_file_stage_excl "$mac"; then
         echo "$mac paused $remaining $total $(_fmt_secs "$remaining")" >> "${USERS_FILE}.tmp"
         _users_file_commit
+        # Only check_inactivity() ever calls pause_session() without a
+        # $reason, so this is the sole "the system paused this, not the
+        # customer/admin" call site - see AUTO_PAUSED_FILE's declaration.
+        if [ "$reason" = "Automatically" ]; then
+            touch "$AUTO_PAUSED_FILE"
+            $BB grep -vx "$mac" "$AUTO_PAUSED_FILE" > "${AUTO_PAUSED_FILE}.tmp" 2>/dev/null
+            echo "$mac" >> "${AUTO_PAUSED_FILE}.tmp"
+            $BB mv "${AUTO_PAUSED_FILE}.tmp" "$AUTO_PAUSED_FILE"
+        fi
     fi
     _unlock
 
@@ -1583,6 +1712,9 @@ write_coin_config() {
         # only sources this cache file (never globals.env directly), so it
         # would then see AUTO_RESUME_ENABLED as unset and fall back to off.
         printf 'AUTO_RESUME_ENABLED="%s"\n' "${AUTO_RESUME_ENABLED:-0}"
+        # Same "without this line" reasoning as AUTO_RESUME_ENABLED above —
+        # status.sh only ever sees this var via coin_config.env.
+        printf 'RELOAD_AFTER_TIME_ADDED_ENABLED="%s"\n' "${RELOAD_AFTER_TIME_ADDED_ENABLED:-0}"
         printf 'PORTAL_IP="%s"\n'           "$PORTAL_IP"
         printf 'PORTAL_PORT="%s"\n'         "$PORTAL_PORT"
         printf 'DHCP_START="%s"\n'          "$DHCP_START"

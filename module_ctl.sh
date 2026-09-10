@@ -278,6 +278,32 @@ restore_assets() {
     sync
 }
 
+# gc_legacy_assets — finish (or redo) the modules/<id>.assets -> hotspot_data/
+# migration that restore_assets() above only *starts*. restore_assets() only
+# migrates when hotspot_data/<id>.assets doesn't exist yet; on a device where
+# preserve_assets() snapshotted fresh files into hotspot_data/<id>.assets
+# BEFORE restore_assets() ever got a chance to run (e.g. a base OTA re-laying
+# hotspot while the module happened to be mid-reinstall), that guard is
+# permanently false from then on — the old modules/<id>.assets copy is never
+# looked at again, but nothing ever deletes it either. It just sits there,
+# several MB of dead weight, on a filesystem that's often only tens of MB to
+# begin with. Running this every boot/reconcile (rather than only at hotspot
+# install time) means every affected device self-heals on its own, without
+# needing the hotspot module itself to be reinstalled or updated first.
+gc_legacy_assets() {
+    _old="$MODDIR/$1.assets"
+    [ -d "$_old" ] || return 0
+    _new="$ROOT/hotspot_data/$1.assets"
+    if [ -d "$_new" ]; then
+        rm -rf "$_old" 2>/dev/null
+        log "reconcile: removed stale legacy $_old (already superseded by $_new)"
+    else
+        mkdir -p "$ROOT/hotspot_data"
+        mv "$_old" "$_new" 2>/dev/null
+        log "reconcile: migrated legacy $_old -> $_new"
+    fi
+}
+
 # ── Generic per-module hooks ────────────────────────────────────────────────
 mod_postinstall() {
     case "$1" in
@@ -315,6 +341,7 @@ remove_files() {
 # ============================================================
 do_reconcile() {
     for _id in $MODULES; do
+        gc_legacy_assets "$_id"
         _st=$(state_of "$_id")
         if [ -z "$_st" ]; then
             if migrate_installed "$_id"; then

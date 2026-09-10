@@ -66,6 +66,10 @@ _clear_pending() { rm -f "${COIN_PENDING_DIR}/${1}" "${COIN_PENDING_DIR}/${1}.tm
 # reconnects by macfix.sh's mf_reconcile() (MACFIX_BANK_FILE — same physical
 # file, path duplicated there the same way USERS_FILE's path already is).
 COIN_BANK_FILE="/lmepisowifi/hotspot_data/coin_bank.txt"
+# See lmehspt.sh's AUTO_PAUSED_FILE comment — cleared below whenever a
+# top-up stacks coin time onto a paused session, since that session is no
+# longer paused (whatever originally paused it no longer applies).
+AUTO_PAUSED_FILE="/lmepisowifi/hotspot_data/auto_paused.txt"
 
 # Currently banked pesos for $1 (a MAC) — empty if none. Call inside _lock.
 _bank_get() {
@@ -444,6 +448,8 @@ if [ "${MINUTES:-0}" -gt 0 ]; then
         printf '%s active %s %s %s\n' "$CLIENT_MAC" "$N_REMAIN" "$NEW_TOTAL" "$(_fmt_secs "$N_REMAIN")" >> "${USERS_FILE}.tmp"
         _users_file_commit
     fi
+    # No longer paused if it was — see AUTO_PAUSED_FILE's declaration above.
+    [ -f "$AUTO_PAUSED_FILE" ] && { grep -vx "$CLIENT_MAC" "$AUTO_PAUSED_FILE" > /tmp/coin_ap.tmp 2>/dev/null; mv /tmp/coin_ap.tmp "$AUTO_PAUSED_FILE"; }
 fi
 _unlock
 

@@ -25,7 +25,7 @@
     killall -9 boa
     boa -c /lmepisowifi/httpd &
     sleep 1
-    busybox httpd -h /lmepisowifi/www2 -p 8080
+    busybox httpd -h /lmepisowifi/www2 -p 8080 -c /lmepisowifi/www2/httpd.conf
     # Hotspot is now an installable module (see module_ctl.sh + the www2
     # Modules page). reconcile enforces the saved install/uninstall state and,
     # on the first boot after this update, migrates an existing built-in

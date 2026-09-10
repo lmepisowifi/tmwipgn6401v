@@ -588,23 +588,40 @@ if [ "$REQUEST_METHOD" = "GET" ]; then
         [ -z "$CT_COUNT" ] && CT_COUNT=0
         [ -z "$CT_MAX"   ] && CT_MAX=1
         CT_PCT=$((CT_COUNT * 100 / CT_MAX))
-        # --- CPU usage % (sample /proc/stat twice over a short interval) ---
+        # --- CPU usage % (delta against the PREVIOUS action=dynamic poll) ---
+        # This used to sample /proc/stat, `sleep 1`, then sample again —
+        # blocking the request (and holding this CGI process, plus every
+        # busybox applet it forks, open) for a full second on every single
+        # call. index.html's dashboard polls action=dynamic every 5s for as
+        # long as it's the open tab, so that 1-in-5-seconds of guaranteed
+        # blocked CPU time was a real, page-specific load spike — it stopped
+        # the instant you navigated to a page that doesn't poll this action.
+        # /proc/stat's counters are cumulative since boot, so there's no need
+        # to bracket them with a manufactured 1s window at all: diffing
+        # against the previous poll's snapshot (already ~5s old, i.e. a
+        # *longer*, less noisy window than the old 1s one) gives the same
+        # kind of average with zero added latency. First call after a reboot
+        # or a long-idle dashboard has no previous sample yet, so it reports
+        # 0% for that one call and is accurate again from the next poll.
         CPU_PCT=0
-        read -r _c U1 N1 S1 I1 W1 IR1 SI1 ST1 _rest1 < /proc/stat 2>/dev/null
-        busybox sleep 1 2>/dev/null || sleep 1
+        _CPU_PREV="/tmp/lme_cpu_prev"
         read -r _c U2 N2 S2 I2 W2 IR2 SI2 ST2 _rest2 < /proc/stat 2>/dev/null
-        for v in U1 N1 S1 I1 W1 IR1 SI1 ST1 U2 N2 S2 I2 W2 IR2 SI2 ST2; do
-            eval "[ -z \"\$$v\" ] && $v=0"
-        done
-        BUSY1=$((U1 + N1 + S1 + IR1 + SI1 + ST1))
-        BUSY2=$((U2 + N2 + S2 + IR2 + SI2 + ST2))
-        TOTAL1=$((BUSY1 + I1 + W1))
-        TOTAL2=$((BUSY2 + I2 + W2))
-        DTOTAL=$((TOTAL2 - TOTAL1))
-        DBUSY=$((BUSY2 - BUSY1))
-        [ "$DTOTAL" -gt 0 ] && CPU_PCT=$((DBUSY * 100 / DTOTAL))
-        [ "$CPU_PCT" -lt 0 ]   && CPU_PCT=0
-        [ "$CPU_PCT" -gt 100 ] && CPU_PCT=100
+        if [ -f "$_CPU_PREV" ]; then
+            read -r U1 N1 S1 I1 W1 IR1 SI1 ST1 < "$_CPU_PREV" 2>/dev/null
+            for v in U1 N1 S1 I1 W1 IR1 SI1 ST1 U2 N2 S2 I2 W2 IR2 SI2 ST2; do
+                eval "[ -z \"\$$v\" ] && $v=0"
+            done
+            BUSY1=$((U1 + N1 + S1 + IR1 + SI1 + ST1))
+            BUSY2=$((U2 + N2 + S2 + IR2 + SI2 + ST2))
+            TOTAL1=$((BUSY1 + I1 + W1))
+            TOTAL2=$((BUSY2 + I2 + W2))
+            DTOTAL=$((TOTAL2 - TOTAL1))
+            DBUSY=$((BUSY2 - BUSY1))
+            [ "$DTOTAL" -gt 0 ] && CPU_PCT=$((DBUSY * 100 / DTOTAL))
+            [ "$CPU_PCT" -lt 0 ]   && CPU_PCT=0
+            [ "$CPU_PCT" -gt 100 ] && CPU_PCT=100
+        fi
+        printf '%s %s %s %s %s %s %s %s\n' "$U2" "$N2" "$S2" "$I2" "$W2" "$IR2" "$SI2" "$ST2" > "$_CPU_PREV" 2>/dev/null
         # --- Storage usage for the /lmepisowifi mount ---
         DISK_LINE=$(busybox df -k /lmepisowifi 2>/dev/null | busybox awk 'NR==2{print $2" "$3" "$4}')
         DISK_TOTAL_KB=$(echo "$DISK_LINE" | busybox cut -d' ' -f1)

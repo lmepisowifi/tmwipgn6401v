@@ -85,6 +85,13 @@ jobs:
           ASSET_URL="https://github.com/$REPO/releases/download/v$VER/lmepisowifi-$VER.tar.gz"
           MOD_ASSET_URL="https://github.com/$REPO/releases/download/v$VER/lmepisowifi-hotspot-$VER.tar.gz"
           MOD_TS_ASSET_URL="https://github.com/$REPO/releases/download/v$VER/lmepisowifi-tailscale-$VER.tar.gz"
+          # jsDelivr mirror of the base bundle: committed into dist/ on main
+          # below, so this resolves once this job's commit lands (same @main
+          # pattern already used for manifest.txt/modules.txt/CHANGELOG.md).
+          # Sidesteps ISPs that black-hole the Fastly range GitHub Release
+          # downloads redirect through; ota.sh falls back to ASSET_URL if
+          # this ever 404s or fails.
+          MIRROR_URL="https://cdn.jsdelivr.net/gh/$REPO@main/$TAR"
 
           # --- Step 1: publish the release + tarball FIRST ---
           # manifest.txt is not committed yet, so no device can see an sha256
@@ -130,6 +137,7 @@ jobs:
           {
             echo "version=$VER"
             echo "url=$ASSET_URL"
+            echo "url_mirror=$MIRROR_URL"
             echo "sha256=$SHA"
             echo "notes=Release $VER"
             echo "nodemcu_version=$FW"
@@ -153,16 +161,19 @@ jobs:
           } > modules.txt
           git config user.name  github-actions
           git config user.email github-actions@github.com
-          git add manifest.txt modules.txt hotspot/firmware/coin_nodemcu.bin
+          git add -f manifest.txt modules.txt hotspot/firmware/coin_nodemcu.bin "$TAR"
           git commit -m "release $VER (nodemcu fw $FW)" || echo "nothing to commit"
           git push origin HEAD:main
           
       - name: Purge jsDelivr cache
         run: |
           REPO="${GITHUB_REPOSITORY}"
+          VER="${GITHUB_REF_NAME#v}"
           echo "Purging CHANGELOG.md..."
           curl -sL "https://purge.jsdelivr.net/gh/${REPO}@main/CHANGELOG.md"
           echo -e "\nPurging manifest.txt..."
           curl -sL "https://purge.jsdelivr.net/gh/${REPO}@main/manifest.txt"
           echo -e "\nPurging modules.txt..."
           curl -sL "https://purge.jsdelivr.net/gh/${REPO}@main/modules.txt"
+          echo -e "\nPurging dist/ bundle mirror..."
+          curl -sL "https://purge.jsdelivr.net/gh/${REPO}@main/dist/lmepisowifi-${VER}.tar.gz"

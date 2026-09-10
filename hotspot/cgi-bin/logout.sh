@@ -15,6 +15,9 @@
 BB="busybox"
 SESSION_FILE="/tmp/active_sessions.txt"
 USERS_FILE="/lmepisowifi/hotspot_data/users.txt"
+# See lmehspt.sh's AUTO_PAUSED_FILE comment — this file's own pause below is
+# always MANUAL (the customer tapped Pause), so it's cleared, never set.
+AUTO_PAUSED_FILE="/lmepisowifi/hotspot_data/auto_paused.txt"
 
 # Notification templates (for the "session paused" alert). Sourcing is
 # harmless if the file is missing — tpl_render just won't be defined and
@@ -181,6 +184,10 @@ if _users_file_stage_excl "$CLIENT_MAC"; then
     fi
     _users_file_commit
 fi
+# This pause is always MANUAL (the customer tapped Pause) — drop any stale
+# "system auto-paused this MAC" marker so AUTO_RESUME_ENABLED can't
+# silently resume it (see lmehspt.sh's AUTO_PAUSED_FILE comment).
+[ -f "$AUTO_PAUSED_FILE" ] && { $BB grep -vx "$CLIENT_MAC" "$AUTO_PAUSED_FILE" > /tmp/logout_ap.tmp 2>/dev/null; $BB mv /tmp/logout_ap.tmp "$AUTO_PAUSED_FILE"; }
 
 iptables -t nat -D HOTSPOT -m mac --mac-source "$CLIENT_MAC" -j RETURN 2>/dev/null
 iptables -t filter -D HOTSPOT_FWD -m mac --mac-source "$CLIENT_MAC" -j ACCEPT 2>/dev/null

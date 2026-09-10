@@ -1408,6 +1408,7 @@ var _coinPendingWait  = false;
 var _cachedRates      = '';      
 var _coinSuspended    = false;
 var _autoResuming     = false;   // guards against firing doResume(true) twice while one is in flight
+var _reloadAfterTimeAdded = false; // admin-configured (status.sh); see checkStatus()
 var _coinCooldownRemaining = 0;
 var _coinNodemcus     = [];      // [{id,title}, ...] from coin.sh's config action — only >1 entry shows the picker
 var _coinNodeID       = null;    // which unit the in-flight/active session targets
@@ -1671,6 +1672,7 @@ function checkStatus() {
     .then(function(r) { return r.json(); })
     .then(function(d) {
       updateAvailCoinsRow(d);
+      _reloadAfterTimeAdded = (d.reload_after_time_added === true || d.reload_after_time_added === '1' || d.reload_after_time_added === 1);
       if (d.logged_in) {
         renderDeviceInfo(d, 's');
         if (!_coinSID && !_queuePollID && !_coinPendingWait) show('v-status');
@@ -1739,6 +1741,10 @@ function doResume(auto) {
     _autoResuming = false;
     if (d.ok) {
       show('v-status');
+      // Same captive-portal-compatibility reload as the coin-success path
+      // (see RELOAD_AFTER_TIME_ADDED_ENABLED) — applies to both a manual
+      // Resume Time tap and a silent auto-resume.
+      if (_reloadAfterTimeAdded) { location.reload(); return; }
       checkStatus();
     } else if (auto) {
       // Silent by design — the admin turned this on so the customer never
@@ -2485,6 +2491,10 @@ function startCoinPoll() {
             setTimeout(function() {
               _coinSID = null; 
               closeCoinModalUI();
+              // Some devices' captive-portal prompt never closes on its own
+              // until the page reloads and the OS re-probes for internet
+              // access — admin opt-in (see RELOAD_AFTER_TIME_ADDED_ENABLED).
+              if (_reloadAfterTimeAdded) { location.reload(); return; }
               checkStatus();
             }, 1500);
           } else {

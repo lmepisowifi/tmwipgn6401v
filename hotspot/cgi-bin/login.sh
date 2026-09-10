@@ -16,6 +16,10 @@ BB="busybox"
 SESSION_FILE="/tmp/active_sessions.txt"
 USERS_FILE="/lmepisowifi/hotspot_data/users.txt"
 VOUCHER_FILE="/lmepisowifi/hotspot_data/vouchers.txt"
+# See lmehspt.sh's AUTO_PAUSED_FILE comment — cleared below once a paused
+# session becomes active again (resume, or a voucher stacked onto one),
+# since whatever it recorded no longer describes anything currently paused.
+AUTO_PAUSED_FILE="/lmepisowifi/hotspot_data/auto_paused.txt"
 
 # Customizable Telegram/Discord message templates
 [ -f /lmepisowifi/hotspot/notify_templates.sh ] && . /lmepisowifi/hotspot/notify_templates.sh
@@ -400,6 +404,10 @@ if _users_file_stage_excl "$CLIENT_MAC"; then
     $BB echo "$CLIENT_MAC active $REMAINING_SECS $NEW_TOTAL $(_fmt_secs "$REMAINING_SECS")" >> "${USERS_FILE}.tmp"
     _users_file_commit
 fi
+# No longer paused (resumed, or a voucher just stacked onto a paused
+# balance) — drop the auto-pause marker so a later manual pause doesn't
+# inherit a stale "system paused this" flag from before.
+[ -f "$AUTO_PAUSED_FILE" ] && { $BB grep -vx "$CLIENT_MAC" "$AUTO_PAUSED_FILE" > /tmp/login_ap.tmp 2>/dev/null; $BB mv /tmp/login_ap.tmp "$AUTO_PAUSED_FILE"; }
 
 if [ "$NEED_FW_RULES" = "true" ]; then
     iptables -t nat -I HOTSPOT 1 -m mac --mac-source "$CLIENT_MAC" -j RETURN 2>/dev/null
