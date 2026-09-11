@@ -779,7 +779,21 @@ poll)
         fi
         rm -f "$SESSION_PATH" "$MISS_PATH" "$AMT_PATH" "$REM_PATH" "$GONE_PATH" "$LOCK_FILE_FOR_NODE"
         _clear_pending "$SID"
-        _ok "{\"status\":\"complete\",\"amount\":${GIVEUP_AMT},\"minutes\":0}"
+        # NOT "complete": this coin.sh instance never ran the real tier-purchase
+        # grant (that's coin_result.sh's job, and RESULT_PATH's absence up top
+        # is exactly what means it never got the chance to). GIVEUP_AMT above
+        # only ever gets _bank_add'd — preserved for the NEXT top-up to combine
+        # with, not turned into active session time right now. Sending
+        # "complete" here with minutes:0 would be doubly wrong: it collapses
+        # into the frontend's "not enough coins" message even when the amount
+        # banked genuinely would clear a tier (misleading — it did, it's just
+        # not granted yet), and skips exitCoinReconnecting()'s cleanup of the
+        # reconnect banner/paused progress-bar if this session had been
+        # flapping beforehand, leaving both stuck for the next customer.
+        # "expired" is what the frontend's 'expired' branch (still present,
+        # unchanged) is built for: an accurate "your money is safe" message
+        # either way, and it correctly tears down that leftover UI state.
+        _ok "{\"status\":\"expired\",\"amount\":${GIVEUP_AMT},\"minutes\":$(_calc_time "$GIVEUP_AMT")}"
     fi
 
     # Read cached amount BEFORE calling wget so a racing coin_result.sh
@@ -847,7 +861,12 @@ poll)
                 fi
                 rm -f "$SESSION_PATH" "$MISS_PATH" "$AMT_PATH" "$REM_PATH" "$GONE_PATH" "/tmp/coin_lock_${SESSION_NODE}"
                 _clear_pending "$SID"
-                _ok "{\"status\":\"complete\",\"amount\":${LIVE_AMOUNT},\"minutes\":0}"
+                # See the matching comment on the hard-timeout rescue path
+                # above - same reasoning applies here: LIVE_AMOUNT only ever
+                # gets _bank_add'd in this branch, never actually granted as
+                # session time, so this must stay "expired" (not "complete")
+                # with a real _calc_time() minutes value.
+                _ok "{\"status\":\"expired\",\"amount\":${LIVE_AMOUNT},\"minutes\":$(_calc_time "$LIVE_AMOUNT")}"
             fi
 
             PREV_AMOUNT=$LIVE_AMOUNT          # what we had before this poll
