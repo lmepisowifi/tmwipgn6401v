@@ -43,6 +43,7 @@ _node_ids() {
 _node_field() {
     if [ "$1" = "1" ]; then
         case "$2" in
+            2) printf '%s' "${NODEMCU_1_TITLE:-Coin Slot}" ;;
             3) printf '%s' "$NODEMCU_IP" ;;
             4) printf '%s' "$NODEMCU_MAC" ;;
             6) printf '%s' "$COIN_PSK" ;;
@@ -51,6 +52,16 @@ _node_field() {
     fi
     [ -f "$NODEMCU_EXTRA_FILE" ] || return 0
     $BB awk -F'|' -v id="$1" -v col="$2" '$1==id {print $col; exit}' "$NODEMCU_EXTRA_FILE"
+}
+
+# "<title> (<ip>)" for a node id — same convention as coin.sh's _node_label(),
+# duplicated here since this CGI keeps its own copy of the node-registry
+# helpers rather than sourcing coin.sh.
+_node_label() {
+    local _t _i
+    _t=$(_node_field "$1" 2)
+    _i=$(_node_field "$1" 3)
+    printf '%s (%s)' "${_t:-Coin Slot}" "${_i:-unknown}"
 }
 
 # Non-volatile pending-session mirror written by coin.sh's poll handler. Once a
@@ -514,6 +525,7 @@ if [ "${AMOUNT:-0}" -gt 0 ]; then
             remainingtime "$(_fmt_dhm ${N_REMAIN:-0})" \
             insertcoinamt "$CONSUMED" \
             mac "$CLIENT_MAC" \
+            nodemcu "$(_node_label "$CALL_NODE")" \
             activeusrcount "${_ACTIVE:-0}" \
             dailyamt "${_I_D:-0}" \
             monthlyamt "${_I_M:-0}" \
@@ -521,7 +533,7 @@ if [ "${AMOUNT:-0}" -gt 0 ]; then
             date "$_DT")
         N_EVT="new_sale"
     else
-        N_MSG=$(tpl_render "$TPL_COINS_INSERTED" insertcoinamt "$AMOUNT" mac "$CLIENT_MAC")
+        N_MSG=$(tpl_render "$TPL_COINS_INSERTED" insertcoinamt "$AMOUNT" mac "$CLIENT_MAC" nodemcu "$(_node_label "$CALL_NODE")")
         N_EVT="coins_inserted"
     fi
     ( /lmepisowifi/hotspot/notify.sh "$N_MSG" "" "$N_EVT" >/dev/null 2>&1 </dev/null & )

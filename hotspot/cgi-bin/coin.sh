@@ -181,6 +181,16 @@ _node_field() {
     $BB awk -F'|' -v id="$1" -v col="$2" '$1==id {print $col; exit}' "$NODEMCU_EXTRA_FILE"
 }
 
+# "<title> (<ip>)" for a node id — the *nodemcu* token in Telegram/Discord
+# notification templates, so a multi-unit deployment shows which physical
+# coin slot a sale/rescue came from instead of just a bare MAC/amount.
+_node_label() {
+    local _t _i
+    _t=$(_node_field "$1" 2)
+    _i=$(_node_field "$1" 3)
+    printf '%s (%s)' "${_t:-Coin Slot}" "${_i:-unknown}"
+}
+
 # JSON array of {id,title} for every ENABLED node — what the portal needs to
 # show a picker. IP/MAC/PSK are never exposed to this unauthenticated CGI's
 # public callers.
@@ -564,7 +574,7 @@ start)
                             # uses for an ordinary below-tier top-up, so it isn't lost
                             # and existing per-event mute settings still apply.
                             /lmepisowifi/hotspot/income.sh add "$R_STALE_AMT" >/dev/null 2>&1
-                            _R_MSG=$(tpl_render "$TPL_COINS_INSERTED" insertcoinamt "$R_STALE_AMT" mac "$CLIENT_MAC")
+                            _R_MSG=$(tpl_render "$TPL_COINS_INSERTED" insertcoinamt "$R_STALE_AMT" mac "$CLIENT_MAC" nodemcu "$(_node_label "$NODE_ID")")
                             ( /lmepisowifi/hotspot/notify.sh "$_R_MSG" "" coins_inserted >/dev/null 2>&1 </dev/null & )
                         fi
                     fi
@@ -773,7 +783,7 @@ poll)
                 printf '%s 0\n' "$GIVEUP_AMT" > "$RESULT_PATH"
                 _unlock
                 /lmepisowifi/hotspot/income.sh add "$GIVEUP_AMT" >/dev/null 2>&1
-                _G_MSG=$(tpl_render "$TPL_COINS_INSERTED" insertcoinamt "$GIVEUP_AMT" mac "$SESSION_MAC")
+                _G_MSG=$(tpl_render "$TPL_COINS_INSERTED" insertcoinamt "$GIVEUP_AMT" mac "$SESSION_MAC" nodemcu "$(_node_label "$SESSION_NODE")")
                 ( /lmepisowifi/hotspot/notify.sh "$_G_MSG" "" coins_inserted >/dev/null 2>&1 </dev/null & )
             fi
         fi
@@ -856,7 +866,7 @@ poll)
                     printf '%s 0\n' "$LIVE_AMOUNT" > "$RESULT_PATH"
                     _unlock
                     /lmepisowifi/hotspot/income.sh add "$LIVE_AMOUNT" >/dev/null 2>&1
-                    _L_MSG=$(tpl_render "$TPL_COINS_INSERTED" insertcoinamt "$LIVE_AMOUNT" mac "$SESSION_MAC")
+                    _L_MSG=$(tpl_render "$TPL_COINS_INSERTED" insertcoinamt "$LIVE_AMOUNT" mac "$SESSION_MAC" nodemcu "$(_node_label "$SESSION_NODE")")
                     ( /lmepisowifi/hotspot/notify.sh "$_L_MSG" "" coins_inserted >/dev/null 2>&1 </dev/null & )
                 fi
                 rm -f "$SESSION_PATH" "$MISS_PATH" "$AMT_PATH" "$REM_PATH" "$GONE_PATH" "/tmp/coin_lock_${SESSION_NODE}"

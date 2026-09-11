@@ -33,8 +33,8 @@
 BB="busybox"
 
 # ── Built-in defaults ─────────────────────────────────────────────────────
-DEFAULT_TPL_NEW_SALE='%0A-------New Sale-------%0AMAC: *mac*%0ATime Added: *addedtime*%0ATotal Time: *totaltime*%0ARemaining Time: *remainingtime*%0ACoin: ₱*insertcoinamt*%0A%0AOther Information: %0AActive Users: *activeusrcount*%0ADaily: ₱*dailyamt* | Monthly: ₱*monthlyamt* | Yearly: ₱*yearlyamt*%0ADate: *date*%0A%0ASystem Information:%0ACPU Usage: *cpuusage* %0ARAM Usage: *ramusage* %0A'
-DEFAULT_TPL_COINS_INSERTED='Coins Inserted%0AAmount: ₱*insertcoinamt*%0ADevice: *mac*'
+DEFAULT_TPL_NEW_SALE='%0A-------New Sale-------%0AMAC: *mac*%0ANodeMCU: *nodemcu*%0ATime Added: *addedtime*%0ATotal Time: *totaltime*%0ARemaining Time: *remainingtime*%0ACoin: ₱*insertcoinamt*%0A%0AOther Information: %0AActive Users: *activeusrcount*%0ADaily: ₱*dailyamt* | Monthly: ₱*monthlyamt* | Yearly: ₱*yearlyamt*%0ADate: *date*%0A%0ASystem Information:%0ACPU Usage: *cpuusage* %0ARAM Usage: *ramusage* %0A'
+DEFAULT_TPL_COINS_INSERTED='Coins Inserted%0AAmount: ₱*insertcoinamt*%0ADevice: *mac*%0ANodeMCU: *nodemcu*'
 DEFAULT_TPL_ANTI_TROLL='-------Insert Coin Suspended-------%0ADevice: *mac*%0AReached *strikemax* Strikes%0ASuspended For: *cooldownmins* minute(s)'
 DEFAULT_TPL_VOUCHER_ANTI_TROLL='-------Voucher Conversion Suspended-------%0ADevice: *mac*%0AReached *strikemax* Strikes%0ASuspended For: *cooldownmins* minute(s)'
 DEFAULT_TPL_SESSION_EXPIRED='-------Ran Out of Time-------%0ADevice: *mac*'
