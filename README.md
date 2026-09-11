@@ -29,4 +29,4 @@ your Corresponding Source available to your users (AGPLv3 §5, §13).
 ## LLM's used to make the project
 
 - Claude (Sonnet & Opus series, mainly Sonnet was used due to not having claude code, or the paid plans.)
-- Gemini (Flash & Pro, least used due to it mainly hallucinating despite the thinking effort cranked up.)
+- Gemini (3.8 Flash)
