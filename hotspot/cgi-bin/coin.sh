@@ -31,7 +31,13 @@
 # below-tier top-up gets from coin_result.sh, instead of that sale going
 # silently unreported just because it happened to bypass coin_result.sh.
 [ -f /lmepisowifi/hotspot/notify_templates.sh ] && . /lmepisowifi/hotspot/notify_templates.sh
-
+# ── Debug Logging ─────────────────────────────────────────────────────────────
+DEBUG_LOG="/tmp/coinsh.log"
+_log() {
+    local _ts
+    _ts=$(date '+%Y-%m-%d %H:%M:%S' 2>/dev/null || awk '{print int($1)}' /proc/uptime)
+    printf '[%s] [PID:%s] %s\n' "$_ts" "$$" "$*" >> "$DEBUG_LOG"
+}
 _unlock() { rm -f /tmp/hotspot_session.lock/pid 2>/dev/null; rmdir /tmp/hotspot_session.lock 2>/dev/null; }
 _lock() {
     local i=0
@@ -77,8 +83,8 @@ printf 'Cache-Control: no-cache, no-store\r\n'
 [ -n "$MF_COOKIE_HEADER" ] && printf '%s\r\n' "$MF_COOKIE_HEADER"
 printf '\r\n'
 
-_err() { printf '{"error":"%s"}\n' "$1"; exit 0; }
-_ok()  { printf '%s\n' "$1";           exit 0; }
+_err() { _log "[-] ERROR: $1"; printf '{"error":"%s"}\n' "$1"; exit 0; }
+_ok()  { _log "[+] OK: $1";    printf '%s\n' "$1";           exit 0; }
 _md5() { printf '%s' "$1" | md5sum | awk '{print $1}'; }
 
 # ── Below-minimum-tier coin banking ───────────────────────────────────────────
@@ -249,6 +255,7 @@ get_qs() {
 }
 
 ACTION=$(get_qs "action")
+_log ">>> REQ action='$ACTION' mac='$CLIENT_MAC' ip='$REMOTE_ADDR' qs='$QUERY_STRING'"
 
 # Which NodeMCU this request targets. Only meaningful for "start" (poll/cancel
 # resolve it themselves from the session file instead, since the client only
@@ -658,9 +665,10 @@ start)
     # forged MAC only ever credits time to some *other* real device's account
     # and can't manufacture coins, while coin_result.sh still verifies the PSK
     # signature before granting anything.
-    RESP=$(wget -q -T 5 -O - \
-        "http://${_N_IP}:${_N_PORT}/start?sid=${SID}&sig=${START_SIG}&timeout=${COIN_TIMEOUT}&mac=${CLIENT_MAC}" \
-        2>/dev/null)
+RESP=$(wget -q -T 5 -O - \
+    "http://${_N_IP}:${_N_PORT}/start?sid=${SID}&sig=${START_SIG}&timeout=${COIN_TIMEOUT}&mac=${CLIENT_MAC}" \
+    2>/dev/null)
+_log "[start] NodeMCU raw reply: '$RESP'"
 
     if printf '%s' "$RESP" | grep -q '"ok"'; then
         OK_VAL=$(printf '%s' "$RESP" | grep -o '"ok":[a-z]*' | grep -o '[a-z]*$')
@@ -685,6 +693,7 @@ start)
     fi
     ;;
 
+# ----------------------------------------------------------------
 # ----------------------------------------------------------------
 poll)
     SID=$(get_qs "sid")
@@ -711,20 +720,11 @@ poll)
     LAST_SEEN=$(awk '{print ($3==""?$2:$3)}' "$SESSION_PATH")
     SINCE_SEEN=$(( NOW - LAST_SEEN ))
 
-    # Which unit this particular session is talking to — read from the
-    # session file rather than the query string, since the client only ever
-    # hands this action a sid. Falls back to node 1 for a session file
-    # written before this field existed (mid-upgrade edge case).
     SESSION_NODE=$(awk '{print ($4==""?1:$4)}' "$SESSION_PATH")
     _N_IP=$(_node_field "$SESSION_NODE" 3)
     _N_PORT=$(_node_field "$SESSION_NODE" 5)
     _N_PSK=$(_node_field "$SESSION_NODE" 6)
 
-    # How long we keep a session alive while NodeMCU is unreachable before
-    # finally giving up. During this window the poll reports "reconnecting"
-    # (coins preserved, countdown frozen) instead of throwing the session away.
-    # Matches the NodeMCU firmware's MAX_PAUSE_MS (5 min) so both sides abandon
-    # a truly dead link at roughly the same time.
     RECONNECT_GRACE=${COIN_RECONNECT_GRACE:-300}
 
     MISS_PATH="${SESSION_PATH}.miss"
@@ -732,16 +732,6 @@ poll)
     REM_PATH="${SESSION_PATH}.rem"
     GONE_PATH="${SESSION_PATH}.gone"
 
-    # Once the customer has already clicked Done/Cancel (the node's lock
-    # flipped to CANCELLING — see the cancel action), there is no reason to
-    # make the frontend's "Adding time." spinner sit through the FULL
-    # RECONNECT_GRACE window (5 minutes by default) meant for an ACTIVE
-    # session that might still want to insert more coins once the slot
-    # reconnects. The customer is done inserting coins either way at that
-    # point — measured from the lock's own CANCELLING timestamp (set the
-    # instant Done was clicked) rather than SINCE_SEEN below, since a
-    # session that had been idle for a while before Done was clicked would
-    # otherwise start this countdown already most of the way elapsed.
     LOCK_FILE_FOR_NODE="/tmp/coin_lock_${SESSION_NODE}"
     CANCEL_GIVEUP=0
     if [ -f "$LOCK_FILE_FOR_NODE" ]; then
@@ -755,36 +745,30 @@ poll)
         fi
     fi
 
-    # Fallback estimate in case NodeMCU doesn't answer this particular poll —
-    # overwritten below with NodeMCU's own authoritative value when it does.
     REMAINING=$(( COIN_TIMEOUT - (NOW - CREATED_AT) ))
     [ "$REMAINING" -lt 0 ] && REMAINING=0
 
-    # Hard expiry is based on time-since-last-successful-contact, not time
-    # since the session was created. A rolling (per-coin-reset) session can
-    # legitimately run far longer than COIN_TIMEOUT as long as NodeMCU keeps
-    # answering polls. We now also tolerate a whole RECONNECT_GRACE window of
-    # silence on top of that so a mid-insert dropout doesn't nuke the coins the
-    # customer already dropped — only give up once even the reconnect grace has
-    # elapsed (or the faster CANCEL_GIVEUP above already fired), and even then
-    # hand back the preserved amount rather than zero.
+    # Hard expiry / cancel give-up
     if [ "$CANCEL_GIVEUP" -eq 1 ] || [ "$SINCE_SEEN" -gt $(( COIN_TIMEOUT + 25 + RECONNECT_GRACE )) ]; then
+        _log "[poll] SID=$SID TIMEOUT/CANCEL triggered: CANCEL_GIVEUP=$CANCEL_GIVEUP SINCE_SEEN=$SINCE_SEEN"
+        if [ -f "$RESULT_PATH" ]; then
+            _R_AMOUNT=$(awk '{print $1}' "$RESULT_PATH")
+            _R_MINUTES=$(awk '{print $2}' "$RESULT_PATH")
+            rm -f "$SESSION_PATH" "$MISS_PATH" "$AMT_PATH" "$REM_PATH" "$GONE_PATH" "$LOCK_FILE_FOR_NODE"
+            _clear_pending "$SID"
+            _ok "{\"status\":\"complete\",\"amount\":${_R_AMOUNT:-0},\"minutes\":${_R_MINUTES:-0}}"
+        fi
         GIVEUP_AMT=$(cat "$AMT_PATH" 2>/dev/null); GIVEUP_AMT=${GIVEUP_AMT:-0}
         if [ "$GIVEUP_AMT" -gt 0 ]; then
             _lock
-            # Same three-way race as the other two rescue paths (this SID's
-            # own genuine-but-delayed NodeMCU POST, or a concurrent request
-            # hitting one of the other rescue branches) — claim it via the
-            # same .result marker under the same lock before banking, or a
-            # give-up racing either of those would credit these coins twice.
             if [ -f "$RESULT_PATH" ]; then
                 _unlock
+                _R_AMOUNT=$(awk '{print $1}' "$RESULT_PATH")
+                _R_MINUTES=$(awk '{print $2}' "$RESULT_PATH")
+                rm -f "$SESSION_PATH" "$MISS_PATH" "$AMT_PATH" "$REM_PATH" "$GONE_PATH" "$LOCK_FILE_FOR_NODE"
+                _clear_pending "$SID"
+                _ok "{\"status\":\"complete\",\"amount\":${_R_AMOUNT:-0},\"minutes\":${_R_MINUTES:-0}}"
             else
-                # Previously this branch only ever computed a throwaway
-                # preview number for the toast message and discarded the
-                # actual coins — a customer whose NodeMCU never reconnected
-                # at all lost their money outright once this fired. Bank it
-                # for real, same as the other two rescue paths.
                 _bank_add "$SESSION_MAC" "$GIVEUP_AMT"
                 printf '%s 0\n' "$GIVEUP_AMT" > "$RESULT_PATH"
                 _unlock
@@ -794,89 +778,58 @@ poll)
             fi
         fi
         rm -f "$SESSION_PATH" "$MISS_PATH" "$AMT_PATH" "$REM_PATH" "$GONE_PATH" "$LOCK_FILE_FOR_NODE"
-        _clear_pending "$SID"   # session abandoned → drop the non-volatile mirror
-        _ok "{\"status\":\"expired\",\"amount\":${GIVEUP_AMT},\"minutes\":$(_calc_time "$GIVEUP_AMT")}"
+        _clear_pending "$SID"
+        _ok "{\"status\":\"complete\",\"amount\":${GIVEUP_AMT},\"minutes\":0}"
     fi
+
+    # Read cached amount BEFORE calling wget so a racing coin_result.sh
+    # deleting AMT_PATH cannot wipe this to 0 mid-poll
+    LIVE_AMOUNT=$(cat "$AMT_PATH" 2>/dev/null)
+    LIVE_AMOUNT=${LIVE_AMOUNT:-0}
 
     # Query NodeMCU for live coin count — verify its response signature
     POLL_SIG=$(_md5 "${_N_PSK}:${SID}:poll")
     LIVE=$(wget -q -T 2 -O - \
         "http://${_N_IP}:${_N_PORT}/status?sid=${SID}&sig=${POLL_SIG}" \
         2>/dev/null)
+    _log "[poll] SID=$SID node=$SESSION_NODE raw_reply='$LIVE'"
 
-    LIVE_AMOUNT=$(cat "$AMT_PATH" 2>/dev/null)
-    LIVE_AMOUNT=${LIVE_AMOUNT:-0}
     LIVE_OK=0
     LIVE_ACTIVE=1
     if [ -n "$LIVE" ]; then
-        # NodeMCU answers a sid it doesn't recognize with a signed
-        # "active":false 200 instead of an unsigned 404 (see
-        # handle_coin_status in the firmware) — catch that BEFORE touching
-        # AMT_PATH below, since its "amount":0 means "I have no session",
-        # never "a live session sitting at zero coins".
         case "$LIVE" in *'"active":false'*) LIVE_ACTIVE=0 ;; esac
         RAW_AMT=$(printf '%s' "$LIVE" | grep -o '"amount":[0-9]*' | grep -o '[0-9]*$')
         RAW_SIG=$(printf '%s' "$LIVE" | grep -o '"sig":"[^"]*"' | awk -F'"' '{print $4}')
         EXP_SIG=$(_md5 "${_N_PSK}:${SID}:${RAW_AMT}:status")
+
         # Only trust the amount if NodeMCU signed it with the PSK
         if [ -n "$RAW_SIG" ] && [ "$RAW_SIG" = "$EXP_SIG" ]; then
             LIVE_OK=1
             if [ "$LIVE_ACTIVE" -eq 0 ]; then
-                # NodeMCU has confirmed this sid is no longer live there — a
-                # normal timeout/Done/Cancel already finalized it there, or
-                # it rebooted. But endSession() flips sessionActive to false
-                # and THEN fires the real end-of-session POST to
-                # coin_result.sh as a separate, asynchronous HTTP round trip
-                # (ESP8266 HTTPClient → boa → this CGI stack) — it does not
-                # happen atomically with the flag flip. NodeMCU also always
-                # signs "amount":0 in this exact "active":false reply (see
-                # handle_coin_status) — it never re-exposes the true final
-                # coin count here, so this branch can NOT recover it from
-                # the /status response no matter what, even though
-                # endSession() itself waited out any trailing coin pulses
-                # before computing that final count.
-                #
-                # Finalizing off the very FIRST such poll therefore raced
-                # that POST: a portal poll landing in the gap before
-                # coin_result.sh had written RESULT_PATH banked only the
-                # stale pre-poll cache (below) as a fallback, then deleted
-                # SESSION_PATH — so NodeMCU's real POST, arriving a beat
-                # later with the true (larger) final amount, hit "Session
-                # not found" and was silently discarded. The customer's last
-                # coin (often the one that crossed the rate tier) was lost,
-                # and they saw "Coinslot session expired." despite having
-                # paid enough.
-                #
-                # Tolerate a few consecutive "active:false, no .result yet"
-                # polls — same grace-tolerance pattern as MISS_PATH above —
-                # before falling back to the stale-cache rescue. Bounded to
-                # a couple of seconds, not full RECONNECT_GRACE: NodeMCU is
-                # reachable and has already answered this exact poll, so if
-                # its own POST hasn't landed within that fixed short window,
-                # it's not still coming (see coin_result.sh's Guard 4, which
-                # itself refuses anything older than COIN_TIMEOUT+30s).
-                if [ ! -f "$RESULT_PATH" ]; then
-                    GONE=$(cat "$GONE_PATH" 2>/dev/null); GONE=$(( ${GONE:-0} + 1 ))
-                    echo "$GONE" > "$GONE_PATH" 2>/dev/null
-                    if [ "$GONE" -le "${COIN_RESULT_GRACE_POLLS:-4}" ]; then
-                        PREVIEW=$(_calc_time "$(( BANKED + LIVE_AMOUNT ))")
-                        _ok "{\"status\":\"active\",\"amount\":$(( BANKED + LIVE_AMOUNT )),\"minutes\":${PREVIEW},\"remaining\":0}"
-                    fi
+                # 1. Did coin_result.sh already finalize and write .result?
+                # If so, return its authoritative tally immediately!
+                if [ -f "$RESULT_PATH" ]; then
+                    _R_AMOUNT=$(awk '{print $1}' "$RESULT_PATH")
+                    _R_MINUTES=$(awk '{print $2}' "$RESULT_PATH")
+                    rm -f "$SESSION_PATH" "$MISS_PATH" "$AMT_PATH" "$REM_PATH" "$GONE_PATH" "/tmp/coin_lock_${SESSION_NODE}"
+                    _clear_pending "$SID"
+                    _ok "{\"status\":\"complete\",\"amount\":${_R_AMOUNT:-0},\"minutes\":${_R_MINUTES:-0}}"
+                fi
+
+                # 2. NodeMCU is done, but its POST hasn't arrived yet.
+                # Tolerate up to COIN_RESULT_GRACE_POLLS before falling back to rescue.
+                GONE=$(cat "$GONE_PATH" 2>/dev/null); GONE=$(( ${GONE:-0} + 1 ))
+                echo "$GONE" > "$GONE_PATH" 2>/dev/null
+                _log "[poll] SID=$SID active=false grace_count=$GONE"
+                if [ "$GONE" -le "${COIN_RESULT_GRACE_POLLS:-4}" ]; then
+                    PREVIEW=$(_calc_time "$(( BANKED + LIVE_AMOUNT ))")
+                    _ok "{\"status\":\"active\",\"amount\":$(( BANKED + LIVE_AMOUNT )),\"minutes\":${PREVIEW},\"remaining\":0}"
                 fi
                 rm -f "$GONE_PATH" 2>/dev/null
+
+                # 3. Grace expired with no POST — rescue cached coins as fallback
                 if [ "$LIVE_AMOUNT" -gt 0 ]; then
                     _lock
-                    # Same sid can also be rescued from the start action's
-                    # own resume-check (a client re-clicking "Insert Coin"
-                    # while this exact reboot-triggered poll is in flight),
-                    # or genuinely finalized by NodeMCU's own delayed-but-
-                    # real end-of-session POST landing right now. All three
-                    # write this same .result marker, but only AFTER doing
-                    # their own _bank_add — so without re-checking here,
-                    # whichever of them loses the race would bank the same
-                    # coins again on top of whichever won it. Checking under
-                    # the same _lock every one of those paths shares makes
-                    # this a single atomic "is it still mine to bank" test.
                     if [ -f "$RESULT_PATH" ]; then
                         _unlock
                         _R_AMOUNT=$(awk '{print $1}' "$RESULT_PATH")
@@ -888,70 +841,42 @@ poll)
                     _bank_add "$SESSION_MAC" "$LIVE_AMOUNT"
                     printf '%s 0\n' "$LIVE_AMOUNT" > "$RESULT_PATH"
                     _unlock
-                    # Same income/notification gap as the resume-check
-                    # rescue above: this bypasses coin_result.sh, so record
-                    # and report it here or it never gets counted or seen.
                     /lmepisowifi/hotspot/income.sh add "$LIVE_AMOUNT" >/dev/null 2>&1
                     _L_MSG=$(tpl_render "$TPL_COINS_INSERTED" insertcoinamt "$LIVE_AMOUNT" mac "$SESSION_MAC")
                     ( /lmepisowifi/hotspot/notify.sh "$_L_MSG" "" coins_inserted >/dev/null 2>&1 </dev/null & )
                 fi
                 rm -f "$SESSION_PATH" "$MISS_PATH" "$AMT_PATH" "$REM_PATH" "$GONE_PATH" "/tmp/coin_lock_${SESSION_NODE}"
                 _clear_pending "$SID"
-                _ok "{\"status\":\"expired\",\"amount\":${LIVE_AMOUNT},\"minutes\":$(_calc_time "$LIVE_AMOUNT")}"
+                _ok "{\"status\":\"complete\",\"amount\":${LIVE_AMOUNT},\"minutes\":0}"
             fi
+
             PREV_AMOUNT=$LIVE_AMOUNT          # what we had before this poll
             LIVE_AMOUNT=${RAW_AMT:-0}
             echo "$LIVE_AMOUNT" > "$AMT_PATH" 2>/dev/null
-            # Mirror the PSK-verified total to NON-VOLATILE flash so a blackout
-            # in the next instant can't erase it. This is the crash protection
-            # that used to live on the NodeMCU's own flash — moved here to stop
-            # the ESP8266 heap fragmentation that broke request signing.
-            #
-            # Write ONLY when the total actually changed (a new coin dropped),
-            # not on every ~1s poll. Coins arrive infrequently, so this keeps
-            # flash writes proportional to coins inserted instead of to time —
-            # we don't want to just relocate the ESP8266's flash-wear problem
-            # onto the router. A zero total has nothing to recover, so skip it.
+
             if [ "${LIVE_AMOUNT:-0}" -gt 0 ] && [ "${LIVE_AMOUNT:-0}" != "${PREV_AMOUNT:-0}" ]; then
                 _persist_pending "$SID" "$SESSION_MAC" "$LIVE_AMOUNT" "$CREATED_AT" "$SESSION_NODE"
             fi
-            # NodeMCU is alive and confirms this session is still active there
-            # — refresh the heartbeat so a long rolling session stays open.
-            # NODE_ID is carried through unchanged: this is a heartbeat
-            # refresh, not a re-bind, and dropping it here would silently
-            # fall back to node 1 on every poll after the first.
+
             printf '%s %s %s %s\n' "$SESSION_MAC" "$CREATED_AT" "$NOW" "$SESSION_NODE" \
                 > "/tmp/coin_sessions/${SID}.tmp" 2>/dev/null \
                 && mv "/tmp/coin_sessions/${SID}.tmp" "$SESSION_PATH"
+
             RAW_REM=$(printf '%s' "$LIVE" | grep -o '"remaining":[0-9]*' | grep -o '[0-9]*$')
             if [ -n "$RAW_REM" ]; then
                 REMAINING=$RAW_REM
-                echo "$REMAINING" > "$REM_PATH" 2>/dev/null  # freeze point for a later reconnect
+                echo "$REMAINING" > "$REM_PATH" 2>/dev/null
             fi
         else
             _coin_alert "POLL_SIG_MISMATCH" "SID=${SID} poll response received but HMAC invalid (got=${RAW_SIG} want=${EXP_SIG}) — PSK mismatch or tampered reply"
         fi
     fi
 
-    # LIVE_AMOUNT is only this session's own coins — fold in whatever's
-    # already banked (BANKED, resolved up top) so the amount/minutes handed
-    # back match what coin_result.sh will actually grant at session end (it
-    # folds the same BANKED balance into its own tier calculation), instead
-    # of the modal showing just the fraction that arrived in this session.
     TOTAL_AMOUNT=$(( BANKED + LIVE_AMOUNT ))
 
     if [ "$LIVE_OK" -eq 1 ]; then
         rm -f "$MISS_PATH"
     else
-        # NodeMCU didn't answer this poll. Tolerate a few consecutive misses
-        # (polling runs about once a second, so ~4s) to absorb a one-off wifi
-        # hiccup and keep reporting "active". Past that we do NOT expire the
-        # session anymore — we report "reconnecting" and hold everything: the
-        # coins already inserted are preserved, the countdown is frozen (we
-        # hand back the last NodeMCU-reported "remaining" and the frontend
-        # stops ticking), and the heartbeat is intentionally NOT refreshed so
-        # the RECONNECT_GRACE expiry above can eventually fire if the slot is
-        # truly dead. The customer can still press Done/Cancel meanwhile.
         MISSES=$(cat "$MISS_PATH" 2>/dev/null)
         MISSES=$(( ${MISSES:-0} + 1 ))
         echo "$MISSES" > "$MISS_PATH" 2>/dev/null

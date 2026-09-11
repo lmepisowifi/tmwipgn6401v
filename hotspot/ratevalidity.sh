@@ -288,11 +288,14 @@ rv_grant() {
         exist_deadline=${RV_DEADLINE:-0}
 
         combined_remain=$(( exist_remain + new_secs ))
-        new_deadline=$(( now_up + new_valid_secs ))
-        if [ "$exist_deadline" -gt 0 ] && [ "$exist_deadline" -lt "$new_deadline" ]; then
-            combined_deadline=$exist_deadline
+
+        # STACK VALIDITY:
+        # If the customer already has an active deadline in the future,
+        # add the new validity window on top of the existing deadline.
+        if [ "$exist_deadline" -gt "$now_up" ]; then
+            combined_deadline=$(( exist_deadline + new_valid_secs ))
         else
-            combined_deadline=$new_deadline
+            combined_deadline=$(( now_up + new_valid_secs ))
         fi
 
         if _rv_stage_excl "$RV_LIVE_FILE" "$mac"; then

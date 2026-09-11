@@ -377,24 +377,18 @@ _MB=$(printf '%s %s\n' "$COIN_RATES" "$TOTAL_FOR_TIME" | awk '
             tm=mins[i]; mins[i]=mins[j]; mins[j]=tm
             tv=vals[i]; vals[i]=vals[j]; vals[j]=tv
         }
-    rem=amt+0; total=0; expmins=0; minval=0
+rem=amt+0; total=0; expmins=0; totval=0
     for(i=1;i<=n;i++) if(pesos[i]>0){
         c=int(rem/pesos[i])
         if(c>0){
             total+=c*mins[i]; rem-=c*pesos[i]
-            # Track how many minutes of this grant came from a tier with a
-            # validity window (":validity" in COIN_RATES - see
-            # ratevalidity.sh), and the SHORTEST such window actually used.
-            # A purchase spanning several tiers (e.g. one 10-peso tier plus
-            # two 1-peso tiers to make 12 pesos) gets the most conservative
-            # combined deadline rather than the longest one.
             if(vals[i]>0){
                 expmins+=c*mins[i]
-                if(minval==0 || vals[i]<minval) minval=vals[i]
+                totval+=c*vals[i]
             }
         }
     }
-    print total, rem, expmins, minval
+    print total, rem, expmins, totval
 }')
 MINUTES=$(printf '%s' "$_MB" | awk '{print $1}')
 BANK_AFTER=$(printf '%s' "$_MB" | awk '{print $2}')
