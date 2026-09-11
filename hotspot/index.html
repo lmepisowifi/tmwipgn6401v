@@ -2405,10 +2405,11 @@ function startCoinPoll() {
           // the normal active handling re-syncs and restarts the countdown.
           if (_coinReconnecting) exitCoinReconnecting();
           if (!_isFinalizing) {
-            // Play coin sound whenever the amount goes up (new coin detected)
-            if (typeof d.amount === 'number' && d.amount > _lastCoinAmount) {
-              playCoinSound();
-            }
+            // A new coin just landed — this forces the countdown reset below
+            // regardless of how close the server's fresh "remaining" happens
+            // to land to the current local value.
+            var coinInserted = typeof d.amount === 'number' && d.amount > _lastCoinAmount;
+            if (coinInserted) playCoinSound();
             _lastCoinAmount = typeof d.amount === 'number' ? d.amount : _lastCoinAmount;
 
             document.getElementById('coin-amount').textContent = d.amount;
@@ -2438,7 +2439,14 @@ function startCoinPoll() {
               }
             }
 
-            if (typeof d.remaining === 'number' && Math.abs(d.remaining - _coinWinLeft) > 2) {
+            // Resync/restart the countdown whenever a coin was just detected,
+            // not only when the reported remaining differs from our local
+            // value by more than 2s — a coin dropped while the window's
+            // fresh reset value happened to be within 2s of where the local
+            // counter already sat used to slip past that diff check, so the
+            // on-screen timer just kept counting down as if the coin had no
+            // effect even though the server/NodeMCU had genuinely reset it.
+            if (typeof d.remaining === 'number' && (coinInserted || Math.abs(d.remaining - _coinWinLeft) > 2)) {
               _coinInitialLeft = d.remaining;
               _coinStartTime = Date.now();
               _coinWinLeft = d.remaining;
@@ -2571,6 +2579,26 @@ function doCoinDone() {
 
   _isFinalizing = true;
   if (_coinWinID) { clearInterval(_coinWinID); _coinWinID = null; }
+  // Cancel any force-close timer left over from the coin window having
+  // already hit 0 before Done was clicked. Left alone, it could still fire
+  // after we've asked the server to finalize — tearing down the still-
+  // running poll loop and showing a false "Coinslot session expired." error
+  // even though the time was (or was about to be) granted successfully.
+  if (_coinExpireTimeout) { clearTimeout(_coinExpireTimeout); _coinExpireTimeout = null; }
+  // Replace it with a finalize-specific watchdog so a customer never gets
+  // stuck on "Finishing up." forever if the server genuinely never answers.
+  // stopCoinPoll() (called by the poll loop's 'complete'/'expired' handling)
+  // clears this the moment a real terminal status arrives.
+  _coinExpireTimeout = setTimeout(function() {
+    _coinExpireTimeout = null;
+    if (!_coinSID) return; // poll already reached a terminal status
+    stopCoinPoll();
+    _pauseCoinBgMusic();
+    _hideCoinButtons();
+    _isFinalizing = false;
+    toastr.warning('Still finishing up — check your session status.');
+    setTimeout(function() { _coinSID = null; closeCoinModalUI(); checkStatus(); }, 2000);
+  }, 15000);
   // If we were mid-reconnect, tear down the banner — the user chose to bank
   // their coins, so "Finishing up." should replace the reconnecting message.
   exitCoinReconnecting();

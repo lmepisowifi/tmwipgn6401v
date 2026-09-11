@@ -247,6 +247,46 @@ function fmtTime(s){
 }
 
 var _sessions = [];
+var _sessionRows = {}; // mac -> <tr>, reused across polls so in-place updates don't touch the DOM tree of unrelated rows
+
+function renderSessionRow(tr, s){
+    var pct = s.total>0 ? Math.max(0,Math.min(100,Math.round((s.remaining/s.total)*100))) : 0;
+    var pill = s.coins_only
+        ? '<span class="status-pill coins-only">Coins Only</span>'
+        : (s.paused
+            ? '<span class="status-pill paused">Paused</span>'
+            : '<span class="status-pill active">Active</span>');
+    var coinsCell = (s.available_coins > 0)
+        ? '<span class="coins-badge">&#8369;'+s.available_coins+'</span>'
+        : '<span style="color:var(--text-secondary);">—</span>';
+    // coins_only rows have no session to show a progress bar or
+    // kick/±time — below the minimum tier, remaining/total/used
+    // are always 0.
+    var progressCell = s.coins_only
+        ? '<span style="font-size:11px;color:var(--text-secondary);">No session</span>'
+        : ('<div class="time-bar-wrap"><div class="time-bar" style="width:'+pct+'%;"></div></div>'+
+           '<div style="font-size:10px;color:var(--text-secondary);margin-top:2px;">'+fmtTime(s.used)+' used / '+fmtTime(s.total)+' total</div>');
+    var actionsCell = s.coins_only
+        ? '<button class="btn btn-sm btn-outline-danger" style="min-width:108px;" onclick="removeUser(\''+s.mac+'\',this)">Remove</button>'
+        : ('<div style="display:flex;flex-direction:column;gap:3px;min-width:108px;">'+
+                '<div style="display:flex;gap:3px;">'+
+                    '<button class="btn btn-sm btn-outline-primary flex-fill" onclick="openTimeModal(\'add\',\''+s.mac+'\',this)">+Time</button>'+
+                    '<button class="btn btn-sm btn-outline-warning flex-fill" onclick="openTimeModal(\'remove\',\''+s.mac+'\',this)">−Time</button>'+
+                '</div>'+
+                '<div style="display:flex;gap:3px;">'+
+                    '<button class="btn btn-sm btn-outline-secondary flex-fill" onclick="kickUser(\''+s.mac+'\',this)">Kick</button>'+
+                    '<button class="btn btn-sm btn-outline-danger flex-fill" onclick="removeUser(\''+s.mac+'\',this)">Remove</button>'+
+                '</div>'+
+           '</div>');
+    tr.innerHTML=
+        '<td><code>'+s.mac+'</code></td>'+
+        '<td><code>'+s.ip+'</code></td>'+
+        '<td style="white-space:nowrap;">'+(s.coins_only ? '—' : fmtTime(s.remaining))+'</td>'+
+        '<td>'+progressCell+'</td>'+
+        '<td>'+pill+'</td>'+
+        '<td>'+coinsCell+'</td>'+
+        '<td>'+actionsCell+'</td>';
+}
 
 function loadSessions(){
     var empty = document.getElementById('sessions-empty');
@@ -254,7 +294,16 @@ function loadSessions(){
     var tbody = document.getElementById('sessions-tbody');
     var cnt   = document.getElementById('session-count');
     var kab   = document.getElementById('kick-all-btn');
-    empty.textContent='Loading…'; empty.style.display='block'; tbl.style.display='none';
+
+    // Only show the "Loading…" skeleton (which hides the table) before the
+    // very first render. The 10s auto-refresh used to run this same
+    // hide-then-rebuild path on every tick, which collapsed the table's
+    // height for a moment — resetting anyone's scroll position who was
+    // partway down the page — and tore down/recreated every row even when
+    // nothing changed, causing the flicker. Background polls now update
+    // rows in place instead.
+    var firstLoad = !tbody.children.length;
+    if (firstLoad) { empty.textContent='Loading…'; empty.style.display='block'; tbl.style.display='none'; }
 
     fetch('/cgi-bin/hotspot.cgi?action=sessions', { cache:'no-store' })
         .then(function(r){ return r.json(); })
@@ -263,52 +312,33 @@ function loadSessions(){
             cnt.textContent = arr.length ? arr.length + ' session' + (arr.length>1?'s':'') : '';
             kab.style.display = arr.length ? '' : 'none';
             if (!arr.length){
+                _sessionRows = {};
+                tbody.innerHTML='';
                 empty.textContent='No active sessions'; empty.style.display='block'; tbl.style.display='none'; return;
             }
-            tbody.innerHTML='';
+
+            var seen = {}, prevRow = null;
             arr.forEach(function(s){
-                var pct = s.total>0 ? Math.max(0,Math.min(100,Math.round((s.remaining/s.total)*100))) : 0;
-                var pill = s.coins_only
-                    ? '<span class="status-pill coins-only">Coins Only</span>'
-                    : (s.paused
-                        ? '<span class="status-pill paused">Paused</span>'
-                        : '<span class="status-pill active">Active</span>');
-                var coinsCell = (s.available_coins > 0)
-                    ? '<span class="coins-badge">&#8369;'+s.available_coins+'</span>'
-                    : '<span style="color:var(--text-secondary);">—</span>';
-                // coins_only rows have no session to show a progress bar or
-                // kick/±time — below the minimum tier, remaining/total/used
-                // are always 0.
-                var progressCell = s.coins_only
-                    ? '<span style="font-size:11px;color:var(--text-secondary);">No session</span>'
-                    : ('<div class="time-bar-wrap"><div class="time-bar" style="width:'+pct+'%;"></div></div>'+
-                       '<div style="font-size:10px;color:var(--text-secondary);margin-top:2px;">'+fmtTime(s.used)+' used / '+fmtTime(s.total)+' total</div>');
-                var actionsCell = s.coins_only
-                    ? '<button class="btn btn-sm btn-outline-danger" style="min-width:108px;" onclick="removeUser(\''+s.mac+'\',this)">Remove</button>'
-                    : ('<div style="display:flex;flex-direction:column;gap:3px;min-width:108px;">'+
-                            '<div style="display:flex;gap:3px;">'+
-                                '<button class="btn btn-sm btn-outline-primary flex-fill" onclick="openTimeModal(\'add\',\''+s.mac+'\',this)">+Time</button>'+
-                                '<button class="btn btn-sm btn-outline-warning flex-fill" onclick="openTimeModal(\'remove\',\''+s.mac+'\',this)">−Time</button>'+
-                            '</div>'+
-                            '<div style="display:flex;gap:3px;">'+
-                                '<button class="btn btn-sm btn-outline-secondary flex-fill" onclick="kickUser(\''+s.mac+'\',this)">Kick</button>'+
-                                '<button class="btn btn-sm btn-outline-danger flex-fill" onclick="removeUser(\''+s.mac+'\',this)">Remove</button>'+
-                            '</div>'+
-                       '</div>');
-                var tr=document.createElement('tr');
-                tr.innerHTML=
-                    '<td><code>'+s.mac+'</code></td>'+
-                    '<td><code>'+s.ip+'</code></td>'+
-                    '<td style="white-space:nowrap;">'+(s.coins_only ? '—' : fmtTime(s.remaining))+'</td>'+
-                    '<td>'+progressCell+'</td>'+
-                    '<td>'+pill+'</td>'+
-                    '<td>'+coinsCell+'</td>'+
-                    '<td>'+actionsCell+'</td>';
-                tbody.appendChild(tr);
+                var tr = _sessionRows[s.mac];
+                if (!tr) { tr = document.createElement('tr'); _sessionRows[s.mac] = tr; }
+                renderSessionRow(tr, s);
+                // Keep DOM order matching the server's array order without
+                // discarding/recreating nodes that are already positioned correctly.
+                var wantNext = prevRow ? prevRow.nextSibling : tbody.firstChild;
+                if (wantNext !== tr) tbody.insertBefore(tr, wantNext);
+                prevRow = tr;
+                seen[s.mac] = true;
             });
+            // Drop rows for sessions that ended since the last poll.
+            Object.keys(_sessionRows).forEach(function(mac){
+                if (!seen[mac]) { _sessionRows[mac].remove(); delete _sessionRows[mac]; }
+            });
+
             empty.style.display='none'; tbl.style.display='table';
         })
-        .catch(function(){ empty.textContent='Failed to load sessions'; });
+        .catch(function(){
+            if (firstLoad) { empty.textContent='Failed to load sessions'; empty.style.display='block'; tbl.style.display='none'; }
+        });
 }
 
 function kickUser(mac, btn){

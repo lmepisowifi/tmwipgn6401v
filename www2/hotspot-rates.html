@@ -88,7 +88,14 @@
 
     <!-- ═══ WiFi Rates ═══ -->
     <div class="card">
-        <div class="card-header">WiFi Rates</div>
+        <div class="card-header d-flex align-items-center justify-content-between gap-2">
+            <span>WiFi Rates</span>
+            <div class="d-flex gap-2">
+                <button class="btn btn-sm btn-outline-secondary" onclick="exportRates()">Export</button>
+                <button class="btn btn-sm btn-outline-secondary" onclick="document.getElementById('rates-import-file-input').click()">Import</button>
+                <input type="file" id="rates-import-file-input" accept=".txt" style="display:none;" onchange="handleImportRatesFile(this)">
+            </div>
+        </div>
         <div class="card-body">
             <div class="field-hint mb-2">
                 Peso amounts and the time each one buys. Customers see these exact rates in the
@@ -177,6 +184,48 @@ function collectRates(){
         if(p&&total>0) pairs.push(p+':'+total);
     });
     return pairs.join(' ');
+}
+
+/* ── Export / Import ── */
+function exportRates(){
+    var rates=collectRates();
+    if(!rates){ toastr.warning('No rates to export'); return; }
+    var text=rates.split(' ').join('\n')+'\n';
+    var blob=new Blob([text],{type:'text/plain'});
+    var url=URL.createObjectURL(blob);
+    var a=document.createElement('a');
+    var ts=new Date().toISOString().slice(0,19).replace(/[:T]/g,'-');
+    a.href=url; a.download='wifi_rates_export_'+ts+'.txt';
+    document.body.appendChild(a); a.click(); document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+}
+function parseRatesText(text){
+    var pairs=[], skipped=0;
+    (text||'').split(/\s+/).forEach(function(tok){
+        if(!tok) return;
+        var m=tok.match(/^(\d+):(\d+)$/);
+        if(m && parseInt(m[1],10)>0 && parseInt(m[2],10)>0) pairs.push(m[1]+':'+m[2]);
+        else skipped++;
+    });
+    return{rateStr:pairs.join(' '),count:pairs.length,skipped:skipped};
+}
+function handleImportRatesFile(input){
+    var file=input.files&&input.files[0];
+    if(!file) return;
+    var reader=new FileReader();
+    reader.onload=function(e){
+        var parsed=parseRatesText(e.target.result);
+        if(!parsed.count){ toastr.error('No valid rates found in file'); return; }
+        var existing=document.querySelectorAll('#coin-rate-rows .coin-rate-entry').length;
+        if(existing && !confirm('Replace the '+existing+' rate row(s) below with the '+parsed.count+' from this file?\n\nClick Save Rates afterward to apply.')) return;
+        buildRateRows(parsed.rateStr);
+        var msg='Imported '+parsed.count+' rate'+(parsed.count!==1?'s':'');
+        if(parsed.skipped) msg+=' ('+parsed.skipped+' line'+(parsed.skipped!==1?'s':'')+' skipped)';
+        toastr.info(msg+' — click Save Rates to apply');
+    };
+    reader.onerror=function(){ toastr.error('Could not read file'); };
+    reader.readAsText(file);
+    input.value='';
 }
 
 /* ── Config load ── */

@@ -332,8 +332,8 @@
                 var bar = document.getElementById('s-mem-bar');
                 if(bar){ bar.style.width=pct+'%'; bar.className='progress-bar'+(pct>=75?' bg-danger':pct>=50?' bg-warning':''); }
                 var diskPct = d.disk_pct||0;
-                if(d.disk_total_mb !== undefined){
-                    set('s-disk-text', esc(d.disk_used_mb)+'/'+esc(d.disk_total_mb)+' MB');
+                if(d.disk_avail_mb !== undefined){
+                    set('s-disk-text', esc(d.disk_used_mb)+' used / '+esc(d.disk_avail_mb)+' MB free');
                     var diskBar = document.getElementById('s-disk-bar');
                     if(diskBar){ diskBar.style.width=diskPct+'%'; diskBar.className='progress-bar'+(diskPct>=90?' bg-danger':diskPct>=75?' bg-warning':''); }
                 }
