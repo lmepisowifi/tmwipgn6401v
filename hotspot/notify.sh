@@ -421,7 +421,8 @@ _hs_norm_mac() {
 CMD_REGISTRY="status|Check router uptime|cmd_status
 reboot|Reboot the router|cmd_reboot
 hotspotstats|View hotspot status, sessions, and income|cmd_hotspot_stats
-activeusers|List active/paused users: MAC + time left|cmd_active_users
+activeusers|List active users: MAC + time left|cmd_active_users
+users|List active and paused users: MAC + status + time left|cmd_users
 kick|Kick a user offline: /kick <mac>|cmd_kick
 addtime|Add time: /addtime <mac> <minutes>|cmd_add_time
 removetime|Remove time: /removetime <mac> <minutes>|cmd_remove_time"
@@ -518,6 +519,41 @@ cmd_hotspot_stats() {
 # persisted) — as a MAC/status/remaining table. Sent as a Markdown code
 # block (see RESPONSE_MODE) so the columns actually line up in Telegram.
 cmd_active_users() {
+    local UPTIME out="" header count=0 mac expiry total rem
+
+    UPTIME=$(bb awk '{print int($1)}' /proc/uptime 2>/dev/null); [ -n "$UPTIME" ] || UPTIME=0
+
+    if [ -f "$SESSION_DATA" ]; then
+        while read -r mac expiry total; do
+            [ -n "$mac" ] || continue
+            rem=$(( expiry - UPTIME ))
+            [ "$rem" -le 0 ] && continue
+            count=$(( count + 1 ))
+            out="${out}$(printf '%-17s %s' "$mac" "$(_hs_fmt_secs "$rem")")
+"
+        done < "$SESSION_DATA"
+    fi
+
+    if [ "$count" -eq 0 ]; then
+        RESPONSE=$(tpl_render "$TPL_CMD_ACTIVEUSERS_EMPTY")
+        return
+    fi
+
+    local FENCE
+    FENCE='```'
+    header=$(printf '%-17s %s' "MAC" "REMAINING")
+    RESPONSE="${FENCE}
+${header}
+${out}${FENCE}"
+    RESPONSE_MODE="Markdown"
+}
+
+# /users — like /activeusers but also lists paused sessions (with a STATUS
+# column since it now mixes the two). /activeusers dropped paused rows
+# (see above) since a command literally named "active users" silently
+# including paused ones was misleading; this is the combined view for
+# whoever wants both at once.
+cmd_users() {
     local UPTIME out="" header count=0 mac expiry total rem status fmt
 
     UPTIME=$(bb awk '{print int($1)}' /proc/uptime 2>/dev/null); [ -n "$UPTIME" ] || UPTIME=0
@@ -542,7 +578,7 @@ cmd_active_users() {
     fi
 
     if [ "$count" -eq 0 ]; then
-        RESPONSE=$(tpl_render "$TPL_CMD_ACTIVEUSERS_EMPTY")
+        RESPONSE=$(tpl_render "$TPL_CMD_USERS_EMPTY")
         return
     fi
 
@@ -806,8 +842,8 @@ _bot_post_json() {
 
 # wget POST of a chat_id/text reply — replaces `curl -s -d ... -d ...`.
 # $3 (optional) is a Telegram parse_mode ("Markdown") — used by
-# cmd_active_users so its table renders as an aligned code block instead
-# of plain text with the spacing collapsed.
+# cmd_active_users/cmd_users so their tables render as an aligned code
+# block instead of plain text with the spacing collapsed.
 _bot_send_reply() {
     local chat_id="$1" text="$2" mode="$3" enc body
     enc=$(urlenc "$text")
@@ -869,6 +905,7 @@ BOT_AUTOSTART="0"
 # CMD_ENABLED_REBOOT="1"
 # CMD_ENABLED_HOTSPOTSTATS="1"
 # CMD_ENABLED_ACTIVEUSERS="1"
+# CMD_ENABLED_USERS="1"
 # CMD_ENABLED_KICK="1"
 # CMD_ENABLED_ADDTIME="1"
 # CMD_ENABLED_REMOVETIME="1"

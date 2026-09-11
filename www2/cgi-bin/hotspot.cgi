@@ -2737,6 +2737,7 @@ if echo "$QS" | $BB grep -q "action=bot_templates_get"; then
 \"cmd_hotspotstats_notinstalled\":\"$(esc_json "$TPL_CMD_HOTSPOTSTATS_NOTINSTALLED")\",\
 \"cmd_hotspotstats\":\"$(esc_json "$TPL_CMD_HOTSPOTSTATS")\",\
 \"cmd_activeusers_empty\":\"$(esc_json "$TPL_CMD_ACTIVEUSERS_EMPTY")\",\
+\"cmd_users_empty\":\"$(esc_json "$TPL_CMD_USERS_EMPTY")\",\
 \"cmd_kick_usage\":\"$(esc_json "$TPL_CMD_KICK_USAGE")\",\
 \"cmd_kick_ok\":\"$(esc_json "$TPL_CMD_KICK_OK")\",\
 \"cmd_kick_none\":\"$(esc_json "$TPL_CMD_KICK_NONE")\",\
@@ -2784,6 +2785,7 @@ if echo "$QS" | $BB grep -q "action=bot_templates_set"; then
         echo "TPL_CMD_HOTSPOTSTATS_NOTINSTALLED=\"$(san "$(fget cmd_hotspotstats_notinstalled)")\""
         echo "TPL_CMD_HOTSPOTSTATS=\"$(san "$(fget cmd_hotspotstats)")\""
         echo "TPL_CMD_ACTIVEUSERS_EMPTY=\"$(san "$(fget cmd_activeusers_empty)")\""
+        echo "TPL_CMD_USERS_EMPTY=\"$(san "$(fget cmd_users_empty)")\""
         echo "TPL_CMD_KICK_USAGE=\"$(san "$(fget cmd_kick_usage)")\""
         echo "TPL_CMD_KICK_OK=\"$(san "$(fget cmd_kick_ok)")\""
         echo "TPL_CMD_KICK_NONE=\"$(san "$(fget cmd_kick_none)")\""

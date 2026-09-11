@@ -48,7 +48,7 @@ DEFAULT_TPL_TEST_ALERT='this is a test message.'
 
 # ── Built-in defaults: router-bot command responses ───────────────────────
 # What notify.sh's --bot command router (/status, /reboot, /hotspotstats,
-# /activeusers, /kick, /addtime, /removetime) replies with. Separate from
+# /activeusers, /users, /kick, /addtime, /removetime) replies with. Separate from
 # the event templates above (different override file, different admin UI
 # card — "Bot Command Responses") since they're edited from a different
 # place, but rendered through the SAME tpl_render() below.
@@ -56,7 +56,8 @@ DEFAULT_TPL_CMD_STATUS='*uptime*'
 DEFAULT_TPL_CMD_REBOOT='The system is rebooting..'
 DEFAULT_TPL_CMD_HOTSPOTSTATS_NOTINSTALLED='Hotspot module is not installed on this device.'
 DEFAULT_TPL_CMD_HOTSPOTSTATS='Hotspot: *running*%0AActive sessions: *sessions*%0A%0AIncome%0AToday: ₱*daily*%0AMonth: ₱*monthly*%0AYear: ₱*yearly*%0AAll-time: ₱*total*'
-DEFAULT_TPL_CMD_ACTIVEUSERS_EMPTY='No active or paused users right now.'
+DEFAULT_TPL_CMD_ACTIVEUSERS_EMPTY='No active users right now.'
+DEFAULT_TPL_CMD_USERS_EMPTY='No active or paused users right now.'
 DEFAULT_TPL_CMD_KICK_USAGE='Usage: /kick <mac>%0AExample: /kick aa:bb:cc:dd:ee:ff%0ASee /activeusers for a list of connected MACs.'
 DEFAULT_TPL_CMD_KICK_OK='Kicked *mac* — had *remainingtime* remaining, now paused (can resume with the same balance).'
 DEFAULT_TPL_CMD_KICK_NONE='No active session found for *mac* — nothing to kick.'
@@ -103,6 +104,7 @@ TPL_CMD_REBOOT="${TPL_CMD_REBOOT:-$DEFAULT_TPL_CMD_REBOOT}"
 TPL_CMD_HOTSPOTSTATS_NOTINSTALLED="${TPL_CMD_HOTSPOTSTATS_NOTINSTALLED:-$DEFAULT_TPL_CMD_HOTSPOTSTATS_NOTINSTALLED}"
 TPL_CMD_HOTSPOTSTATS="${TPL_CMD_HOTSPOTSTATS:-$DEFAULT_TPL_CMD_HOTSPOTSTATS}"
 TPL_CMD_ACTIVEUSERS_EMPTY="${TPL_CMD_ACTIVEUSERS_EMPTY:-$DEFAULT_TPL_CMD_ACTIVEUSERS_EMPTY}"
+TPL_CMD_USERS_EMPTY="${TPL_CMD_USERS_EMPTY:-$DEFAULT_TPL_CMD_USERS_EMPTY}"
 TPL_CMD_KICK_USAGE="${TPL_CMD_KICK_USAGE:-$DEFAULT_TPL_CMD_KICK_USAGE}"
 TPL_CMD_KICK_OK="${TPL_CMD_KICK_OK:-$DEFAULT_TPL_CMD_KICK_OK}"
 TPL_CMD_KICK_NONE="${TPL_CMD_KICK_NONE:-$DEFAULT_TPL_CMD_KICK_NONE}"
