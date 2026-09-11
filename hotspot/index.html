@@ -2558,7 +2558,7 @@ function startCoinPoll() {
                       : (parseInt(document.getElementById('coin-amount').textContent, 10) || 0);
           if (amt > 0) {
             if (d.minutes > 0) {
-              toastr.success('Coinslot disconnected, but your ' + amt + ' peso(s) were saved as time.');
+              toastr.success('Coinslot unexpectedly disconnected, but your ' + amt + ' peso(s) was saved to the available coins.');
             } else {
               toastr.error('Coinslot session expired.');
             }

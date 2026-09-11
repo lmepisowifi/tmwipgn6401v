@@ -1,5 +1,0 @@
-version=1.0.0
-url=https://github.com/lmepisowifi/lmepisowifi/releases/download/v1.0.0/lmepisowifi-1.0.0.tar.gz
-sha256=REPLACE_WITH_SHA256_OF_THE_UPLOADED_ASSET
-min_version=0.0.0
-notes=Initial release
