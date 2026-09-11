@@ -26,6 +26,8 @@ HOTSPOT_BR="br1"
 [ -f /tmp/coin_config.env ] && . /tmp/coin_config.env
 # MAC-randomization session-continuity fix (cookie-based device fingerprint)
 [ -f /lmepisowifi/hotspot/macfix.sh ] && . /lmepisowifi/hotspot/macfix.sh
+# WiFi Rates expiry/validity bucket tracking - see ratevalidity.sh.
+[ -f /lmepisowifi/hotspot/ratevalidity.sh ] && . /lmepisowifi/hotspot/ratevalidity.sh
 
 # Admin-configured (see hotspot.cgi's config_set / RELOAD_AFTER_TIME_ADDED_ENABLED).
 # Surfaced on every status poll, logged-in or not, so index.html has it
@@ -146,7 +148,20 @@ if [ -n "$SESSION" ]; then
         USED=$(( TOTAL - REMAINING ))
         [ "$USED" -lt 0 ] && USED=0
 
-        $BB echo "{\"logged_in\":true,\"mac\":\"$CLIENT_MAC\",\"ip\":\"$CLIENT_IP\",\"remaining\":$REMAINING,\"total\":$TOTAL,\"used\":$USED,\"reload_after_time_added\":$RELOAD_BOOL,${CONN_JSON}${AVAIL_JSON}}"
+        # Read-only peek at this MAC's expiring (rate-validity) bucket, if
+        # it has one, so the portal can show "Xh Ym expires in Xh Ym" above
+        # the countdown — see ratevalidity.sh. RV_DEADLINE is an internal
+        # uptime value with no meaning to the browser, so convert it to a
+        # relative "seconds until deadline" figure here before it goes out
+        # as JSON. 0/0 for a purely no-expiry balance (the common case).
+        rv_peek "$CLIENT_MAC" "$NOW"
+        RV_DEADLINE_SECS=0
+        if [ "${RV_DEADLINE:-0}" -gt 0 ]; then
+            RV_DEADLINE_SECS=$(( RV_DEADLINE - NOW ))
+            [ "$RV_DEADLINE_SECS" -lt 0 ] && RV_DEADLINE_SECS=0
+        fi
+
+        $BB echo "{\"logged_in\":true,\"mac\":\"$CLIENT_MAC\",\"ip\":\"$CLIENT_IP\",\"remaining\":$REMAINING,\"total\":$TOTAL,\"used\":$USED,\"reload_after_time_added\":$RELOAD_BOOL,\"expiring_remaining\":${RV_REMAIN:-0},\"expiring_deadline_secs\":${RV_DEADLINE_SECS:-0},${CONN_JSON}${AVAIL_JSON}}"
         _unlock
         exit 0
     fi
@@ -159,6 +174,25 @@ if [ -n "$PAUSED" ]; then
     REMAINING=$($BB echo "$PAUSED" | $BB awk '{print $3}')
     TOTAL=$($BB echo "$PAUSED" | $BB awk '{print $4}')
     [ -z "$TOTAL" ] && TOTAL=$REMAINING
+
+    # Read-only peek: if part of REMAINING belongs to a rate whose
+    # validity window has already elapsed, or that got rebooted through,
+    # while paused, report it as already gone rather than a stale number
+    # the next actual Resume would just reject anyway. The real
+    # forfeiture is only committed at Resume (see login.sh /
+    # ratevalidity.sh) — this never writes anything.
+    _RV_NOW=$($BB awk '{print int($1)}' /proc/uptime)
+    rv_peek_forfeit "$CLIENT_MAC" "$_RV_NOW"
+    if [ "${RV_FORFEITABLE:-0}" -gt 0 ]; then
+        REMAINING=$(( REMAINING - RV_FORFEITABLE )); [ "$REMAINING" -lt 0 ] && REMAINING=0
+        TOTAL=$(( TOTAL - RV_FORFEITABLE ));         [ "$TOTAL" -lt 0 ]     && TOTAL=0
+        RV_REMAIN=0; RV_DEADLINE=0
+    fi
+    RV_DEADLINE_SECS=0
+    if [ "${RV_DEADLINE:-0}" -gt 0 ]; then
+        RV_DEADLINE_SECS=$(( RV_DEADLINE - _RV_NOW ))
+        [ "$RV_DEADLINE_SECS" -lt 0 ] && RV_DEADLINE_SECS=0
+    fi
     # AUTO_RESUME_ENABLED comes from coin_config.env (sourced above). When
     # on, index.html fires the same resume=1 request the "Resume Time"
     # button sends, on this same status poll — no tap needed. login.sh
@@ -179,7 +213,7 @@ if [ -n "$PAUSED" ]; then
     if [ "${AUTO_RESUME_ENABLED:-0}" = "1" ] && [ "${AUTO_PAUSE_ENABLED:-1}" = "1" ]; then
         [ -f "$AUTO_PAUSED_FILE" ] && $BB grep -qx "$CLIENT_MAC" "$AUTO_PAUSED_FILE" 2>/dev/null && AR_BOOL="true"
     fi
-    $BB echo "{\"logged_in\":false,\"mac\":\"$CLIENT_MAC\",\"ip\":\"$CLIENT_IP\",\"has_paused\":true,\"remaining\":$REMAINING,\"total\":$TOTAL,\"auto_resume\":$AR_BOOL,\"reload_after_time_added\":$RELOAD_BOOL,${CONN_JSON}${AVAIL_JSON}}"
+    $BB echo "{\"logged_in\":false,\"mac\":\"$CLIENT_MAC\",\"ip\":\"$CLIENT_IP\",\"has_paused\":true,\"remaining\":$REMAINING,\"total\":$TOTAL,\"auto_resume\":$AR_BOOL,\"reload_after_time_added\":$RELOAD_BOOL,\"expiring_remaining\":${RV_REMAIN:-0},\"expiring_deadline_secs\":${RV_DEADLINE_SECS:-0},${CONN_JSON}${AVAIL_JSON}}"
 else
     $BB echo "{\"logged_in\":false,\"mac\":\"$CLIENT_MAC\",\"ip\":\"$CLIENT_IP\",\"reload_after_time_added\":$RELOAD_BOOL,${CONN_JSON}${AVAIL_JSON}}"
 fi

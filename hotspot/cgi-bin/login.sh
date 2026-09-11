@@ -28,6 +28,8 @@ AUTO_PAUSED_FILE="/lmepisowifi/hotspot_data/auto_paused.txt"
 [ -f /tmp/coin_config.env ] && . /tmp/coin_config.env
 # MAC-randomization session-continuity fix (cookie-based device fingerprint)
 [ -f /lmepisowifi/hotspot/macfix.sh ] && . /lmepisowifi/hotspot/macfix.sh
+# WiFi Rates expiry/validity bucket tracking - see ratevalidity.sh.
+[ -f /lmepisowifi/hotspot/ratevalidity.sh ] && . /lmepisowifi/hotspot/ratevalidity.sh
 
 _unlock() { rm -f /tmp/hotspot_session.lock/pid 2>/dev/null; rmdir /tmp/hotspot_session.lock 2>/dev/null; }
 _lock() {
@@ -218,6 +220,21 @@ if [ -n "$RESUME" ] && [ "$RESUME" = "1" ]; then
         DURATION=$($BB echo "$PAUSED" | $BB awk '{print $3}')
         TOTAL=$($BB echo "$PAUSED" | $BB awk '{print $4}')
         [ -z "$TOTAL" ] && TOTAL=$DURATION
+
+        # Resolve this MAC's expiring (rate-validity) bucket now, before
+        # granting anything back: a chunk of DURATION may belong to a rate
+        # whose validity window already elapsed (or that was rebooted
+        # through) while the session sat paused, in which case it's
+        # forfeited rather than resumed — see ratevalidity.sh. No-op
+        # (RV_FORFEITED stays 0) for a balance with no expiring bucket at
+        # all.
+        rv_apply_resume "$CLIENT_MAC" "$NOW"
+        if [ "${RV_FORFEITED:-0}" -gt 0 ]; then
+            DURATION=$(( DURATION - RV_FORFEITED ))
+            TOTAL=$(( TOTAL - RV_FORFEITED ))
+            [ "$DURATION" -lt 0 ] && DURATION=0
+            [ "$TOTAL" -lt 0 ] && TOTAL=0
+        fi
     elif [ -n "$EXISTING" ]; then
         # Stale "Resume Time" click landing after the session was already
         # activated some other way — most commonly: the user inserted coins
@@ -238,6 +255,14 @@ if [ -n "$RESUME" ] && [ "$RESUME" = "1" ]; then
     fi
     
     if [ "$DURATION" -le 0 ]; then
+        # A forfeiture above may have just emptied out what used to be a
+        # genuine paused balance — drop the now-stale row from USERS_FILE
+        # too, so status.sh / the admin session list / a repeat resume
+        # attempt all see the truth (nothing left) instead of the
+        # pre-forfeiture REMAIN/TOTAL that rate-validity no longer backs.
+        if [ -n "$PAUSED" ] && _users_file_stage_excl "$CLIENT_MAC"; then
+            _users_file_commit
+        fi
         echo '{"ok":false,"error":"no_paused_session"}'
         exit 0
     fi
@@ -381,7 +406,20 @@ if [ -z "$RESUME" ]; then
             PAUSED_DURATION=$($BB echo "$PAUSED" | $BB awk '{print $3}')
             PAUSED_TOTAL=$($BB echo "$PAUSED" | $BB awk '{print $4}')
             [ -z "$PAUSED_TOTAL" ] && PAUSED_TOTAL=$PAUSED_DURATION
-            
+
+            # Same rate-validity resolution as the explicit Resume branch
+            # above: a voucher redemption landing on a paused balance is
+            # just as much a paused→active transition, so any expired or
+            # rebooted-through expiring-bucket chunk forfeits here too
+            # instead of being silently carried forward forever.
+            rv_apply_resume "$CLIENT_MAC" "$NOW"
+            if [ "${RV_FORFEITED:-0}" -gt 0 ]; then
+                PAUSED_DURATION=$(( PAUSED_DURATION - RV_FORFEITED ))
+                PAUSED_TOTAL=$(( PAUSED_TOTAL - RV_FORFEITED ))
+                [ "$PAUSED_DURATION" -lt 0 ] && PAUSED_DURATION=0
+                [ "$PAUSED_TOTAL" -lt 0 ] && PAUSED_TOTAL=0
+            fi
+
             DURATION=$(( VOUCHER_DURATION + PAUSED_DURATION ))
             NEW_TOTAL=$(( PAUSED_TOTAL + VOUCHER_DURATION ))
             STACKED=true

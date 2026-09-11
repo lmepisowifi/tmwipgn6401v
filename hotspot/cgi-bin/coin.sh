@@ -19,6 +19,12 @@
 
 [ -f /tmp/coin_config.env ] && . /tmp/coin_config.env
 [ -f /lmepisowifi/hotspot/macfix.sh ] && . /lmepisowifi/hotspot/macfix.sh
+# WiFi Rates expiry/validity bucket tracking - see ratevalidity.sh. Not
+# used directly by this script (coin_result.sh does the actual grant), but
+# sourced so mf_reconcile()'s MAC-migration below can also carry a
+# customer's rate-validity bucket forward regardless of which CGI script a
+# rotating MAC happens to hit first.
+[ -f /lmepisowifi/hotspot/ratevalidity.sh ] && . /lmepisowifi/hotspot/ratevalidity.sh
 # tpl_render + TPL_COINS_INSERTED — needed so the two bank-rescue paths
 # below (RESUME_NODEMCU_OFFLINE and poll's LIVE_ACTIVE:false branch) can
 # send the same customer-facing Telegram/Discord notification a normal

@@ -287,6 +287,11 @@ mf_reconcile() {
         # constant (not caller-supplied), so this runs for every caller
         # regardless of whether SESSION_FILE/USERS_FILE were defined.
         _mf_reconcile_row "$MACFIX_BANK_FILE" "$PREV_MAC" "$CLIENT_MAC" bank
+        # WiFi Rates expiry/validity bucket — optional feature file, only
+        # migrated when the caller has also sourced ratevalidity.sh. Not
+        # implemented as one more _mf_reconcile_row "kind" because it needs
+        # that file's own live/frozen split, not a generic single-file sum.
+        command -v rv_reconcile_mac >/dev/null 2>&1 && rv_reconcile_mac "$PREV_MAC" "$CLIENT_MAC"
     fi
 
     # Keep the mapping current regardless: a first-ever sighting of this

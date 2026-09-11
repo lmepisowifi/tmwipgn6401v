@@ -28,6 +28,8 @@ AUTO_PAUSED_FILE="/lmepisowifi/hotspot_data/auto_paused.txt"
 [ -f /tmp/coin_config.env ] && . /tmp/coin_config.env
 # MAC-randomization session-continuity fix (cookie-based device fingerprint)
 [ -f /lmepisowifi/hotspot/macfix.sh ] && . /lmepisowifi/hotspot/macfix.sh
+# WiFi Rates expiry/validity bucket tracking - see ratevalidity.sh.
+[ -f /lmepisowifi/hotspot/ratevalidity.sh ] && . /lmepisowifi/hotspot/ratevalidity.sh
 
 _unlock() { rm -f /tmp/hotspot_session.lock/pid 2>/dev/null; rmdir /tmp/hotspot_session.lock 2>/dev/null; }
 _lock() {
@@ -156,6 +158,12 @@ REMAINING=$(( EXPIRY - NOW ))
 
 $BB grep -v "^$CLIENT_MAC " "$SESSION_FILE" > "${SESSION_FILE}.tmp"
 $BB mv "${SESSION_FILE}.tmp" "$SESSION_FILE"
+
+# Freeze this MAC's expiring (rate-validity) bucket, if it has one, into
+# its own paused-mode row so its deadline keeps ticking while offline
+# instead of being lost or left stale in "live" (uptime-boundary) form —
+# see ratevalidity.sh. No-op for a purely no-expiry balance.
+rv_freeze "$CLIENT_MAC" "$NOW" "$REMAINING"
 
 # Save paused user to flash master database. Stage+commit is now
 # UNCONDITIONAL (matches hotspot.cgi's admin "kick" handler) - only the

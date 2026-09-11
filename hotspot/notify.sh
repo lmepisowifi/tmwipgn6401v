@@ -311,6 +311,11 @@ json_get() {
 HDATA="/lmepisowifi/hotspot_data"
 SESSION_DATA="/tmp/active_sessions.txt"
 USERS_FILE="$HDATA/users.txt"
+# WiFi Rates expiry/validity bucket tracking - see ratevalidity.sh. Only
+# /kick needs it (addtime/removetime are plain admin adjustments and
+# intentionally leave a customer's existing expiring bucket, if any,
+# untouched).
+[ -f /lmepisowifi/hotspot/ratevalidity.sh ] && . /lmepisowifi/hotspot/ratevalidity.sh
 
 _hs_unlock() { rm -f /tmp/hotspot_session.lock/pid 2>/dev/null; rmdir /tmp/hotspot_session.lock 2>/dev/null; }
 _hs_lock() {
@@ -582,6 +587,10 @@ cmd_kick() {
         TOT=$K_TOT
 
         bb grep -v "^$MAC " "$SESSION_DATA" > /tmp/tgkick_s.tmp; bb mv /tmp/tgkick_s.tmp "$SESSION_DATA"
+
+        # Freeze this MAC's expiring (rate-validity) bucket, if it has one
+        # — see ratevalidity.sh. No-op for a purely no-expiry balance.
+        rv_freeze "$MAC" "$UPTIME" "$REM"
 
         mkdir -p "$HDATA"; touch "$USERS_FILE"
         if _hs_stage_excl "$MAC"; then

@@ -630,6 +630,11 @@
       white-space: nowrap; color: var(--text-primary); transition: font-size 0.2s;
     }
 
+    .expiry-notice {
+      font-size: 0.72rem; font-weight: 600; color: #ffffff;
+      margin-bottom: 4px; text-align: center;
+    }
+
     .time-label-main {
       font-size: 0.6rem; color: var(--text-secondary); text-transform: uppercase;
       letter-spacing: 0.1em; margin-top: 6px; margin-bottom: 10px; /* Adjusted smaller */
@@ -884,6 +889,7 @@
         <p class="view-subtitle" id="login-sub">Insert Coins or Enter a voucher code to get online.</p>
 
         <div class="progress-wrap" id="resume-progress-wrap" style="display:none;">
+          <div class="expiry-notice" id="resume-expiry-notice" style="display:none;"></div>
           <div class="time-text-main" id="resume-time">--:--</div>
           <div class="time-label-main">available to resume</div>
           <div class="progress-bg">
@@ -943,6 +949,7 @@
         <p class="view-subtitle">Internet access is active on this device.</p>
 
         <div class="progress-wrap">
+          <div class="expiry-notice" id="status-expiry-notice" style="display:none;"></div>
           <div class="time-text-main" id="time-txt">--:--</div>
           <div class="time-label-main">remaining time</div>
           <div class="progress-bg">
@@ -1454,6 +1461,29 @@ function fmtMinutesLong(mins) {
   return res.join(' ');
 }
 
+/* Shows/hides the small "Xh Ym expires in Xh Ym" line above a countdown
+   for a customer whose remaining time includes a validity-limited (rate
+   expiry) chunk - see ratevalidity.sh / status.sh's expiring_remaining
+   and expiring_deadline_secs fields. deadlineSecs is how many seconds are
+   left before that chunk's deadline, NOT a calendar timestamp - the
+   backend's deadline is tracked against device uptime (see
+   ratevalidity.sh), which has no meaning to the browser, so status.sh
+   already converts it to a relative countdown before it gets here.
+   Hidden entirely for a purely no-expiry balance (remainSecs/deadlineSecs
+   both 0), which is the common case. */
+function updateExpiryNotice(elId, remainSecs, deadlineSecs) {
+  var el = document.getElementById(elId);
+  if (!el) return;
+  if (!(remainSecs > 0) || !(deadlineSecs > 0)) {
+    el.style.display = 'none';
+    return;
+  }
+  var mins = Math.max(1, Math.ceil(remainSecs / 60));
+  var dmins = Math.max(1, Math.ceil(deadlineSecs / 60));
+  el.textContent = fmtMinutesLong(mins) + ' expires in ' + fmtMinutesLong(dmins);
+  el.style.display = 'block';
+}
+
 function fmtExp(mins) {
   var d = Math.floor(mins / 1440);
   var h = Math.floor((mins % 1440) / 60);
@@ -1677,6 +1707,7 @@ function checkStatus() {
         renderDeviceInfo(d, 's');
         if (!_coinSID && !_queuePollID && !_coinPendingWait) show('v-status');
         startTimer(d.remaining, d.total, d.used);
+        updateExpiryNotice('status-expiry-notice', d.expiring_remaining, d.expiring_deadline_secs);
       } else {
         renderDeviceInfo(d, 'l');
 
@@ -1698,6 +1729,7 @@ function checkStatus() {
           loginSub.textContent   = 'You can click the Resume Time Button to continue surfing.';
           
           document.getElementById('resume-progress-wrap').style.display = 'flex';
+          updateExpiryNotice('resume-expiry-notice', d.expiring_remaining, d.expiring_deadline_secs);
           
           var resumeStr = fmtCountdown(d.remaining);
           var resumeEl = document.getElementById('resume-time');

@@ -75,6 +75,8 @@ AUTO_PAUSED_FILE="$HDATA/auto_paused.txt"
 # Below-minimum-tier coin balances banked per-MAC by coin_result.sh — see
 # that file's COIN_BANK_FILE comment for the full explanation.
 COIN_BANK_FILE="$HDATA/coin_bank.txt"
+# WiFi Rates expiry/validity bucket tracking - see ratevalidity.sh.
+[ -f /lmepisowifi/hotspot/ratevalidity.sh ] && . /lmepisowifi/hotspot/ratevalidity.sh
 
 _unlock() { rm -f /tmp/hotspot_session.lock/pid 2>/dev/null; rmdir /tmp/hotspot_session.lock 2>/dev/null; }
 _lock() {
@@ -960,6 +962,10 @@ if echo "$QS" | $BB grep -q "action=kick"; then
         # remove from active
         $BB grep -v "^$MAC " "$SESSION_DATA" > /tmp/kick_s.tmp; $BB mv /tmp/kick_s.tmp "$SESSION_DATA"
 
+        # Freeze this MAC's expiring (rate-validity) bucket, if it has one
+        # — see ratevalidity.sh. No-op for a purely no-expiry balance.
+        rv_freeze "$MAC" "$UPTIME" "$REM"
+
         # add/replace in master db as paused
         mkdir -p "$HDATA"; touch "$USERS_FILE"
         if _users_file_stage_excl "$MAC"; then
@@ -1217,6 +1223,7 @@ if echo "$QS" | $BB grep -q "action=remove_user"; then
     [ -f /tmp/hotspot_ip_map.txt ] && { $BB grep -v "^$MAC " /tmp/hotspot_ip_map.txt > /tmp/rm_i.tmp;           $BB mv /tmp/rm_i.tmp /tmp/hotspot_ip_map.txt; }
     [ -f "$COIN_BANK_FILE" ]       && { $BB grep -v "^$MAC " "$COIN_BANK_FILE"       > /tmp/rm_b.tmp 2>/dev/null; $BB mv /tmp/rm_b.tmp "$COIN_BANK_FILE"; }
     [ -f "$AUTO_PAUSED_FILE" ]     && { $BB grep -vx "$MAC" "$AUTO_PAUSED_FILE"      > /tmp/rm_ap.tmp 2>/dev/null; $BB mv /tmp/rm_ap.tmp "$AUTO_PAUSED_FILE"; }
+    rv_clear "$MAC"
 
     ok_json "{\"ok\":true,\"mac\":\"$MAC\"}"
 fi

@@ -24,6 +24,9 @@ USERS_FILE="${USERS_FILE:-/lmepisowifi/hotspot_data/users.txt}"
 # --- 2b. Customizable Telegram/Discord message templates ---
 [ -f /lmepisowifi/hotspot/notify_templates.sh ] && . /lmepisowifi/hotspot/notify_templates.sh
 
+# --- 2c. WiFi Rates expiry/validity bucket tracking (see ratevalidity.sh) ---
+[ -f /lmepisowifi/hotspot/ratevalidity.sh ] && . /lmepisowifi/hotspot/ratevalidity.sh
+
 # --- 3. Define response and processing helpers ---
 _err() { printf '{"error":"%s"}\n' "$1"; exit 0; }
 _ok()  { printf '%s\n' "$1";           exit 0; }
@@ -367,20 +370,36 @@ TOTAL_FOR_TIME=$(( BANKED + AMOUNT ))
 _MB=$(printf '%s %s\n' "$COIN_RATES" "$TOTAL_FOR_TIME" | awk '
 {
     amt=$NF; n=NF-1
-    for(i=1;i<=n;i++){split($i,a,":");pesos[i]=a[1]+0;mins[i]=a[2]+0}
+    for(i=1;i<=n;i++){split($i,a,":");pesos[i]=a[1]+0;mins[i]=a[2]+0;vals[i]=a[3]+0}
     for(i=1;i<n;i++) for(j=i+1;j<=n;j++)
         if(pesos[j]>pesos[i]){
             tp=pesos[i];pesos[i]=pesos[j];pesos[j]=tp
             tm=mins[i]; mins[i]=mins[j]; mins[j]=tm
+            tv=vals[i]; vals[i]=vals[j]; vals[j]=tv
         }
-    rem=amt+0; total=0
+    rem=amt+0; total=0; expmins=0; minval=0
     for(i=1;i<=n;i++) if(pesos[i]>0){
-        c=int(rem/pesos[i]); total+=c*mins[i]; rem-=c*pesos[i]
+        c=int(rem/pesos[i])
+        if(c>0){
+            total+=c*mins[i]; rem-=c*pesos[i]
+            # Track how many minutes of this grant came from a tier with a
+            # validity window (":validity" in COIN_RATES - see
+            # ratevalidity.sh), and the SHORTEST such window actually used.
+            # A purchase spanning several tiers (e.g. one 10-peso tier plus
+            # two 1-peso tiers to make 12 pesos) gets the most conservative
+            # combined deadline rather than the longest one.
+            if(vals[i]>0){
+                expmins+=c*mins[i]
+                if(minval==0 || vals[i]<minval) minval=vals[i]
+            }
+        }
     }
-    print total, rem
+    print total, rem, expmins, minval
 }')
-MINUTES=${_MB%% *}
-BANK_AFTER=${_MB##* }
+MINUTES=$(printf '%s' "$_MB" | awk '{print $1}')
+BANK_AFTER=$(printf '%s' "$_MB" | awk '{print $2}')
+EXP_MINUTES=$(printf '%s' "$_MB" | awk '{print $3}')
+VALID_MINUTES=$(printf '%s' "$_MB" | awk '{print $4}')
 
 # Whatever's left over (0 once TOTAL_FOR_TIME exactly covers whole tiers)
 # REPLACES the pre-top-up balance rather than adding to it — BANKED was
@@ -450,6 +469,13 @@ if [ "${MINUTES:-0}" -gt 0 ]; then
     fi
     # No longer paused if it was — see AUTO_PAUSED_FILE's declaration above.
     [ -f "$AUTO_PAUSED_FILE" ] && { grep -vx "$CLIENT_MAC" "$AUTO_PAUSED_FILE" > /tmp/coin_ap.tmp 2>/dev/null; mv /tmp/coin_ap.tmp "$AUTO_PAUSED_FILE"; }
+
+    # Merge this grant's expiring portion (if the rate tier(s) it came from
+    # carry a validity window) into the customer's rate-validity bucket —
+    # see ratevalidity.sh. A purchase with no validity at all (the common
+    # case for existing/legacy rates) leaves the bucket untouched beyond
+    # resolving whatever was already there.
+    rv_grant "$CLIENT_MAC" "$(( ${EXP_MINUTES:-0} * 60 ))" "$(( ${VALID_MINUTES:-0} * 60 ))" "$NOW"
 fi
 _unlock
 

@@ -64,6 +64,9 @@
 
         .rate-summary{ font-size:11px; color:var(--text-secondary); flex-basis:100%; }
 
+        /* Validity (expiry) — same field styling as the time duration, muted label */
+        .cr-valid-label{ font-size:11px; color:var(--text-secondary); margin-right:2px; }
+
         /* Remove button — small ghost icon, not a full bootstrap button */
         .cr-remove{
             position:absolute; top:9px; right:8px;
@@ -100,6 +103,11 @@
             <div class="field-hint mb-2">
                 Peso amounts and the time each one buys. Customers see these exact rates in the
                 WiFi Rates list on the login page once at least one rate is added below.
+                Each rate can also have a validity/expiry — leave it blank for no expiry.
+                If a customer pauses their time and doesn't come back before the validity
+                deadline, that rate's unused time is forfeited (any no-expiry time they still
+                have is never affected). Export/Import always include the validity field
+                (0 = no expiry) — older 2-field exports still import fine too.
             </div>
             <div id="coin-rate-rows"></div>
             <div id="coin-rate-empty" class="empty-state" style="display:none;">No rates configured yet — add one below.</div>
@@ -139,15 +147,24 @@ function updateRateSummary(entry){
         entry.querySelector('.cr-days').value,
         entry.querySelector('.cr-hours').value,
         entry.querySelector('.cr-mins').value);
-    entry.querySelector('.rate-summary').textContent=fmtDuration(total);
+    var validity=dhmToMins(
+        entry.querySelector('.cr-vdays').value,
+        entry.querySelector('.cr-vhours').value,
+        entry.querySelector('.cr-vmins').value);
+    var parts=[];
+    var timeStr=fmtDuration(total);
+    if(timeStr) parts.push(timeStr);
+    parts.push(validity>0 ? ('valid '+fmtDuration(validity).replace(/^= /,'')) : 'no expiry');
+    entry.querySelector('.rate-summary').textContent=parts.join(' • ');
 }
 function toggleEmptyState(){
     var wrap=document.getElementById('coin-rate-rows');
     document.getElementById('coin-rate-empty').style.display = wrap.children.length ? 'none' : 'block';
 }
-function addRateRow(peso,mins){
+function addRateRow(peso,mins,validity){
     var wrap=document.getElementById('coin-rate-rows');
     var dhm=minsToDHM(mins);
+    var vdhm=minsToDHM(validity);
     var entry=document.createElement('div');
     entry.className='coin-rate-entry';
     entry.innerHTML=
@@ -161,6 +178,12 @@ function addRateRow(peso,mins){
         +  '<div class="cr-dur-field"><input type="number" class="cr-hours" placeholder="0" value="'+(dhm.h||'')+'" min="0" max="23" oninput="updateRateSummary(this.closest(\'.coin-rate-entry\'))"><span>h</span></div>'
         +  '<div class="cr-dur-field"><input type="number" class="cr-mins" placeholder="0" value="'+(dhm.m||'')+'" min="0" max="59" oninput="updateRateSummary(this.closest(\'.coin-rate-entry\'))"><span>m</span></div>'
         +'</div>'
+        +'<div class="cr-duration">'
+        +  '<span class="cr-valid-label" title="Blank = never expires">Valid:</span>'
+        +  '<div class="cr-dur-field"><input type="number" class="cr-vdays" placeholder="0" value="'+(vdhm.d||'')+'" min="0" oninput="updateRateSummary(this.closest(\'.coin-rate-entry\'))"><span>d</span></div>'
+        +  '<div class="cr-dur-field"><input type="number" class="cr-vhours" placeholder="0" value="'+(vdhm.h||'')+'" min="0" max="23" oninput="updateRateSummary(this.closest(\'.coin-rate-entry\'))"><span>h</span></div>'
+        +  '<div class="cr-dur-field"><input type="number" class="cr-vmins" placeholder="0" value="'+(vdhm.m||'')+'" min="0" max="59" oninput="updateRateSummary(this.closest(\'.coin-rate-entry\'))"><span>m</span></div>'
+        +'</div>'
         +'<div class="rate-summary"></div>';
     wrap.appendChild(entry);
     updateRateSummary(entry);
@@ -171,7 +194,7 @@ function buildRateRows(rateStr){
     if(rateStr){
         rateStr.trim().split(/\s+/).forEach(function(pair){
             if(!pair) return;
-            var parts=pair.split(':'); addRateRow(parts[0]||'',parts[1]||'');
+            var parts=pair.split(':'); addRateRow(parts[0]||'',parts[1]||'',parts[2]||'');
         });
     }
     toggleEmptyState();
@@ -181,7 +204,8 @@ function collectRates(){
     document.querySelectorAll('#coin-rate-rows .coin-rate-entry').forEach(function(entry){
         var p=entry.querySelector('.cr-peso').value.trim();
         var total=dhmToMins(entry.querySelector('.cr-days').value,entry.querySelector('.cr-hours').value,entry.querySelector('.cr-mins').value);
-        if(p&&total>0) pairs.push(p+':'+total);
+        var validity=dhmToMins(entry.querySelector('.cr-vdays').value,entry.querySelector('.cr-vhours').value,entry.querySelector('.cr-vmins').value);
+        if(p&&total>0) pairs.push(p+':'+total+':'+validity);
     });
     return pairs.join(' ');
 }
@@ -203,8 +227,12 @@ function parseRatesText(text){
     var pairs=[], skipped=0;
     (text||'').split(/\s+/).forEach(function(tok){
         if(!tok) return;
-        var m=tok.match(/^(\d+):(\d+)$/);
-        if(m && parseInt(m[1],10)>0 && parseInt(m[2],10)>0) pairs.push(m[1]+':'+m[2]);
+        // Third field (validity, in minutes) is optional for backward
+        // compatibility with exports/pasted lists made before rate
+        // validity existed - missing means "no expiry", same as a rate
+        // configured with its Valid fields left blank.
+        var m=tok.match(/^(\d+):(\d+)(?::(\d+))?$/);
+        if(m && parseInt(m[1],10)>0 && parseInt(m[2],10)>0) pairs.push(m[1]+':'+m[2]+':'+(m[3]||'0'));
         else skipped++;
     });
     return{rateStr:pairs.join(' '),count:pairs.length,skipped:skipped};

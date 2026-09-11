@@ -250,6 +250,11 @@ seed_globals
 # Customizable Telegram/Discord message templates
 [ -f /lmepisowifi/hotspot/notify_templates.sh ] && . /lmepisowifi/hotspot/notify_templates.sh
 
+# WiFi Rates expiry/validity bucket tracking (see ratevalidity.sh) - shared
+# with coin_result.sh/login.sh/logout.sh/status.sh/hotspot.cgi/notify.sh,
+# all of which touch the same per-MAC expiring-time side files.
+[ -f /lmepisowifi/hotspot/ratevalidity.sh ] && . /lmepisowifi/hotspot/ratevalidity.sh
+
 # --lib mode: source this file to get all functions without running the main
 # boot sequence. Used by hotspot.cgi's hotspot_stop to call cleanup_old_hotspot
 # with the exact same logic the script itself trusts.
@@ -1493,6 +1498,12 @@ pause_session() {
     # mac cleanly via the next restore_qos_sessions pass.
     del_user_qos "$mac"
 
+    # Freeze this MAC's expiring (rate-validity) bucket, if it has one, so
+    # its deadline keeps ticking while paused instead of being silently
+    # dropped or left stale in "live" (uptime-boundary) form for a later
+    # read to misinterpret. No-op for a purely no-expiry balance.
+    rv_freeze "$mac" "$now" "$remaining"
+
     _lock
     $BB grep -v "^$mac " "$SESSION_FILE" > "${SESSION_FILE}.tmp" 2>/dev/null
     $BB mv "${SESSION_FILE}.tmp" "$SESSION_FILE"
@@ -2253,6 +2264,7 @@ fi
                         _expired_this_tick=1
                         
                         _users_file_replace_excl "$mac"
+                        rv_clear "$mac"
                         
                         # See pause_session()'s identical comment: re-source
                         # so this long-running watchdog picks up template
