@@ -1,0 +1,333 @@
+From 376818ee412c74fd8fa30e8a5379b2cee5f5d034 Mon Sep 17 00:00:00 2001
+From: Claude <claude@lmepisowifi.local>
+Date: Fri, 11 Sep 2026 00:12:00 +0000
+Subject: [PATCH 2/4] Sync from tmwim2-2050-g40 (added 1 feature, fixed 3 bugs,
+ wifi rates export/import)
+
+Continues this branch's earlier sync commit forward to M2's current
+main (v1.5.39) - one new substantive commit since the last sync point
+(510ce70/v1.5.38):
+
+  - www2/hotspot-rates.html: Export/Import buttons for the WiFi Rates
+    list (download as a .txt file, or pick one to replace the current
+    rows - Save Rates still required afterward to actually apply it).
+  - hotspot/index.html: a coin dropped while the fresh post-coin
+    "remaining" value happened to already be within 2s of the local
+    countdown's current value used to slip past the resync check, so
+    the on-screen timer just kept counting down as if the coin had no
+    effect; also a force-close watchdog on Done so a customer can't get
+    stuck on "Finishing up." forever if the server never answers.
+  - www2/hotspot-sessions.html: the admin sessions table's 10s
+    auto-refresh now updates rows in place instead of tearing down and
+    rebuilding the whole table every tick, which used to reset
+    whoever's scroll position and cause a visible flicker.
+  - www2/index.html: disk-space display now shows used/free instead of
+    used/total (this branch's own LAN 3/4 port-status rows, absent from
+    M2's 2-port version, are untouched - the disk-text fix was applied
+    by hand at the same call site rather than copied wholesale, since a
+    blind file copy would have dropped those two rows).
+
+License-header repo URL adjusted in each copied-over file, same as the
+prior sync commit.
+
+Co-Authored-By: Claude <noreply@anthropic.com>
+---
+ hotspot/index.html         |  38 +++++++++++--
+ www2/hotspot-rates.html    |  51 ++++++++++++++++-
+ www2/hotspot-sessions.html | 112 +++++++++++++++++++++++--------------
+ www2/index.html            |   4 +-
+ 4 files changed, 156 insertions(+), 49 deletions(-)
+
+diff --git a/hotspot/index.html b/hotspot/index.html
+index 8ca8a27..e89b407 100644
+--- a/hotspot/index.html
++++ b/hotspot/index.html
+@@ -2405,10 +2405,11 @@ function startCoinPoll() {
+           // the normal active handling re-syncs and restarts the countdown.
+           if (_coinReconnecting) exitCoinReconnecting();
+           if (!_isFinalizing) {
+-            // Play coin sound whenever the amount goes up (new coin detected)
+-            if (typeof d.amount === 'number' && d.amount > _lastCoinAmount) {
+-              playCoinSound();
+-            }
++            // A new coin just landed — this forces the countdown reset below
++            // regardless of how close the server's fresh "remaining" happens
++            // to land to the current local value.
++            var coinInserted = typeof d.amount === 'number' && d.amount > _lastCoinAmount;
++            if (coinInserted) playCoinSound();
+             _lastCoinAmount = typeof d.amount === 'number' ? d.amount : _lastCoinAmount;
+ 
+             document.getElementById('coin-amount').textContent = d.amount;
+@@ -2438,7 +2439,14 @@ function startCoinPoll() {
+               }
+             }
+ 
+-            if (typeof d.remaining === 'number' && Math.abs(d.remaining - _coinWinLeft) > 2) {
++            // Resync/restart the countdown whenever a coin was just detected,
++            // not only when the reported remaining differs from our local
++            // value by more than 2s — a coin dropped while the window's
++            // fresh reset value happened to be within 2s of where the local
++            // counter already sat used to slip past that diff check, so the
++            // on-screen timer just kept counting down as if the coin had no
++            // effect even though the server/NodeMCU had genuinely reset it.
++            if (typeof d.remaining === 'number' && (coinInserted || Math.abs(d.remaining - _coinWinLeft) > 2)) {
+               _coinInitialLeft = d.remaining;
+               _coinStartTime = Date.now();
+               _coinWinLeft = d.remaining;
+@@ -2571,6 +2579,26 @@ function doCoinDone() {
+ 
+   _isFinalizing = true;
+   if (_coinWinID) { clearInterval(_coinWinID); _coinWinID = null; }
++  // Cancel any force-close timer left over from the coin window having
++  // already hit 0 before Done was clicked. Left alone, it could still fire
++  // after we've asked the server to finalize — tearing down the still-
++  // running poll loop and showing a false "Coinslot session expired." error
++  // even though the time was (or was about to be) granted successfully.
++  if (_coinExpireTimeout) { clearTimeout(_coinExpireTimeout); _coinExpireTimeout = null; }
++  // Replace it with a finalize-specific watchdog so a customer never gets
++  // stuck on "Finishing up." forever if the server genuinely never answers.
++  // stopCoinPoll() (called by the poll loop's 'complete'/'expired' handling)
++  // clears this the moment a real terminal status arrives.
++  _coinExpireTimeout = setTimeout(function() {
++    _coinExpireTimeout = null;
++    if (!_coinSID) return; // poll already reached a terminal status
++    stopCoinPoll();
++    _pauseCoinBgMusic();
++    _hideCoinButtons();
++    _isFinalizing = false;
++    toastr.warning('Still finishing up — check your session status.');
++    setTimeout(function() { _coinSID = null; closeCoinModalUI(); checkStatus(); }, 2000);
++  }, 15000);
+   // If we were mid-reconnect, tear down the banner — the user chose to bank
+   // their coins, so "Finishing up." should replace the reconnecting message.
+   exitCoinReconnecting();
+diff --git a/www2/hotspot-rates.html b/www2/hotspot-rates.html
+index bf05c3b..63dd9f7 100644
+--- a/www2/hotspot-rates.html
++++ b/www2/hotspot-rates.html
+@@ -88,7 +88,14 @@
+ 
+     <!-- ═══ WiFi Rates ═══ -->
+     <div class="card">
+-        <div class="card-header">WiFi Rates</div>
++        <div class="card-header d-flex align-items-center justify-content-between gap-2">
++            <span>WiFi Rates</span>
++            <div class="d-flex gap-2">
++                <button class="btn btn-sm btn-outline-secondary" onclick="exportRates()">Export</button>
++                <button class="btn btn-sm btn-outline-secondary" onclick="document.getElementById('rates-import-file-input').click()">Import</button>
++                <input type="file" id="rates-import-file-input" accept=".txt" style="display:none;" onchange="handleImportRatesFile(this)">
++            </div>
++        </div>
+         <div class="card-body">
+             <div class="field-hint mb-2">
+                 Peso amounts and the time each one buys. Customers see these exact rates in the
+@@ -179,6 +186,48 @@ function collectRates(){
+     return pairs.join(' ');
+ }
+ 
++/* ── Export / Import ── */
++function exportRates(){
++    var rates=collectRates();
++    if(!rates){ toastr.warning('No rates to export'); return; }
++    var text=rates.split(' ').join('\n')+'\n';
++    var blob=new Blob([text],{type:'text/plain'});
++    var url=URL.createObjectURL(blob);
++    var a=document.createElement('a');
++    var ts=new Date().toISOString().slice(0,19).replace(/[:T]/g,'-');
++    a.href=url; a.download='wifi_rates_export_'+ts+'.txt';
++    document.body.appendChild(a); a.click(); document.body.removeChild(a);
++    URL.revokeObjectURL(url);
++}
++function parseRatesText(text){
++    var pairs=[], skipped=0;
++    (text||'').split(/\s+/).forEach(function(tok){
++        if(!tok) return;
++        var m=tok.match(/^(\d+):(\d+)$/);
++        if(m && parseInt(m[1],10)>0 && parseInt(m[2],10)>0) pairs.push(m[1]+':'+m[2]);
++        else skipped++;
++    });
++    return{rateStr:pairs.join(' '),count:pairs.length,skipped:skipped};
++}
++function handleImportRatesFile(input){
++    var file=input.files&&input.files[0];
++    if(!file) return;
++    var reader=new FileReader();
++    reader.onload=function(e){
++        var parsed=parseRatesText(e.target.result);
++        if(!parsed.count){ toastr.error('No valid rates found in file'); return; }
++        var existing=document.querySelectorAll('#coin-rate-rows .coin-rate-entry').length;
++        if(existing && !confirm('Replace the '+existing+' rate row(s) below with the '+parsed.count+' from this file?\n\nClick Save Rates afterward to apply.')) return;
++        buildRateRows(parsed.rateStr);
++        var msg='Imported '+parsed.count+' rate'+(parsed.count!==1?'s':'');
++        if(parsed.skipped) msg+=' ('+parsed.skipped+' line'+(parsed.skipped!==1?'s':'')+' skipped)';
++        toastr.info(msg+' — click Save Rates to apply');
++    };
++    reader.onerror=function(){ toastr.error('Could not read file'); };
++    reader.readAsText(file);
++    input.value='';
++}
++
+ /* ── Config load ── */
+ function loadConfig(){
+     fetch('/cgi-bin/hotspot.cgi?action=config_get',{cache:'no-store'})
+diff --git a/www2/hotspot-sessions.html b/www2/hotspot-sessions.html
+index 0355013..2339725 100644
+--- a/www2/hotspot-sessions.html
++++ b/www2/hotspot-sessions.html
+@@ -247,6 +247,46 @@ function fmtTime(s){
+ }
+ 
+ var _sessions = [];
++var _sessionRows = {}; // mac -> <tr>, reused across polls so in-place updates don't touch the DOM tree of unrelated rows
++
++function renderSessionRow(tr, s){
++    var pct = s.total>0 ? Math.max(0,Math.min(100,Math.round((s.remaining/s.total)*100))) : 0;
++    var pill = s.coins_only
++        ? '<span class="status-pill coins-only">Coins Only</span>'
++        : (s.paused
++            ? '<span class="status-pill paused">Paused</span>'
++            : '<span class="status-pill active">Active</span>');
++    var coinsCell = (s.available_coins > 0)
++        ? '<span class="coins-badge">&#8369;'+s.available_coins+'</span>'
++        : '<span style="color:var(--text-secondary);">—</span>';
++    // coins_only rows have no session to show a progress bar or
++    // kick/±time — below the minimum tier, remaining/total/used
++    // are always 0.
++    var progressCell = s.coins_only
++        ? '<span style="font-size:11px;color:var(--text-secondary);">No session</span>'
++        : ('<div class="time-bar-wrap"><div class="time-bar" style="width:'+pct+'%;"></div></div>'+
++           '<div style="font-size:10px;color:var(--text-secondary);margin-top:2px;">'+fmtTime(s.used)+' used / '+fmtTime(s.total)+' total</div>');
++    var actionsCell = s.coins_only
++        ? '<button class="btn btn-sm btn-outline-danger" style="min-width:108px;" onclick="removeUser(\''+s.mac+'\',this)">Remove</button>'
++        : ('<div style="display:flex;flex-direction:column;gap:3px;min-width:108px;">'+
++                '<div style="display:flex;gap:3px;">'+
++                    '<button class="btn btn-sm btn-outline-primary flex-fill" onclick="openTimeModal(\'add\',\''+s.mac+'\',this)">+Time</button>'+
++                    '<button class="btn btn-sm btn-outline-warning flex-fill" onclick="openTimeModal(\'remove\',\''+s.mac+'\',this)">−Time</button>'+
++                '</div>'+
++                '<div style="display:flex;gap:3px;">'+
++                    '<button class="btn btn-sm btn-outline-secondary flex-fill" onclick="kickUser(\''+s.mac+'\',this)">Kick</button>'+
++                    '<button class="btn btn-sm btn-outline-danger flex-fill" onclick="removeUser(\''+s.mac+'\',this)">Remove</button>'+
++                '</div>'+
++           '</div>');
++    tr.innerHTML=
++        '<td><code>'+s.mac+'</code></td>'+
++        '<td><code>'+s.ip+'</code></td>'+
++        '<td style="white-space:nowrap;">'+(s.coins_only ? '—' : fmtTime(s.remaining))+'</td>'+
++        '<td>'+progressCell+'</td>'+
++        '<td>'+pill+'</td>'+
++        '<td>'+coinsCell+'</td>'+
++        '<td>'+actionsCell+'</td>';
++}
+ 
+ function loadSessions(){
+     var empty = document.getElementById('sessions-empty');
+@@ -254,7 +294,16 @@ function loadSessions(){
+     var tbody = document.getElementById('sessions-tbody');
+     var cnt   = document.getElementById('session-count');
+     var kab   = document.getElementById('kick-all-btn');
+-    empty.textContent='Loading…'; empty.style.display='block'; tbl.style.display='none';
++
++    // Only show the "Loading…" skeleton (which hides the table) before the
++    // very first render. The 10s auto-refresh used to run this same
++    // hide-then-rebuild path on every tick, which collapsed the table's
++    // height for a moment — resetting anyone's scroll position who was
++    // partway down the page — and tore down/recreated every row even when
++    // nothing changed, causing the flicker. Background polls now update
++    // rows in place instead.
++    var firstLoad = !tbody.children.length;
++    if (firstLoad) { empty.textContent='Loading…'; empty.style.display='block'; tbl.style.display='none'; }
+ 
+     fetch('/cgi-bin/hotspot.cgi?action=sessions', { cache:'no-store' })
+         .then(function(r){ return r.json(); })
+@@ -263,52 +312,33 @@ function loadSessions(){
+             cnt.textContent = arr.length ? arr.length + ' session' + (arr.length>1?'s':'') : '';
+             kab.style.display = arr.length ? '' : 'none';
+             if (!arr.length){
++                _sessionRows = {};
++                tbody.innerHTML='';
+                 empty.textContent='No active sessions'; empty.style.display='block'; tbl.style.display='none'; return;
+             }
+-            tbody.innerHTML='';
++
++            var seen = {}, prevRow = null;
+             arr.forEach(function(s){
+-                var pct = s.total>0 ? Math.max(0,Math.min(100,Math.round((s.remaining/s.total)*100))) : 0;
+-                var pill = s.coins_only
+-                    ? '<span class="status-pill coins-only">Coins Only</span>'
+-                    : (s.paused
+-                        ? '<span class="status-pill paused">Paused</span>'
+-                        : '<span class="status-pill active">Active</span>');
+-                var coinsCell = (s.available_coins > 0)
+-                    ? '<span class="coins-badge">&#8369;'+s.available_coins+'</span>'
+-                    : '<span style="color:var(--text-secondary);">—</span>';
+-                // coins_only rows have no session to show a progress bar or
+-                // kick/±time — below the minimum tier, remaining/total/used
+-                // are always 0.
+-                var progressCell = s.coins_only
+-                    ? '<span style="font-size:11px;color:var(--text-secondary);">No session</span>'
+-                    : ('<div class="time-bar-wrap"><div class="time-bar" style="width:'+pct+'%;"></div></div>'+
+-                       '<div style="font-size:10px;color:var(--text-secondary);margin-top:2px;">'+fmtTime(s.used)+' used / '+fmtTime(s.total)+' total</div>');
+-                var actionsCell = s.coins_only
+-                    ? '<button class="btn btn-sm btn-outline-danger" style="min-width:108px;" onclick="removeUser(\''+s.mac+'\',this)">Remove</button>'
+-                    : ('<div style="display:flex;flex-direction:column;gap:3px;min-width:108px;">'+
+-                            '<div style="display:flex;gap:3px;">'+
+-                                '<button class="btn btn-sm btn-outline-primary flex-fill" onclick="openTimeModal(\'add\',\''+s.mac+'\',this)">+Time</button>'+
+-                                '<button class="btn btn-sm btn-outline-warning flex-fill" onclick="openTimeModal(\'remove\',\''+s.mac+'\',this)">−Time</button>'+
+-                            '</div>'+
+-                            '<div style="display:flex;gap:3px;">'+
+-                                '<button class="btn btn-sm btn-outline-secondary flex-fill" onclick="kickUser(\''+s.mac+'\',this)">Kick</button>'+
+-                                '<button class="btn btn-sm btn-outline-danger flex-fill" onclick="removeUser(\''+s.mac+'\',this)">Remove</button>'+
+-                            '</div>'+
+-                       '</div>');
+-                var tr=document.createElement('tr');
+-                tr.innerHTML=
+-                    '<td><code>'+s.mac+'</code></td>'+
+-                    '<td><code>'+s.ip+'</code></td>'+
+-                    '<td style="white-space:nowrap;">'+(s.coins_only ? '—' : fmtTime(s.remaining))+'</td>'+
+-                    '<td>'+progressCell+'</td>'+
+-                    '<td>'+pill+'</td>'+
+-                    '<td>'+coinsCell+'</td>'+
+-                    '<td>'+actionsCell+'</td>';
+-                tbody.appendChild(tr);
++                var tr = _sessionRows[s.mac];
++                if (!tr) { tr = document.createElement('tr'); _sessionRows[s.mac] = tr; }
++                renderSessionRow(tr, s);
++                // Keep DOM order matching the server's array order without
++                // discarding/recreating nodes that are already positioned correctly.
++                var wantNext = prevRow ? prevRow.nextSibling : tbody.firstChild;
++                if (wantNext !== tr) tbody.insertBefore(tr, wantNext);
++                prevRow = tr;
++                seen[s.mac] = true;
+             });
++            // Drop rows for sessions that ended since the last poll.
++            Object.keys(_sessionRows).forEach(function(mac){
++                if (!seen[mac]) { _sessionRows[mac].remove(); delete _sessionRows[mac]; }
++            });
++
+             empty.style.display='none'; tbl.style.display='table';
+         })
+-        .catch(function(){ empty.textContent='Failed to load sessions'; });
++        .catch(function(){
++            if (firstLoad) { empty.textContent='Failed to load sessions'; empty.style.display='block'; tbl.style.display='none'; }
++        });
+ }
+ 
+ function kickUser(mac, btn){
+diff --git a/www2/index.html b/www2/index.html
+index 9cfded3..a7115dd 100644
+--- a/www2/index.html
++++ b/www2/index.html
+@@ -332,8 +332,8 @@
+                 var bar = document.getElementById('s-mem-bar');
+                 if(bar){ bar.style.width=pct+'%'; bar.className='progress-bar'+(pct>=75?' bg-danger':pct>=50?' bg-warning':''); }
+                 var diskPct = d.disk_pct||0;
+-                if(d.disk_total_mb !== undefined){
+-                    set('s-disk-text', esc(d.disk_used_mb)+'/'+esc(d.disk_total_mb)+' MB');
++                if(d.disk_avail_mb !== undefined){
++                    set('s-disk-text', esc(d.disk_used_mb)+' used / '+esc(d.disk_avail_mb)+' MB free');
+                     var diskBar = document.getElementById('s-disk-bar');
+                     if(diskBar){ diskBar.style.width=diskPct+'%'; diskBar.className='progress-bar'+(diskPct>=90?' bg-danger':diskPct>=75?' bg-warning':''); }
+                 }
+-- 
+2.43.0
+
