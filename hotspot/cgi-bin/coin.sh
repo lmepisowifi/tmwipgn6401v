@@ -724,6 +724,7 @@ poll)
     MISS_PATH="${SESSION_PATH}.miss"
     AMT_PATH="${SESSION_PATH}.amt"
     REM_PATH="${SESSION_PATH}.rem"
+    GONE_PATH="${SESSION_PATH}.gone"
 
     # Once the customer has already clicked Done/Cancel (the node's lock
     # flipped to CANCELLING — see the cancel action), there is no reason to
@@ -786,7 +787,7 @@ poll)
                 ( /lmepisowifi/hotspot/notify.sh "$_G_MSG" "" coins_inserted >/dev/null 2>&1 </dev/null & )
             fi
         fi
-        rm -f "$SESSION_PATH" "$MISS_PATH" "$AMT_PATH" "$REM_PATH" "$LOCK_FILE_FOR_NODE"
+        rm -f "$SESSION_PATH" "$MISS_PATH" "$AMT_PATH" "$REM_PATH" "$GONE_PATH" "$LOCK_FILE_FOR_NODE"
         _clear_pending "$SID"   # session abandoned → drop the non-volatile mirror
         _ok "{\"status\":\"expired\",\"amount\":${GIVEUP_AMT},\"minutes\":$(_calc_time "$GIVEUP_AMT")}"
     fi
@@ -815,17 +816,48 @@ poll)
         if [ -n "$RAW_SIG" ] && [ "$RAW_SIG" = "$EXP_SIG" ]; then
             LIVE_OK=1
             if [ "$LIVE_ACTIVE" -eq 0 ]; then
-                # NodeMCU has AUTHORITATIVELY confirmed this sid is no
-                # longer live there — a normal timeout/Done/Cancel already
-                # finalized it, or it rebooted. Bank whatever we last
-                # verified for it (same rescue the resume-check's offline
-                # path uses) and stamp the same .result duplicate-guard, so
-                # a late-arriving real grant for this exact sid (a normal
-                # end POST that got delayed, or a flash-crash recovery
-                # replay) becomes a no-op instead of a double credit.
-                # Resolves in one round trip instead of waiting out 4
-                # misses and then the full RECONNECT_GRACE window to reach
-                # the same conclusion the slow way.
+                # NodeMCU has confirmed this sid is no longer live there — a
+                # normal timeout/Done/Cancel already finalized it there, or
+                # it rebooted. But endSession() flips sessionActive to false
+                # and THEN fires the real end-of-session POST to
+                # coin_result.sh as a separate, asynchronous HTTP round trip
+                # (ESP8266 HTTPClient → boa → this CGI stack) — it does not
+                # happen atomically with the flag flip. NodeMCU also always
+                # signs "amount":0 in this exact "active":false reply (see
+                # handle_coin_status) — it never re-exposes the true final
+                # coin count here, so this branch can NOT recover it from
+                # the /status response no matter what, even though
+                # endSession() itself waited out any trailing coin pulses
+                # before computing that final count.
+                #
+                # Finalizing off the very FIRST such poll therefore raced
+                # that POST: a portal poll landing in the gap before
+                # coin_result.sh had written RESULT_PATH banked only the
+                # stale pre-poll cache (below) as a fallback, then deleted
+                # SESSION_PATH — so NodeMCU's real POST, arriving a beat
+                # later with the true (larger) final amount, hit "Session
+                # not found" and was silently discarded. The customer's last
+                # coin (often the one that crossed the rate tier) was lost,
+                # and they saw "Coinslot session expired." despite having
+                # paid enough.
+                #
+                # Tolerate a few consecutive "active:false, no .result yet"
+                # polls — same grace-tolerance pattern as MISS_PATH above —
+                # before falling back to the stale-cache rescue. Bounded to
+                # a couple of seconds, not full RECONNECT_GRACE: NodeMCU is
+                # reachable and has already answered this exact poll, so if
+                # its own POST hasn't landed within that fixed short window,
+                # it's not still coming (see coin_result.sh's Guard 4, which
+                # itself refuses anything older than COIN_TIMEOUT+30s).
+                if [ ! -f "$RESULT_PATH" ]; then
+                    GONE=$(cat "$GONE_PATH" 2>/dev/null); GONE=$(( ${GONE:-0} + 1 ))
+                    echo "$GONE" > "$GONE_PATH" 2>/dev/null
+                    if [ "$GONE" -le "${COIN_RESULT_GRACE_POLLS:-4}" ]; then
+                        PREVIEW=$(_calc_time "$(( BANKED + LIVE_AMOUNT ))")
+                        _ok "{\"status\":\"active\",\"amount\":$(( BANKED + LIVE_AMOUNT )),\"minutes\":${PREVIEW},\"remaining\":0}"
+                    fi
+                fi
+                rm -f "$GONE_PATH" 2>/dev/null
                 if [ "$LIVE_AMOUNT" -gt 0 ]; then
                     _lock
                     # Same sid can also be rescued from the start action's
@@ -843,7 +875,7 @@ poll)
                         _unlock
                         _R_AMOUNT=$(awk '{print $1}' "$RESULT_PATH")
                         _R_MINUTES=$(awk '{print $2}' "$RESULT_PATH")
-                        rm -f "$SESSION_PATH" "$MISS_PATH" "$AMT_PATH" "$REM_PATH" "/tmp/coin_lock_${SESSION_NODE}"
+                        rm -f "$SESSION_PATH" "$MISS_PATH" "$AMT_PATH" "$REM_PATH" "$GONE_PATH" "/tmp/coin_lock_${SESSION_NODE}"
                         _clear_pending "$SID"
                         _ok "{\"status\":\"complete\",\"amount\":${_R_AMOUNT:-0},\"minutes\":${_R_MINUTES:-0}}"
                     fi
@@ -857,7 +889,7 @@ poll)
                     _L_MSG=$(tpl_render "$TPL_COINS_INSERTED" insertcoinamt "$LIVE_AMOUNT" mac "$SESSION_MAC")
                     ( /lmepisowifi/hotspot/notify.sh "$_L_MSG" "" coins_inserted >/dev/null 2>&1 </dev/null & )
                 fi
-                rm -f "$SESSION_PATH" "$MISS_PATH" "$AMT_PATH" "$REM_PATH" "/tmp/coin_lock_${SESSION_NODE}"
+                rm -f "$SESSION_PATH" "$MISS_PATH" "$AMT_PATH" "$REM_PATH" "$GONE_PATH" "/tmp/coin_lock_${SESSION_NODE}"
                 _clear_pending "$SID"
                 _ok "{\"status\":\"expired\",\"amount\":${LIVE_AMOUNT},\"minutes\":$(_calc_time "$LIVE_AMOUNT")}"
             fi
