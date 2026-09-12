@@ -2351,21 +2351,18 @@ if echo "$QS" | $BB grep -q "action=coin_queue_set"; then
 fi
 
 # ================================================================
-# POST ?action=coin_reset
-# Wipes the NodeMCU's WiFi config and drops it back into the open
-# PisoWifi-Setup AP for re-provisioning. This replaces the old
-# coin.sh?action=reset on the PUBLIC captive portal, which had no
-# access control at all — any connected hotspot client could hit it.
-# This version lives behind the same admin session gate as every
-# other action in this file (see top of file), so only an
-# authenticated admin can trigger it.
+# POST ?action=nodemcu_reset  body: id (also handles action=coin_reset)
+# Factory resets any NodeMCU unit (#1 or #2+) back into PisoWifi-Setup AP:
+#   1. GET /nonce         → fresh single-use nonce
+#   2. GET /reset?token   → token = md5(PSK:nonce:reset)
 # ================================================================
-if echo "$QS" | $BB grep -q "action=coin_reset"; then
-    load_coin_env
-    NIP="${NODEMCU_IP:-$(read_lmehspt_var NODEMCU_IP)}"
-    NPT="${NODEMCU_PORT:-$(read_lmehspt_var NODEMCU_PORT)}"
-    CPSK="${COIN_PSK:-$(read_lmehspt_var COIN_PSK)}"
-    [ -n "$NIP" ] && [ -n "$NPT" ] && [ -n "$CPSK" ] || err_json "coin_not_configured"
+if echo "$QS" | $BB grep -E -q "action=(nodemcu_reset|coin_reset)"; then
+    read -n "$CONTENT_LENGTH" POST_DATA
+    NID=$(printf '%s' "$POST_DATA" | $BB sed -n 's/.*id=\([^&]*\).*/\1/p' | $BB tr -cd '0-9')
+    [ -z "$NID" ] && NID="1"
+
+    _nodemcu_conn "$NID"
+    [ -n "$NIP" ] && [ -n "$CPSK" ] || err_json "coin_not_configured"
 
     # Step 1: Get a fresh one-time nonce from NodeMCU
     NONCE_RESP=$(wget -q -T 5 -O - "http://${NIP}:${NPT}/nonce" 2>/dev/null)
@@ -2379,7 +2376,39 @@ if echo "$QS" | $BB grep -q "action=coin_reset"; then
     RESP=$(wget -q -T 5 -O - "http://${NIP}:${NPT}/reset?token=${TOKEN}" 2>/dev/null)
     printf '%s' "$RESP" | $BB grep -q '"ok":true' || err_json "reset_failed"
 
-    ok_json '{"ok":true,"msg":"NodeMCU wiped and rebooting into setup AP"}'
+    ok_json "{\"ok\":true,\"id\":$NID,\"msg\":\"NodeMCU wiped and rebooting into setup AP\"}"
+fi
+
+# ================================================================
+# POST ?action=nodemcu_reboot  body: id
+# Sends an authenticated reboot command to any NodeMCU unit (#1 or #2+):
+#   1. GET /nonce          → fresh single-use nonce
+#   2. GET /reboot?token   → token = md5(PSK:nonce:reboot)
+# ================================================================
+if echo "$QS" | $BB grep -q "action=nodemcu_reboot"; then
+    read -n "$CONTENT_LENGTH" POST_DATA
+    NID=$(printf '%s' "$POST_DATA" | $BB sed -n 's/.*id=\([^&]*\).*/\1/p' | $BB tr -cd '0-9')
+    [ -z "$NID" ] && err_json "missing_id"
+
+    _nodemcu_conn "$NID"
+    [ -n "$NIP" ] && [ -n "$CPSK" ] || err_json "coin_not_configured"
+
+    # Step 1: Get fresh one-time nonce
+    NONCE_RESP=$(wget -q -T 5 -O - "http://${NIP}:${NPT}/nonce" 2>/dev/null)
+    NONCE=$($BB echo "$NONCE_RESP" | $BB grep -o '"nonce":"[^"]*"' | awk -F'"' '{print $4}')
+    [ -n "$NONCE" ] || err_json "nodemcu_offline"
+
+    # Step 2: Sign — md5(PSK:nonce:reboot)
+    TOKEN=$(printf '%s' "${CPSK}:${NONCE}:reboot" | md5sum | awk '{print $1}')
+
+    # Step 3: Send signed request
+    RESP=$(wget -q -T 5 -O - "http://${NIP}:${NPT}/reboot?token=${TOKEN}" 2>/dev/null)
+    if printf '%s' "$RESP" | $BB grep -q '"error":"busy"'; then
+        err_json "busy"
+    fi
+    printf '%s' "$RESP" | $BB grep -q '"ok":true' || err_json "reboot_failed"
+
+    ok_json "{\"ok\":true,\"id\":$NID,\"msg\":\"NodeMCU is rebooting\"}"
 fi
 
 # ================================================================

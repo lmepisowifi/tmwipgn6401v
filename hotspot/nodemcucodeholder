@@ -9,7 +9,6 @@
  * Source to network users (AGPLv3 §5, §13). See PROVENANCE.md before
  * presenting this as your own original work.
  */
-
 // coin_nodemcu.ino — Piso Wifi Coin Slot Controller
 // ESP8266 NodeMCU
 //
@@ -58,7 +57,7 @@ const int COIN_ENABLE_ACTIVE = HIGH;
 // ota.sh compares it against the release manifest's nodemcu_version and pushes a
 // self-flash ONLY when they differ, so a portal-only update (www2/hotspot files)
 // never needlessly reflashes the coin slot.
-#define FW_VERSION          "1.3.0"
+#define FW_VERSION          "1.3.1"
 // No AP password — open so owner can connect immediately on first setup
 
 // ── CONFIG STRUCT ─────────────────────────────────────────────────────
@@ -1135,9 +1134,12 @@ void handle_version() {
         coinServer.send(403, "application/json", "{\"ok\":false,\"error\":\"forbidden\"}");
         return;
     }
+    // Read the actual hardware register (bit 0 of CPU2X: 1 = 160MHz, 0 = 80MHz)
+    int actual_mhz = (CPU2X & 1) ? 160 : 80;
+
     coinServer.send(200, "application/json",
         String("{\"ok\":true,\"fw\":\"") + FW_VERSION +
-        "\",\"cpu_mhz\":" + String(ESP.getCpuFreqMHz()) + "}");
+        "\",\"cpu_mhz\":" + String(actual_mhz) + "}");
 }
 
 void handle_update() {
@@ -1212,17 +1214,17 @@ void handle_update() {
     
     Update.setMD5(md5.c_str()); // Enforce integrity
 
-    // ── NEW ROBUST CHUNK LOOP ──
+// ── ROBUST CHUNK LOOP ──
     WiFiClient* stream = http.getStreamPtr();
-    uint8_t buff[512]; // Tiny buffer to easily handle slower network packets
+    uint8_t buff[1024]; // 1KB buffer matches TCP packet sizes better
     size_t written = 0;
     unsigned long lastDataTime = millis();
 
-    Serial.println("Starting manual chunk write...");
+    Serial.println("Starting robust chunk write...");
 
     while (http.connected() && written < (size_t)len) {
         size_t available_bytes = stream->available();
-        
+
         if (available_bytes > 0) {
             int bytesRead = stream->readBytes(buff, min(available_bytes, sizeof(buff)));
             if (bytesRead > 0) {
@@ -1231,12 +1233,16 @@ void handle_update() {
                 lastDataTime = millis(); // Reset stream timer
             }
         } else {
-            delay(10); // Pause briefly to let the router buffer catch up
-            if (millis() - lastDataTime > 7000) { // 7 second network drop timeout
+            delay(10);
+            yield(); // Feed the ESP8266 network stack and software watchdog
+            
+            // Allow up to 15 seconds for Wi-Fi congestion / TCP retransmits
+            if (millis() - lastDataTime > 15000) { 
                 Serial.println("\nOTA Error: Stream went dry.");
                 break;
             }
         }
+        yield();
     }
 
     Serial.printf("Written %u/%d\n", written, len);
@@ -1260,6 +1266,7 @@ void handle_update() {
 bool connectWiFi() {
     WiFi.persistent(false);        // don't rewrite creds to flash every boot (wear)
     WiFi.mode(WIFI_STA);
+    WiFi.setSleepMode(WIFI_NONE_SLEEP);
     WiFi.setAutoReconnect(false);  // we manage reconnects manually; avoids DHCP races
     WiFi.begin(cfg.ssid, cfg.pass);
 
@@ -1303,6 +1310,33 @@ bool connectWiFi() {
     return true;
 }
 
+void handle_reboot() {
+    String caller = coinServer.client().remoteIP().toString();
+    if (caller != String(cfg.portal_ip)) {
+        coinServer.send(403, "application/json", "{\"ok\":false,\"error\":\"forbidden\"}");
+        return;
+    }
+    if (resetNonce.length() == 0 || (millis() - nonceIssuedMs) > NONCE_TTL_MS) {
+        coinServer.send(403, "application/json", "{\"ok\":false,\"error\":\"no_nonce\"}");
+        return;
+    }
+    String token = coinServer.arg("token");
+    bool good = sig_ok(token, String(cfg.psk) + ":" + resetNonce + ":reboot");
+    resetNonce = "";   // burn nonce
+    if (!good) {
+        coinServer.send(403, "application/json", "{\"ok\":false,\"error\":\"bad_token\"}");
+        return;
+    }
+    // Don't reboot if a customer is dropping coins
+    if (sessionActive || finalizing) {
+        coinServer.send(200, "application/json", "{\"ok\":false,\"error\":\"busy\"}");
+        return;
+    }
+    coinServer.send(200, "application/json", "{\"ok\":true,\"msg\":\"rebooting now\"}");
+    delay(500);
+    ESP.restart();
+}
+
 void startNormalMode() {
     isSetupMode = false;
 
@@ -1324,6 +1358,7 @@ void startNormalMode() {
     coinServer.on("/version", handle_version);
     coinServer.on("/update",  handle_update);
     coinServer.on("/setfreq", handle_set_freq);
+    coinServer.on("/reboot",  handle_reboot);
     coinServer.begin();
 }
 

@@ -222,10 +222,14 @@ function renderNodemcus(){
             : '<span class="status-pill off">Out of service</span>';
 
         // Every unit (primary included) gets the same Edit + Delete controls.
+// Every unit gets Reboot, Reset, Edit, and Delete controls
+// Every unit gets Reboot, Reset, Edit, and Delete controls in a single row
         var actions =
-              '<div style="display:flex;gap:3px;min-width:130px;">'
-            +   '<button class="btn btn-sm btn-outline-secondary flex-fill" onclick=\'openEditModal(' + JSON.stringify(n) + ')\'>Edit</button>'
-            +   '<button class="btn btn-sm btn-outline-danger flex-fill" onclick="delNodemcu(' + n.id + ',this)">Delete</button>'
+              '<div style="display:flex;gap:4px;align-items:center;white-space:nowrap;">'
+            +   '<button class="btn btn-sm btn-outline-secondary" style="font-size:12px;padding:2px 8px;" title="Reboot this unit" onclick="rebootNodemcu(' + n.id + ',this)">Reboot</button>'
+            +   '<button class="btn btn-sm btn-outline-warning" style="font-size:12px;padding:2px 8px;" title="Factory reset to setup AP" onclick="resetNodemcu(' + n.id + ',this)">Reset</button>'
+            +   '<button class="btn btn-sm btn-outline-secondary" style="font-size:12px;padding:2px 8px;" onclick=\'openEditModal(' + JSON.stringify(n) + ')\'>Edit</button>'
+            +   '<button class="btn btn-sm btn-outline-danger" style="font-size:12px;padding:2px 8px;" onclick="delNodemcu(' + n.id + ',this)">Delete</button>'
             + '</div>';
 
         // CPU frequency: no live readback stored in the router's own registry
@@ -429,7 +433,75 @@ function applyFreq(id, btn){
     })
     .catch(function(){ toastr.error('Network error'); btn.disabled=false; sel.disabled=false; btn.textContent='Apply'; });
 }
+function rebootNodemcu(id, btn){
+    var n = _nodemcus.filter(function(x){ return String(x.id)===String(id); })[0];
+    var name = n ? (n.title || ('Slot ' + id)) : ('Unit ' + id);
 
+    if (!confirm('Reboot ' + name + ' now? Any active coin session will be interrupted.')) return;
+
+    btn.disabled = true; var orig = btn.textContent; btn.textContent = '…';
+    fetch('/cgi-bin/hotspot.cgi?action=nodemcu_reboot', {
+        method: 'POST',
+        headers: {'Content-Type':'application/x-www-form-urlencoded'},
+        body: 'id=' + id
+    })
+    .then(function(r){ return r.json(); })
+    .then(function(d){
+        btn.disabled = false; btn.textContent = orig;
+        if (d.ok){
+            toastr.success('Reboot signal sent to ' + name);
+        } else if (d.error === 'busy'){
+            toastr.error('Unit is mid-session — try again once idle');
+        } else if (d.error === 'nodemcu_offline'){
+            toastr.error('NodeMCU is offline or unreachable');
+        } else {
+            toastr.error('Reboot failed: ' + (d.error || ''));
+        }
+    })
+    .catch(function(){
+        btn.disabled = false; btn.textContent = orig;
+        toastr.error('Network error');
+    });
+}
+
+function resetNodemcu(id, btn){
+    var n = _nodemcus.filter(function(x){ return String(x.id)===String(id); })[0];
+    var name = n ? (n.title || ('Slot ' + id)) : ('Unit ' + id);
+
+    // ── Prompt 1: Initial Warning ─────────────────────────────────────
+    var msg1 = 'FACTORY RESET ' + name.toUpperCase() + '?\n\n'
+             + '⚠️ WARNING: This will completely erase its Wi-Fi credentials and configuration!\n\n'
+             + 'The unit will disconnect from the hotspot and revert to an open "PisoWifi-Setup" access point.';
+    if (!confirm(msg1)) return;
+
+    // ── Prompt 2: Final Confirmation ──────────────────────────────────
+    var msg2 = 'FINAL CONFIRMATION:\n\n'
+             + 'Are you ABSOLUTELY sure you want to proceed?\n\n'
+             + 'The coin slot will be completely offline until you connect your phone/PC to "PisoWifi-Setup" (192.168.4.1) and reconfigure it.';
+    if (!confirm(msg2)) return;
+
+    btn.disabled = true; var orig = btn.textContent; btn.textContent = '…';
+    fetch('/cgi-bin/hotspot.cgi?action=nodemcu_reset', {
+        method: 'POST',
+        headers: {'Content-Type':'application/x-www-form-urlencoded'},
+        body: 'id=' + id
+    })
+    .then(function(r){ return r.json(); })
+    .then(function(d){
+        btn.disabled = false; btn.textContent = orig;
+        if (d.ok){
+            toastr.warning('NodeMCU wiped and rebooting into setup AP');
+        } else if (d.error === 'nodemcu_offline'){
+            toastr.error('NodeMCU is offline or unreachable');
+        } else {
+            toastr.error('Reset failed: ' + (d.error || ''));
+        }
+    })
+    .catch(function(){
+        btn.disabled = false; btn.textContent = orig;
+        toastr.error('Network error');
+    });
+}
 window.addEventListener('DOMContentLoaded', loadNodemcus);
 </script>
 </body>
