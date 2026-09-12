@@ -64,19 +64,45 @@
 # direction (nobody loses time this check merely failed to flag) and is a
 # narrow window in practice.
 #
-# A LIVE (actively ticking, not paused) bucket has no such policy to apply
-# in the first place — see STORAGE below, it's tmpfs and is simply gone
-# after any reboot, forced or not, exactly like SESSION_FILE.
+# A LIVE (actively ticking, not paused) bucket has no reboot policy to
+# apply directly — same as a paused bucket, there's no way to recover real
+# elapsed time from uptime alone across a reboot. Historically this file
+# just left it at that: RV_LIVE_FILE is tmpfs, so a live bucket was simply
+# gone after any reboot, forced or not, same as SESSION_FILE — except
+# SESSION_FILE's balance actually survives a reboot too, via
+# lmehspt.sh's periodic sync_to_persistent_db() mirroring it into
+# persistent USERS_FILE every 5 minutes and once at boot. A live bucket
+# had no equivalent, so its deadline/validity constraint (not the
+# underlying money-value time itself) was the one thing that didn't
+# survive — it just silently stopped being enforced, rather than
+# forfeiting like the paused case already correctly does.
 #
-# STORAGE — split the same way SESSION_FILE/USERS_FILE already are, and for
-# the identical reason: while a bucket is "live" (ticking down as part of
-# an active session) it's kept in a boundary form anchored to /proc/uptime
-# — meaningless across a reboot — so that half lives in tmpfs and is simply
-# gone after a hard reboot. Once frozen (paused), a bucket is a plain
-# seconds count plus the uptime deadline/reboot-detection pair above, all
-# three perfectly safe to persist, so that half lives in hotspot_data,
-# exactly like USERS_FILE's paused rows. A MAC is never in both files at
-# once.
+# rv_snapshot_live() closes that gap: called on the same 5-minute cadence
+# as sync_to_persistent_db() (see lmehspt.sh's main loop), it writes each
+# currently-live bucket's remaining-seconds/deadline into RV_FROZEN_FILE as
+# a dormant shadow row, without touching RV_LIVE_FILE or the session
+# itself. rv_peek() always checks RV_LIVE_FILE first, so a live MAC's own
+# shadow row is inert and never consulted while that MAC really is live —
+# it only becomes visible once RV_LIVE_FILE is wiped out from under it by
+# a reboot, at which point the already-existing FREEZE_UPTIME
+# reboot-detection in _rv_forfeited() applies to it exactly as it would to
+# a real pause, forfeiting the same way. rv_freeze()/rv_apply_resume()
+# both already clear any stale RV_FROZEN_FILE row for a MAC before writing
+# their own real one, so a leftover shadow row never conflicts with an
+# actual freeze or resume — the real event always wins. Worst case, a
+# shadow row can be up to ~5 minutes stale at the moment of a reboot, the
+# same staleness SESSION_FILE's own USERS_FILE mirror already accepts.
+#
+# STORAGE — split the same way SESSION_FILE/USERS_FILE already are: while a
+# bucket is "live" (ticking down as part of an active session) it's kept
+# in a boundary form anchored to /proc/uptime — meaningless across a
+# reboot — so that half lives in tmpfs. Once frozen (paused, or a live
+# bucket's periodic shadow copy), a bucket is a plain seconds count plus
+# the uptime deadline/reboot-detection pair above, all three perfectly
+# safe to persist, so that half lives in hotspot_data, exactly like
+# USERS_FILE's paused rows. A MAC is never in both files with a row that
+# actually MATTERS at once — a live MAC's shadow row in RV_FROZEN_FILE is
+# real storage but a dormant standby, not a second live bucket.
 #   RV_LIVE_FILE   "MAC BOUNDARY_UPTIME DEADLINE_UPTIME"              (tmpfs)
 #   RV_FROZEN_FILE "MAC REMAIN_SECS FREEZE_UPTIME DEADLINE_UPTIME"    (hotspot_data)
 # Absence from both = no expiring bucket at all (the common case for a
@@ -84,8 +110,9 @@
 #
 # Sourced by: coin_result.sh (rv_grant), coin.sh/login.sh/logout.sh/
 # status.sh (mf_reconcile's rv_reconcile_mac call + their own pause/resume/
-# display use), lmehspt.sh (pause_session + the expiry watchdog), macfix.sh
-# (optionally, via rv_reconcile_mac — see there), hotspot.cgi and
+# display use), lmehspt.sh (pause_session + the expiry watchdog + the
+# periodic rv_snapshot_live() call alongside sync_to_persistent_db()),
+# macfix.sh (optionally, via rv_reconcile_mac — see there), hotspot.cgi and
 # notify.sh's Telegram bot (the admin "kick" == pause action in each).
 # Requires the sourcing script to already define BB.
 # ============================================================================
@@ -340,4 +367,57 @@ _rv_migrate_file() {
 rv_reconcile_mac() {
     _rv_migrate_file "$RV_LIVE_FILE"   "$1" "$2"
     _rv_migrate_file "$RV_FROZEN_FILE" "$1" "$2"
+}
+
+# Call on the same periodic cadence as lmehspt.sh's sync_to_persistent_db()
+# (same 5-minute main-loop tick, inside the same _lock). Gives every
+# currently-LIVE expiring bucket a persistent shadow copy in RV_FROZEN_FILE
+# so it survives a reboot instead of just vanishing — see the REBOOT POLICY
+# section above for why this is safe to sit alongside a live MAC's real
+# RV_LIVE_FILE row. $1 = uptime "now" for this snapshot (defaults to a
+# fresh read). Never touches RV_LIVE_FILE or the session itself — this is
+# a backup, not a state transition. No-op if nothing is currently live.
+#
+# Same I/O-glitch guard as sync_to_persistent_db(): a `while read` loop
+# doesn't surface a mid-read flash error the way grep's exit status does,
+# so probe both files with `cat` first and skip the whole rebuild (leaving
+# RV_FROZEN_FILE untouched) rather than risk silently truncating a real
+# paused customer's row on a transient read failure.
+rv_snapshot_live() {
+    local now_up="${1:-$(_rv_now_uptime)}"
+    [ -s "$RV_LIVE_FILE" ] || return 0
+
+    if [ -s "$RV_FROZEN_FILE" ] && ! $BB cat "$RV_FROZEN_FILE" >/dev/null 2>&1; then
+        return 1
+    fi
+    if ! $BB cat "$RV_LIVE_FILE" >/dev/null 2>&1; then
+        return 1
+    fi
+
+    : > "${RV_FROZEN_FILE}.tmp"
+
+    # Carry over every existing frozen row EXCEPT one whose MAC is also
+    # currently live — that MAC's old row (a real paused freeze, or a
+    # now-stale shadow from a previous tick) is superseded by the fresh
+    # shadow snapshot written just below instead.
+    if [ -f "$RV_FROZEN_FILE" ]; then
+        local fmac frest
+        while read -r fmac frest; do
+            [ -n "$fmac" ] || continue
+            $BB grep -q "^${fmac} " "$RV_LIVE_FILE" 2>/dev/null && continue
+            printf '%s %s\n' "$fmac" "$frest" >> "${RV_FROZEN_FILE}.tmp"
+        done < "$RV_FROZEN_FILE"
+    fi
+
+    # One dormant shadow row per live MAC that still has time left.
+    local mac boundary deadline remain
+    while read -r mac boundary deadline; do
+        [ -n "$mac" ] || continue
+        case "$boundary" in ''|*[!0-9]*) boundary=0 ;; esac
+        remain=$(( boundary - now_up ))
+        [ "$remain" -gt 0 ] || continue
+        printf '%s %d %d %d\n' "$mac" "$remain" "$now_up" "${deadline:-0}" >> "${RV_FROZEN_FILE}.tmp"
+    done < "$RV_LIVE_FILE"
+
+    _rv_commit "$RV_FROZEN_FILE"
 }

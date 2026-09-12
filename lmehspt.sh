@@ -2297,6 +2297,13 @@ fi
         if [ $((NOW - LAST_SNAPSHOT)) -ge 300 ]; then
             _lock
             sync_to_persistent_db
+            # See ratevalidity.sh: RV_LIVE_FILE is tmpfs with no reboot
+            # survival of its own, unlike SESSION_FILE just above. This
+            # gives every currently-live expiring bucket a persistent
+            # shadow copy on the same cadence, so a reboot mid-active-
+            # session forfeits the same way a paused reboot already does,
+            # instead of silently losing the validity constraint outright.
+            rv_snapshot_live "$NOW"
             sync
             backup_users_file
             backup_income_file
