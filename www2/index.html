@@ -333,7 +333,10 @@
                 if(bar){ bar.style.width=pct+'%'; bar.className='progress-bar'+(pct>=75?' bg-danger':pct>=50?' bg-warning':''); }
                 var diskPct = d.disk_pct||0;
                 if(d.disk_avail_mb !== undefined){
-                    set('s-disk-text', esc(d.disk_used_mb)+' used / '+esc(d.disk_avail_mb)+' MB free');
+                    var diskUsed = parseFloat(d.disk_used_mb) || 0;
+                    var diskAvail = parseFloat(d.disk_avail_mb) || 0;
+                    var diskTotal = Math.round((diskUsed + diskAvail) * 10) / 10;
+                    set('s-disk-text', esc(d.disk_used_mb) + '/' + diskTotal + ' MB');
                     var diskBar = document.getElementById('s-disk-bar');
                     if(diskBar){ diskBar.style.width=diskPct+'%'; diskBar.className='progress-bar'+(diskPct>=90?' bg-danger':diskPct>=75?' bg-warning':''); }
                 }
