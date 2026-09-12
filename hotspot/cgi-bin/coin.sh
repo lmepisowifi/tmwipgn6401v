@@ -122,6 +122,9 @@ _bank_add() {
     $BB grep -v "^${_ba_mac} " "$COIN_BANK_FILE" > "${COIN_BANK_FILE}.tmp" 2>/dev/null
     printf '%s %s\n' "$_ba_mac" "$_ba_after" >> "${COIN_BANK_FILE}.tmp"
     $BB mv "${COIN_BANK_FILE}.tmp" "$COIN_BANK_FILE"
+    # See coin_result.sh's _bank_set: rename alone doesn't guarantee this has
+    # left the page cache, so force it to flash now.
+    $BB sync
 }
 
 # ── Multi-NodeMCU node registry ──────────────────────────────────────────────
@@ -233,7 +236,7 @@ _persist_pending() {
 }
 
 # Drop the non-volatile mirror once a session is finished or abandoned.
-_clear_pending() { rm -f "${COIN_PENDING_DIR}/${1}" "${COIN_PENDING_DIR}/${1}.tmp" 2>/dev/null; }
+_clear_pending() { rm -f "${COIN_PENDING_DIR}/${1}" "${COIN_PENDING_DIR}/${1}.tmp" 2>/dev/null; $BB sync; }
 
 # ── Audit webhook — NodeMCU error events → hardcoded Discord channel ──────────
 _coin_alert() {
@@ -589,6 +592,14 @@ start)
                     else
                         _coin_alert "RESUME_NODEMCU_OFFLINE" "SID=${LOCK_SID} no response from NodeMCU (node ${NODE_ID}) at ${_N_IP}:${_N_PORT} during resume check — stale lock dropped, ₱${R_STALE_AMT} banked to ${CLIENT_MAC}"
                     fi
+                    # This SID's coins are now either banked just above
+                    # (_bank_add) or were zero to begin with — either way the
+                    # non-volatile crash mirror for this SID is no longer
+                    # needed. Without this, startup.sh's boot replay keeps
+                    # rediscovering the same mirror on every future reboot and
+                    # re-credits R_STALE_AMT into the bank again, even long
+                    # after it's been spent.
+                    _clear_pending "$LOCK_SID"
                     rm -f "$LOCK_FILE" "/tmp/coin_sessions/${LOCK_SID}" \
                         "/tmp/coin_sessions/${LOCK_SID}.miss" "/tmp/coin_sessions/${LOCK_SID}.amt" \
                         "/tmp/coin_sessions/${LOCK_SID}.rem"
@@ -597,6 +608,11 @@ start)
                 LOCKED=1
             fi
         else
+            # Lock aged out with no liveness check performed at all — by now
+            # this SID's own poll-driven expiry has normally already run (and
+            # already cleared its mirror), but drop it here too in case it's
+            # somehow still sitting on flash, for the same reason as above.
+            _clear_pending "$LOCK_SID"
             rm -f "$LOCK_FILE" "/tmp/coin_sessions/${LOCK_SID}" \
                 "/tmp/coin_sessions/${LOCK_SID}.miss" "/tmp/coin_sessions/${LOCK_SID}.amt" \
                 "/tmp/coin_sessions/${LOCK_SID}.rem"

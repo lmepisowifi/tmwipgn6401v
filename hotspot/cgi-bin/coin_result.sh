@@ -68,7 +68,7 @@ _node_label() {
 # session is granted/finalized here, drop its mirror so startup.sh won't replay
 # (and double-grant) it on the next boot.
 COIN_PENDING_DIR="/lmepisowifi/hotspot_data/coin_pending"
-_clear_pending() { rm -f "${COIN_PENDING_DIR}/${1}" "${COIN_PENDING_DIR}/${1}.tmp" 2>/dev/null; }
+_clear_pending() { rm -f "${COIN_PENDING_DIR}/${1}" "${COIN_PENDING_DIR}/${1}.tmp" 2>/dev/null; sync; }
 
 # ── Below-minimum-tier coin banking ──────────────────────────────────────────
 # When a coin session's total (see the greedy calculator below) doesn't reach
@@ -102,6 +102,12 @@ _bank_set() {
     $BB grep -v "^${mac} " "$COIN_BANK_FILE" > "${COIN_BANK_FILE}.tmp" 2>/dev/null
     [ "$amt" -gt 0 ] && printf '%s %s\n' "$mac" "$amt" >> "${COIN_BANK_FILE}.tmp"
     mv "${COIN_BANK_FILE}.tmp" "$COIN_BANK_FILE"
+    # Rename is atomic/crash-consistent on ubifs, but that says nothing about
+    # whether this write has actually reached NAND yet vs. still sitting dirty
+    # in the page cache. Force it out now so a power-cut/crash right after a
+    # customer's banked balance is spent can't roll COIN_BANK_FILE back to the
+    # pre-spend amount on the next boot (same reasoning as _users_file_commit).
+    sync
 }
 
 _unlock() { rm -f /tmp/hotspot_session.lock/pid 2>/dev/null; rmdir /tmp/hotspot_session.lock 2>/dev/null; }

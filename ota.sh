@@ -831,6 +831,57 @@ self_heal() {
     # the first OTA won't swap it. The SECOND run (6h cron with the new ota.sh)
     # patches it in-place via heal_main_startup instead.
     heal_main_startup
+
+    # One-time purge of coin_pending mirrors orphaned by a since-fixed bug in
+    # coin.sh's stale-lock rescue path (it banked a rescued balance via
+    # _bank_add but never called _clear_pending). See ensure_coin_pending_purged.
+    ensure_coin_pending_purged
+}
+
+# ---------------------------------------------------------------------------
+# ensure_coin_pending_purged — one-time cleanup for coin_pending/<SID> mirrors
+# left behind by a fixed bug: coin.sh's stale-lock rescue path (RESUME_NODEMCU_
+# OFFLINE / RESUME_SIG_MISMATCH / dead-session branches in action=start) banked
+# the customer's stranded coins via _bank_add but never called _clear_pending
+# afterward. That left the mirror sitting on flash forever, and startup.sh's
+# boot replay rediscovers it on every future reboot — re-crediting the SAME
+# pesos into coin_bank.txt again, even long after the customer already spent
+# them. The rescue path itself is fixed now, so this only needs to run once
+# per device to clean up whatever it already left behind.
+#
+# Marker lives outside every OTA-swapped component (same idiom as the
+# .ota_heal_seen_<NAME> markers above) so it survives this update, every
+# future update, and every reboot — the purge never re-fires after today.
+#
+# Safety: a mirror is only removed when NO matching /tmp/coin_sessions/<SID>
+# exists. A session that's genuinely still in progress always keeps that
+# tmpfs file until it completes or the device reboots, so this can never
+# delete money a customer is mid-session on — only mirrors already orphaned
+# by the old bug get touched.
+# ---------------------------------------------------------------------------
+COIN_PENDING_PURGE_MARKER="$ROOT/.ota_coin_pending_purge_done"
+ensure_coin_pending_purged() {
+    [ -f "$COIN_PENDING_PURGE_MARKER" ] && return 0
+    _CPP_DIR="$ROOT/hotspot_data/coin_pending"
+    _CPP_N=0
+    if [ -d "$_CPP_DIR" ]; then
+        for _cpp_f in "$_CPP_DIR"/*; do
+            [ -f "$_cpp_f" ] || continue
+            _cpp_sid=$(basename "$_cpp_f")
+            case "$_cpp_sid" in *.tmp) continue ;; esac
+            # Still-live session for this SID — never touch it; leave it for
+            # its own normal completion (or a real crash replay) to clear.
+            [ -f "/tmp/coin_sessions/${_cpp_sid}" ] && continue
+            rm -f "$_cpp_f"
+            _CPP_N=$(( _CPP_N + 1 ))
+        done
+        if [ "$_CPP_N" -gt 0 ]; then
+            sync
+            log "ensure_coin_pending_purged: removed $_CPP_N orphaned coin_pending mirror(s) left by the fixed stale-lock rescue bug"
+            notify "OTA: cleared $_CPP_N leftover coin-bank record(s) from a fixed bug — no action needed"
+        fi
+    fi
+    : > "$COIN_PENDING_PURGE_MARKER"
 }
 
 # ---------------------------------------------------------------------------
