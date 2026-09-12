@@ -1,6 +1,6 @@
 #!/bin/sh
 # ---------------------------------------------------------------------------
-# lmepisowifi — https://github.com/lmepisowifi/tmwipgn6401v
+# lmepisowifi — https://github.com/lmepisowifi/tmwim2-2050-g40
 # SPDX-License-Identifier: AGPL-3.0-or-later
 # Copyright (C) 2026 The lmepisowifi Project — see AUTHORS
 #
@@ -204,9 +204,17 @@ rv_peek() {
 _rv_forfeited() {
     local now_up="$1"
     [ "${RV_REMAIN:-0}" -gt 0 ] || return 1
+
+    # If a reboot occurred while frozen (now_up < FREEZE_UPTIME),
+    # only forfeit if it had ALREADY expired before the freeze/reboot.
     if [ "${RV_FREEZE_UPTIME:-0}" -gt 0 ] && [ "$now_up" -lt "$RV_FREEZE_UPTIME" ]; then
-        return 0
+        if [ "${RV_DEADLINE:-0}" -gt 0 ] && [ "${RV_FREEZE_UPTIME:-0}" -ge "${RV_DEADLINE:-0}" ]; then
+            return 0
+        fi
+        return 1
     fi
+
+    # Normal check within the same boot
     if [ "${RV_DEADLINE:-0}" -gt 0 ] && [ "$now_up" -gt "$RV_DEADLINE" ]; then
         return 0
     fi
@@ -243,6 +251,13 @@ rv_freeze() {
         RV_REMAIN=$clamp
     fi
 
+    # Re-anchor deadline if freezing across a reboot
+    if [ "${RV_FREEZE_UPTIME:-0}" -gt 0 ] && [ "$pause_up" -lt "$RV_FREEZE_UPTIME" ]; then
+        if [ "${RV_DEADLINE:-0}" -gt "$RV_FREEZE_UPTIME" ]; then
+            RV_DEADLINE=$(( pause_up + (RV_DEADLINE - RV_FREEZE_UPTIME) ))
+        fi
+    fi
+
     _rv_stage_excl "$RV_LIVE_FILE" "$mac" && _rv_commit "$RV_LIVE_FILE"
 
     if [ "${RV_REMAIN:-0}" -le 0 ]; then
@@ -268,10 +283,6 @@ rv_apply_resume() {
     rv_peek "$mac" "$resume_up"
     RV_FORFEITED=0
 
-    # Whichever file currently holds this MAC's bucket, it doesn't belong
-    # there anymore after this call — it either moves into the live file
-    # below (still valid) or forfeits outright (deadline passed, or a
-    # reboot happened while it sat frozen).
     _rv_stage_excl "$RV_LIVE_FILE" "$mac"   && _rv_commit "$RV_LIVE_FILE"
     _rv_stage_excl "$RV_FROZEN_FILE" "$mac" && _rv_commit "$RV_FROZEN_FILE"
 
@@ -282,9 +293,24 @@ rv_apply_resume() {
         return 0
     fi
 
+    # Across a reboot, re-anchor the deadline to the new boot's uptime:
+    if [ "${RV_FREEZE_UPTIME:-0}" -gt 0 ] && [ "$resume_up" -lt "$RV_FREEZE_UPTIME" ]; then
+        if [ "${RV_DEADLINE:-0}" -gt "$RV_FREEZE_UPTIME" ]; then
+            RV_DEADLINE=$(( resume_up + (RV_DEADLINE - RV_FREEZE_UPTIME) ))
+        fi
+    fi
+
+    # 1. Update RAM live file
     if _rv_stage_excl "$RV_LIVE_FILE" "$mac"; then
         printf '%s %d %d\n' "$mac" "$(( resume_up + RV_REMAIN ))" "${RV_DEADLINE:-0}" >> "${RV_LIVE_FILE}.tmp"
         _rv_commit "$RV_LIVE_FILE"
+    fi
+
+    # 2. IMMEDIATELY record shadow row to persistent storage on Flash
+    if _rv_stage_excl "$RV_FROZEN_FILE" "$mac"; then
+        printf '%s %d %d %d\n' "$mac" "$RV_REMAIN" "$resume_up" "${RV_DEADLINE:-0}" >> "${RV_FROZEN_FILE}.tmp"
+        _rv_commit "$RV_FROZEN_FILE"
+        sync
     fi
 }
 
@@ -325,15 +351,21 @@ rv_grant() {
             combined_deadline=$(( now_up + new_valid_secs ))
         fi
 
+        # 1. Update RAM live file
         if _rv_stage_excl "$RV_LIVE_FILE" "$mac"; then
             printf '%s %d %d\n' "$mac" "$(( now_up + combined_remain ))" "$combined_deadline" >> "${RV_LIVE_FILE}.tmp"
             _rv_commit "$RV_LIVE_FILE"
         fi
+
+        # 2. IMMEDIATELY record shadow row to persistent storage on Flash
+        if _rv_stage_excl "$RV_FROZEN_FILE" "$mac"; then
+            printf '%s %d %d %d\n' "$mac" "$combined_remain" "$now_up" "$combined_deadline" >> "${RV_FROZEN_FILE}.tmp"
+            _rv_commit "$RV_FROZEN_FILE"
+            sync
+        fi
     else
         # This purchase itself carries no validity, but a pre-existing
-        # expiring bucket must still be resolved (carried into the live
-        # file, or forfeited) rather than left stranded in frozen form
-        # under a session that is about to be active again.
+        # expiring bucket must still be resolved rather than left stranded.
         rv_apply_resume "$mac" "$now_up" >/dev/null
     fi
 }

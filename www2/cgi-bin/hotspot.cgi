@@ -181,6 +181,29 @@ _nodemcu_ip_in_use() {
     $BB awk -F'|' -v ip="$ip" -v ex="$exclude" \
         '$1!=ex && $3==ip {f=1} END{exit !f}' "$NODEMCU_EXTRA_FILE"
 }
+# _nodemcu_conn ID  → sets NIP/NPT/CPSK for the given unit id (primary via
+# coin_config.env for #1, NODEMCU_EXTRA_FILE's id|title|ip|mac|port|psk|enabled
+# rows for #2+). Same resolution nodemcus_get/coin_reset already do inline for
+# the primary, just parameterized by id so a signed admin action (nodemcu_setfreq
+# below) can target ANY configured unit, not only the primary.
+_nodemcu_conn() {
+    if [ "$1" = "1" ]; then
+        load_coin_env
+        NIP="${NODEMCU_IP:-$(read_lmehspt_var NODEMCU_IP)}"
+        NPT="${NODEMCU_PORT:-$(read_lmehspt_var NODEMCU_PORT)}"
+        CPSK="${COIN_PSK:-$(read_lmehspt_var COIN_PSK)}"
+        [ -z "$NPT" ] && NPT=8080
+        return
+    fi
+    NIP=""; NPT="8080"; CPSK=""
+    [ -f "$NODEMCU_EXTRA_FILE" ] || return
+    _row=$($BB awk -F'|' -v id="$1" '$1==id{print;exit}' "$NODEMCU_EXTRA_FILE" 2>/dev/null)
+    [ -z "$_row" ] && return
+    NIP=$(printf '%s' "$_row" | $BB awk -F'|' '{print $3}')
+    NPT=$(printf '%s' "$_row" | $BB awk -F'|' '{print $5}')
+    CPSK=$(printf '%s' "$_row" | $BB awk -F'|' '{print $6}')
+    [ -z "$NPT" ] && NPT=8080
+}
 # Same idea, but for the paused-session update sites which filter with awk
 # instead of grep (need to drop only the "$mac paused ..." line, keeping
 # any active line for the same mac untouched - grep -v "^$mac " would wrongly
@@ -526,7 +549,7 @@ wlan_iface_disabled() {
         *) printf '0'; return ;;
     esac
     WDIS=$(mib get "${WTBL}.${WIDX}.wlanDisabled" 2>/dev/null \
-        | $BB grep "=" | $BB cut -d'=' -f2- | $BB tr -d '\r\n')
+        | $BB grep "=" | $BB cut -d'=' -f2- | $BB tr -d '\r\n' | $BB sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
     [ -z "$WDIS" ] && WDIS=1
     printf '%s' "$WDIS"
 }
@@ -546,7 +569,7 @@ wlan_iface_is_client() {
         *) printf '0'; return ;;
     esac
     CMODE=$(mib get "${CTBL}.0.wlanMode" 2>/dev/null \
-        | $BB grep "=" | $BB cut -d'=' -f2- | $BB tr -d '\r\n')
+        | $BB grep "=" | $BB cut -d'=' -f2- | $BB tr -d '\r\n' | $BB sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
     [ -z "$CMODE" ] && CMODE=0
     printf '%s' "$CMODE"
 }
@@ -2357,6 +2380,45 @@ if echo "$QS" | $BB grep -q "action=coin_reset"; then
     printf '%s' "$RESP" | $BB grep -q '"ok":true' || err_json "reset_failed"
 
     ok_json '{"ok":true,"msg":"NodeMCU wiped and rebooting into setup AP"}'
+fi
+
+# ================================================================
+# POST ?action=nodemcu_setfreq  body: id, freq (80 or 160)
+# Pushes a signed CPU-frequency change to one NodeMCU unit and reboots it
+# to apply it. Same two-step signed handshake as action=coin_reset above,
+# just targeting the firmware's /setfreq endpoint instead of /reset, and
+# resolved against ANY configured unit (not just the primary) via
+# _nodemcu_conn — see that function above for the id|title|ip|mac|port|psk|
+# enabled row format for units #2+.
+#   1. GET /nonce                → fresh single-use nonce
+#   2. GET /setfreq?freq&token   → token = md5(PSK:nonce:freq:setfreq)
+# ================================================================
+if echo "$QS" | $BB grep -q "action=nodemcu_setfreq"; then
+    read -n "$CONTENT_LENGTH" POST_DATA
+    NID=$(printf '%s'  "$POST_DATA" | $BB sed -n 's/.*id=\([^&]*\).*/\1/p'   | $BB tr -cd '0-9')
+    FREQ=$(printf '%s' "$POST_DATA" | $BB sed -n 's/.*freq=\([^&]*\).*/\1/p' | $BB tr -cd '0-9')
+    [ -z "$NID" ] && err_json "missing_id"
+    [ "$FREQ" = "80" ] || [ "$FREQ" = "160" ] || err_json "bad_freq"
+
+    _nodemcu_conn "$NID"
+    [ -n "$NIP" ] && [ -n "$CPSK" ] || err_json "coin_not_configured"
+
+    # Step 1: fresh one-time nonce
+    NONCE_RESP=$(wget -q -T 5 -O - "http://${NIP}:${NPT}/nonce" 2>/dev/null)
+    NONCE=$($BB echo "$NONCE_RESP" | $BB grep -o '"nonce":"[^"]*"' | awk -F'"' '{print $4}')
+    [ -n "$NONCE" ] || err_json "nodemcu_offline"
+
+    # Step 2: sign — md5(PSK:nonce:freq:setfreq)
+    TOKEN=$(printf '%s' "${CPSK}:${NONCE}:${FREQ}:setfreq" | md5sum | awk '{print $1}')
+
+    # Step 3: send signed request
+    RESP=$(wget -q -T 5 -O - "http://${NIP}:${NPT}/setfreq?freq=${FREQ}&token=${TOKEN}" 2>/dev/null)
+    if printf '%s' "$RESP" | $BB grep -q '"error":"busy"'; then
+        err_json "busy"
+    fi
+    printf '%s' "$RESP" | $BB grep -q '"ok":true' || err_json "setfreq_failed"
+
+    ok_json "{\"ok\":true,\"id\":$NID,\"freq\":$FREQ,\"msg\":\"NodeMCU rebooting at ${FREQ}MHz\"}"
 fi
 
 # ================================================================

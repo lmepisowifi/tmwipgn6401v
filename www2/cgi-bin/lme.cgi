@@ -149,49 +149,56 @@ get_ssid() {
     mib get WLAN1_MBSSIB_TBL.0.ssid \
         | busybox grep "=" \
         | busybox cut -d'=' -f2- \
-        | busybox tr -d '\r\n'
+        | busybox tr -d '\r\n' \
+        | busybox sed 's/^[[:space:]]*//;s/[[:space:]]*$//'
 }
 
 get_channel() {
     mib get WLAN1_CHANNEL \
         | busybox grep "=" \
         | busybox cut -d'=' -f2- \
-        | busybox tr -d '\r\n'
+        | busybox tr -d '\r\n' \
+        | busybox sed 's/^[[:space:]]*//;s/[[:space:]]*$//'
 }
 
 get_channelwidth() {
     mib get WLAN1_CHANNELWIDTH \
         | busybox grep "=" \
         | busybox cut -d'=' -f2- \
-        | busybox tr -d '\r\n'
+        | busybox tr -d '\r\n' \
+        | busybox sed 's/^[[:space:]]*//;s/[[:space:]]*$//'
 }
 
 get_disabled() {
     mib get WLAN1_MBSSIB_TBL.0.wlanDisabled \
         | busybox grep "=" \
         | busybox cut -d'=' -f2- \
-        | busybox tr -d '\r\n'
+        | busybox tr -d '\r\n' \
+        | busybox sed 's/^[[:space:]]*//;s/[[:space:]]*$//'
 }
 
 get_wlanband() {
     mib get WLAN1_MBSSIB_TBL.0.wlanBand \
         | busybox grep "=" \
         | busybox cut -d'=' -f2- \
-        | busybox tr -d '\r\n'
+        | busybox tr -d '\r\n' \
+        | busybox sed 's/^[[:space:]]*//;s/[[:space:]]*$//'
 }
 
 get_controlband() {
     mib get WLAN1_CONTROLBAND \
         | busybox grep "=" \
         | busybox cut -d'=' -f2- \
-        | busybox tr -d '\r\n'
+        | busybox tr -d '\r\n' \
+        | busybox sed 's/^[[:space:]]*//;s/[[:space:]]*$//'
 }
 
 get_txpower() {
     mib get WLAN1_RFPOWER_SCALE \
         | busybox grep "=" \
         | busybox cut -d'=' -f2- \
-        | busybox tr -d '\r\n'
+        | busybox tr -d '\r\n' \
+        | busybox sed 's/^[[:space:]]*//;s/[[:space:]]*$//'
 }
 
 get_channel_list() {
@@ -219,7 +226,8 @@ get_mac_mode() {
     mib get WLAN1_MACAC_ENABLED \
         | busybox grep "=" \
         | busybox cut -d'=' -f2- \
-        | busybox tr -d '\r\n'
+        | busybox tr -d '\r\n' \
+        | busybox sed 's/^[[:space:]]*//;s/[[:space:]]*$//'
 }
 
 # Emits a JSON array of {index, mac} objects from WLAN1_AC_TBL
@@ -366,19 +374,19 @@ if [ "$REQUEST_METHOD" = "GET" ]; then
         HW_SERIAL=$(mib get HW_SERIAL_NO 2>/dev/null \
             | busybox grep "=" \
             | busybox cut -d'=' -f2- \
-            | busybox tr -d '\r\n')
+            | busybox tr -d '\r\n' | busybox sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
         MAC_RAW=$(mib get ELAN_MAC_ADDR 2>/dev/null \
             | busybox grep "=" \
             | busybox cut -d'=' -f2 \
-            | busybox tr -d '\r\n')
+            | busybox tr -d '\r\n' | busybox sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
         PON_MODE=$(mib get PON_MODE 2>/dev/null \
             | busybox grep "=" \
             | busybox cut -d'=' -f2 \
-            | busybox tr -d '\r\n')
+            | busybox tr -d '\r\n' | busybox sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
         PON_AUTO=$(mib get PON_MODE_AUTO_CHECK_ENABLE 2>/dev/null \
             | busybox grep "=" \
             | busybox cut -d'=' -f2 \
-            | busybox tr -d '\r\n')
+            | busybox tr -d '\r\n' | busybox sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
         MAC=$(echo "$MAC_RAW" \
             | busybox sed 's/\(..\)\(..\)\(..\)\(..\)\(..\)\(..\)/\1:\2:\3:\4:\5:\6/' \
             | busybox tr 'a-z' 'A-Z')
@@ -394,9 +402,9 @@ if [ "$REQUEST_METHOD" = "GET" ]; then
     # --- action=account_status: return current admin (superuser) username ---
     if echo "$QUERY_STRING" | busybox grep -q "action=account_status"; then
         SUSER=$(mib get SUSER_NAME 2>/dev/null \
-            | busybox grep "SUSER_NAME=" \
+            | busybox grep "^SUSER_NAME[[:space:]]*=" \
             | busybox cut -d'=' -f2- \
-            | busybox tr -d '\r\n')
+            | busybox tr -d '\r\n' | busybox sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
         ESC_SUSER=$(printf '%s' "$SUSER" | busybox sed 's/\\/\\\\/g; s/"/\\"/g')
         printf "Status: 200 OK\r\n"
         printf "Content-Type: application/json\r\n\r\n"
@@ -409,11 +417,11 @@ if [ "$REQUEST_METHOD" = "GET" ]; then
         LAN_IP=$(mib get LAN_IP_ADDR 2>/dev/null \
             | busybox grep "=" \
             | busybox cut -d'=' -f2- \
-            | busybox tr -d '\r\n')
+            | busybox tr -d '\r\n' | busybox sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
         LAN_SN=$(mib get LAN_SUBNET 2>/dev/null \
             | busybox grep "=" \
             | busybox cut -d'=' -f2- \
-            | busybox tr -d '\r\n')
+            | busybox tr -d '\r\n' | busybox sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
         [ -z "$LAN_IP" ] && LAN_IP="192.168.1.1"
         [ -z "$LAN_SN" ] && LAN_SN="255.255.255.0"
         printf "Status: 200 OK\r\n"
@@ -425,27 +433,27 @@ if [ "$REQUEST_METHOD" = "GET" ]; then
     # --- action=dhcp_status: return current DHCP server settings as JSON ---
     if echo "$QUERY_STRING" | busybox grep -q "action=dhcp_status"; then
         DHCP_MODE_VAL=$(mib get DHCP_MODE 2>/dev/null \
-            | busybox grep "=" | busybox cut -d'=' -f2- | busybox tr -d '\r\n')
+            | busybox grep "=" | busybox cut -d'=' -f2- | busybox tr -d '\r\n' | busybox sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
         DHCP_POOL_START=$(mib get LAN_DHCP_POOL_START 2>/dev/null \
-            | busybox grep "=" | busybox cut -d'=' -f2- | busybox tr -d '\r\n')
+            | busybox grep "=" | busybox cut -d'=' -f2- | busybox tr -d '\r\n' | busybox sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
         DHCP_POOL_END=$(mib get LAN_DHCP_POOL_END 2>/dev/null \
-            | busybox grep "=" | busybox cut -d'=' -f2- | busybox tr -d '\r\n')
+            | busybox grep "=" | busybox cut -d'=' -f2- | busybox tr -d '\r\n' | busybox sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
         DHCP_MASK=$(mib get DHCP_SUBNET_MASK 2>/dev/null \
-            | busybox grep "=" | busybox cut -d'=' -f2- | busybox tr -d '\r\n')
+            | busybox grep "=" | busybox cut -d'=' -f2- | busybox tr -d '\r\n' | busybox sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
         DHCP_GW=$(mib get LAN_DHCP_GATEWAY 2>/dev/null \
-            | busybox grep "=" | busybox cut -d'=' -f2- | busybox tr -d '\r\n')
+            | busybox grep "=" | busybox cut -d'=' -f2- | busybox tr -d '\r\n' | busybox sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
         DHCP_LEASE=$(mib get LAN_DHCP_LEASE 2>/dev/null \
-            | busybox grep "=" | busybox cut -d'=' -f2- | busybox tr -d '\r\n')
+            | busybox grep "=" | busybox cut -d'=' -f2- | busybox tr -d '\r\n' | busybox sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
         DHCP_DOMAIN=$(mib get LAN_DHCP_DOMAIN 2>/dev/null \
-            | busybox grep "=" | busybox cut -d'=' -f2- | busybox tr -d '\r\n')
+            | busybox grep "=" | busybox cut -d'=' -f2- | busybox tr -d '\r\n' | busybox sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
         DHCP_DNS_OPT=$(mib get LAN_DHCP_DNS_OPT 2>/dev/null \
-            | busybox grep "=" | busybox cut -d'=' -f2- | busybox tr -d '\r\n')
+            | busybox grep "=" | busybox cut -d'=' -f2- | busybox tr -d '\r\n' | busybox sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
         DHCP_DNS1=$(mib get DHCPS_DNS1 2>/dev/null \
-            | busybox grep "=" | busybox cut -d'=' -f2- | busybox tr -d '\r\n')
+            | busybox grep "=" | busybox cut -d'=' -f2- | busybox tr -d '\r\n' | busybox sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
         DHCP_DNS2=$(mib get DHCPS_DNS2 2>/dev/null \
-            | busybox grep "=" | busybox cut -d'=' -f2- | busybox tr -d '\r\n')
+            | busybox grep "=" | busybox cut -d'=' -f2- | busybox tr -d '\r\n' | busybox sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
         DHCP_DNS3=$(mib get DHCPS_DNS3 2>/dev/null \
-            | busybox grep "=" | busybox cut -d'=' -f2- | busybox tr -d '\r\n')
+            | busybox grep "=" | busybox cut -d'=' -f2- | busybox tr -d '\r\n' | busybox sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
 
         DHCP_ENABLED=false
         [ -n "$DHCP_MODE_VAL" ] && [ "$DHCP_MODE_VAL" != "0" ] && DHCP_ENABLED=true
@@ -492,27 +500,27 @@ if [ "$REQUEST_METHOD" = "GET" ]; then
         G_SN=$(mib get GPON_SN 2>/dev/null \
             | busybox grep "=" \
             | busybox cut -d'=' -f2- \
-            | busybox tr -d '\r\n')
+            | busybox tr -d '\r\n' | busybox sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
         G_LOID=$(mib get LOID 2>/dev/null \
             | busybox grep "=" \
             | busybox cut -d'=' -f2- \
-            | busybox tr -d '\r\n')
+            | busybox tr -d '\r\n' | busybox sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
         G_LOID_PW=$(mib get LOID_PASSWD 2>/dev/null \
             | busybox grep "=" \
             | busybox cut -d'=' -f2- \
-            | busybox tr -d '\r\n')
+            | busybox tr -d '\r\n' | busybox sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
         G_PLOAM=$(mib get GPON_PLOAM_PASSWD 2>/dev/null \
             | busybox grep "=" \
             | busybox cut -d'=' -f2- \
-            | busybox tr -d '\r\n')
+            | busybox tr -d '\r\n' | busybox sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
         G_PON_MODE=$(mib get PON_MODE 2>/dev/null \
             | busybox grep "=" \
             | busybox cut -d'=' -f2 \
-            | busybox tr -d '\r\n')
+            | busybox tr -d '\r\n' | busybox sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
         G_PON_AUTO=$(mib get PON_MODE_AUTO_CHECK_ENABLE 2>/dev/null \
             | busybox grep "=" \
             | busybox cut -d'=' -f2 \
-            | busybox tr -d '\r\n')
+            | busybox tr -d '\r\n' | busybox sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
         [ -z "$G_PON_MODE" ] && G_PON_MODE=1
         [ -z "$G_PON_AUTO" ] && G_PON_AUTO=1
         ESC_SN=$(printf '%s' "$G_SN"     | busybox sed 's/\\/\\\\/g; s/"/\\"/g')
@@ -540,18 +548,18 @@ if [ "$REQUEST_METHOD" = "GET" ]; then
         GPON_SN=$(mib get GPON_SN 2>/dev/null \
             | busybox grep "=" \
             | busybox cut -d'=' -f2 \
-            | busybox tr -d '\r\n')
+            | busybox tr -d '\r\n' | busybox sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
         MAC_RAW=$(mib get ELAN_MAC_ADDR 2>/dev/null \
             | busybox grep "=" \
             | busybox cut -d'=' -f2 \
-            | busybox tr -d '\r\n')
+            | busybox tr -d '\r\n' | busybox sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
         MAC=$(echo "$MAC_RAW" \
             | busybox sed 's/\(..\)\(..\)\(..\)\(..\)\(..\)\(..\)/\1:\2:\3:\4:\5:\6/' \
             | busybox tr 'a-z' 'A-Z')
         HW_SN=$(mib get HW_SERIAL_NO 2>/dev/null \
             | busybox grep "=" \
             | busybox cut -d'=' -f2- \
-            | busybox tr -d '\r\n')
+            | busybox tr -d '\r\n' | busybox sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
         ESC_HW_SN=$(printf '%s' "$HW_SN" | busybox sed 's/\\/\\\\/g; s/"/\\"/g')
         printf "Status: 200 OK\r\n"
         printf "Content-Type: application/json\r\n\r\n"
@@ -1217,10 +1225,10 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
         # Read current PON settings BEFORE applying so we can detect changes
         CUR_PON_AUTO=$(mib get PON_MODE_AUTO_CHECK_ENABLE 2>/dev/null \
             | busybox grep "=" | busybox cut -d'=' -f2 \
-            | busybox tr -d '\r\n')
+            | busybox tr -d '\r\n' | busybox sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
         CUR_PON_MODE=$(mib get PON_MODE 2>/dev/null \
             | busybox grep "=" | busybox cut -d'=' -f2 \
-            | busybox tr -d '\r\n')
+            | busybox tr -d '\r\n' | busybox sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
         [ -z "$CUR_PON_AUTO" ] && CUR_PON_AUTO=1
         [ -z "$CUR_PON_MODE" ] && CUR_PON_MODE=1
 
@@ -1271,9 +1279,9 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
 
         # Verify current password matches what is stored
         REAL_PASS=$(mib get SUSER_PASSWORD 2>/dev/null \
-            | busybox grep "SUSER_PASSWORD=" \
+            | busybox grep "^SUSER_PASSWORD[[:space:]]*=" \
             | busybox cut -d'=' -f2- \
-            | busybox tr -d '\r\n')
+            | busybox tr -d '\r\n' | busybox sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
         if [ "$FORM_CURPASS" != "$REAL_PASS" ]; then
             printf "Status: 403 Forbidden\r\n"
             printf "Content-Type: text/plain\r\n\r\n"
@@ -1357,10 +1365,10 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
 
         CUR_IP=$(mib get LAN_IP_ADDR 2>/dev/null \
             | busybox grep "=" | busybox cut -d'=' -f2- \
-            | busybox tr -d '\r\n')
+            | busybox tr -d '\r\n' | busybox sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
         CUR_SN=$(mib get LAN_SUBNET 2>/dev/null \
             | busybox grep "=" | busybox cut -d'=' -f2- \
-            | busybox tr -d '\r\n')
+            | busybox tr -d '\r\n' | busybox sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
 
         if [ "$FORM_IP" != "$CUR_IP" ] || [ "$FORM_SN" != "$CUR_SN" ]; then
             /bin/ifconfig br0 "$FORM_IP" netmask "$FORM_SN" mtu 1500
@@ -1533,7 +1541,7 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
         esac
 
         OLD_MODE=$(mib get DHCP_MODE 2>/dev/null \
-            | busybox grep "=" | busybox cut -d'=' -f2- | busybox tr -d '\r\n')
+            | busybox grep "=" | busybox cut -d'=' -f2- | busybox tr -d '\r\n' | busybox sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
         [ -z "$OLD_MODE" ] && OLD_MODE=0
 
         # Save rollback state
@@ -1621,7 +1629,7 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
         # Get current SN to detect change
         CUR_GPON_SN=$(mib get GPON_SN 2>/dev/null \
             | busybox grep "=" | busybox cut -d'=' -f2- \
-            | busybox tr -d '\r\n')
+            | busybox tr -d '\r\n' | busybox sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
 
         SN_CHANGED=0
         [ "$FORM_SN" != "$CUR_GPON_SN" ] && SN_CHANGED=1

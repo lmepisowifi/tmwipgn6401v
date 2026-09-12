@@ -58,7 +58,14 @@ _lock() {
     trap _unlock EXIT INT TERM
 }
 _fmt_secs() {
-    local s=$1 d=$(( s / 86400 )) h=$(( (s % 86400) / 3600 )) m=$(( (s % 3600) / 60 ))
+    local s="${1:-0}"
+    s="${s#-}"
+    case "$s" in
+        ""|*[!0-9]*) s=0 ;;
+    esac
+    local d=$(( s / 86400 ))
+    local h=$(( (s % 86400) / 3600 ))
+    local m=$(( (s % 3600) / 60 ))
     if [ "$d" -gt 0 ]; then printf '%dd %dh %dm' "$d" "$h" "$m"
     elif [ "$h" -gt 0 ]; then printf '%dh %dm' "$h" "$m"
     else printf '%dm' "$m"; fi

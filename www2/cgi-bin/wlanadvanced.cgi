@@ -91,7 +91,8 @@ mib_get() {
     mib get "$1" \
         | busybox grep "=" \
         | busybox cut -d'=' -f2- \
-        | busybox tr -d '\r\n'
+        | busybox tr -d '\r\n' \
+        | busybox sed 's/^[[:space:]]*//;s/[[:space:]]*$//'
 }
 
 # ---- Unified SSID (merge) state ----

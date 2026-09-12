@@ -34,7 +34,7 @@ dbg() {
         >> "$DBG_LOG" 2>/dev/null
 }
 
-mib_get() { mib get "$1" 2>/dev/null | busybox cut -d= -f2- | busybox tr -d '\r\n'; }
+mib_get() { mib get "$1" 2>/dev/null | busybox cut -d= -f2- | busybox tr -d '\r\n' | busybox sed 's/^[[:space:]]*//;s/[[:space:]]*$//'; }
 
 read_pid() {
     [ -f "$1" ] || return 1

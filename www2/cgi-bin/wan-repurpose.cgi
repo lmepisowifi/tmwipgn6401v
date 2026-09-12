@@ -134,7 +134,8 @@ mib_field() {
     mib get "$1" 2>/dev/null \
         | busybox grep "=" \
         | busybox cut -d'=' -f2- \
-        | busybox tr -d '\r\n'
+        | busybox tr -d '\r\n' \
+        | busybox sed 's/^[[:space:]]*//;s/[[:space:]]*$//'
 }
 
 # True if $1 is currently a configured (applied) DHCP-client interface —

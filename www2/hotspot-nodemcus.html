@@ -97,6 +97,7 @@
                             <th>IP</th>
                             <th>MAC</th>
                             <th>Status</th>
+                            <th>CPU Freq</th>
                             <th></th>
                         </tr>
                     </thead>
@@ -227,6 +228,19 @@ function renderNodemcus(){
             +   '<button class="btn btn-sm btn-outline-danger flex-fill" onclick="delNodemcu(' + n.id + ',this)">Delete</button>'
             + '</div>';
 
+        // CPU frequency: no live readback stored in the router's own registry
+        // (that's the NodeMCU's own /cfg.txt, not something the portal tracks) —
+        // pick a value and Apply pushes+reboots that specific unit. Defaults to
+        // 80MHz (the firmware's own default) until changed.
+        var freqCtl =
+              '<div style="display:flex;gap:3px;align-items:center;">'
+            +   '<select class="form-select form-select-sm" style="width:auto;padding:2px 24px 2px 6px;font-size:12px;" id="nm-freq-' + n.id + '">'
+            +     '<option value="80">80 MHz</option>'
+            +     '<option value="160">160 MHz</option>'
+            +   '</select>'
+            +   '<button class="btn btn-sm btn-outline-secondary" title="Push this frequency and reboot the unit" onclick="applyFreq(' + n.id + ',this)">Apply</button>'
+            + '</div>';
+
         var handle =
               '<div style="display:flex;align-items:center;gap:2px;">'
             +   '<span class="nm-drag" title="Drag to reorder">&#10303;</span>'
@@ -245,6 +259,7 @@ function renderNodemcus(){
             '<td><code>'+escHtml(n.ip)+'</code></td>'+
             '<td><code>'+escHtml(formatMac(n.mac))+'</code></td>'+
             '<td>'+pills+'</td>'+
+            '<td>'+freqCtl+'</td>'+
             '<td>'+actions+'</td>';
         tbody.appendChild(tr);
     });
@@ -397,6 +412,22 @@ function delNodemcu(id, btn){
         else { toastr.error('Delete failed: '+(d.error||'')); btn.disabled=false; btn.textContent='Delete'; }
     })
     .catch(function(){ toastr.error('Network error'); btn.disabled=false; btn.textContent='Delete'; });
+}
+
+function applyFreq(id, btn){
+    var sel = document.getElementById('nm-freq-'+id);
+    var freq = sel ? sel.value : '80';
+    if (!confirm('Set this NodeMCU to '+freq+'MHz and reboot it now? Any active coin session on it will be interrupted.')) return;
+    btn.disabled=true; sel.disabled=true; btn.textContent='…';
+    fetch('/cgi-bin/hotspot.cgi?action=nodemcu_setfreq',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'id='+id+'&freq='+freq})
+    .then(function(r){ return r.json(); })
+    .then(function(d){
+        if (d.ok){ toastr.success('Applied — unit rebooting at '+freq+'MHz'); }
+        else if (d.error==='busy'){ toastr.error('Unit is mid-session — try again once it\'s idle'); }
+        else { toastr.error('Failed: '+(d.error||'')); }
+        btn.disabled=false; sel.disabled=false; btn.textContent='Apply';
+    })
+    .catch(function(){ toastr.error('Network error'); btn.disabled=false; sel.disabled=false; btn.textContent='Apply'; });
 }
 
 window.addEventListener('DOMContentLoaded', loadNodemcus);

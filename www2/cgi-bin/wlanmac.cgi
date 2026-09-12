@@ -60,7 +60,8 @@ get_wlan_disabled() {
     mib get "$DIS_KEY" 2>/dev/null \
         | busybox grep "=" \
         | busybox cut -d'=' -f2- \
-        | busybox tr -d '\r\n'
+        | busybox tr -d '\r\n' \
+        | busybox sed 's/^[[:space:]]*//;s/[[:space:]]*$//'
 }
 
 # ---- Get filter mode integer (0/1/2) for a band ----

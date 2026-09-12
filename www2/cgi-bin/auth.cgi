@@ -50,8 +50,8 @@ FORM_USER=$(busybox httpd -d "$FORM_USER" | busybox tr -d '\r\n')
 FORM_PASS=$(busybox httpd -d "$FORM_PASS" | busybox tr -d '\r\n')
 
 # 3. Get real credentials from MIB
-REAL_USER=$(mib get SUSER_NAME | grep "SUSER_NAME=" | busybox cut -d'=' -f2 | busybox tr -d '\r\n')
-REAL_PASS=$(mib get SUSER_PASSWORD | grep "SUSER_PASSWORD=" | busybox cut -d'=' -f2 | busybox tr -d '\r\n')
+REAL_USER=$(mib get SUSER_NAME | grep "^SUSER_NAME[[:space:]]*=" | busybox cut -d'=' -f2- | busybox tr -d '\r\n' | busybox sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+REAL_PASS=$(mib get SUSER_PASSWORD | grep "^SUSER_PASSWORD[[:space:]]*=" | busybox cut -d'=' -f2- | busybox tr -d '\r\n' | busybox sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
 
 # 4. Validate credentials
 if [ -n "$FORM_USER" ] && [ "$FORM_USER" = "$REAL_USER" ] && [ "$FORM_PASS" = "$REAL_PASS" ]; then

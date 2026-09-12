@@ -34,6 +34,7 @@
 #include <WiFiClient.h>
 #include <MD5Builder.h>
 #include <LittleFS.h>
+#include <ets_sys.h>   // ets_update_cpu_frequency() — see preloop_update_frequency() below
 
 // ── PIN DEFINITIONS ───────────────────────────────────────────────────
 const int COIN_PIN        = D6;  // GPIO12  pulse input from coin acceptor
@@ -49,6 +50,7 @@ const int COIN_ENABLE_ACTIVE = HIGH;
 #define DEFAULT_PORTAL_PORT 80
 #define DEFAULT_COIN_VALUE  1     // pesos per pulse
 #define DEFAULT_TIMEOUT     30    // coin session seconds
+#define DEFAULT_CPU_FREQ_MHZ 80   // 80 (stock, most stable) or 160 (faster, more heat/power)
 #define CONFIG_PATH         "/cfg.txt"
 #define AP_SSID             "PisoWifi-Setup"
 
@@ -56,7 +58,7 @@ const int COIN_ENABLE_ACTIVE = HIGH;
 // ota.sh compares it against the release manifest's nodemcu_version and pushes a
 // self-flash ONLY when they differ, so a portal-only update (www2/hotspot files)
 // never needlessly reflashes the coin slot.
-#define FW_VERSION          "1.2.5"
+#define FW_VERSION          "1.3.0"
 // No AP password — open so owner can connect immediately on first setup
 
 // ── CONFIG STRUCT ─────────────────────────────────────────────────────
@@ -68,6 +70,7 @@ struct Config {
     uint16_t portal_port;
     uint8_t  coin_value;    // pesos per pulse
     uint8_t  timeout_sec;   // coin session timeout
+    uint8_t  cpu_freq_mhz;  // 80 or 160 — see preloop_update_frequency()
 };
 Config cfg;
 
@@ -388,6 +391,7 @@ void setConfigDefaults() {
     cfg.portal_port = DEFAULT_PORTAL_PORT;
     cfg.coin_value  = DEFAULT_COIN_VALUE;
     cfg.timeout_sec = DEFAULT_TIMEOUT;
+    cfg.cpu_freq_mhz = DEFAULT_CPU_FREQ_MHZ;
 }
 
 // Returns true only if config exists and has a valid SSID
@@ -411,6 +415,10 @@ bool loadConfig() {
         else if (k == "PORT")    cfg.portal_port = (uint16_t)v.toInt();
         else if (k == "COINVAL") cfg.coin_value  = (uint8_t)v.toInt();
         else if (k == "TIMEOUT") cfg.timeout_sec = (uint8_t)v.toInt();
+        else if (k == "CPUFREQ") cfg.cpu_freq_mhz = (v.toInt() == 160) ? 160 : 80;
+        // No "else" needed for a missing CPUFREQ key: setConfigDefaults() already
+        // seeded cfg.cpu_freq_mhz before this runs, so a config saved by an older
+        // firmware version (pre-CPUFREQ) just keeps loading fine at 80MHz.
     }
     f.close();
     return strlen(cfg.ssid) > 0;
@@ -426,6 +434,7 @@ bool saveConfig() {
     f.println("PORT="    + String(cfg.portal_port));
     f.println("COINVAL=" + String(cfg.coin_value));
     f.println("TIMEOUT=" + String(cfg.timeout_sec));
+    f.println("CPUFREQ=" + String(cfg.cpu_freq_mhz));
     f.close();
     return true;
 }
@@ -527,6 +536,13 @@ button:disabled{opacity:.5;cursor:not-allowed}
        <input id="port" type="number" value="80"></div>
 </div>
 
+<h3>Performance</h3>
+<label>CPU Frequency</label>
+<select id="cpufreq">
+  <option value="80" selected>80 MHz (stock — most stable)</option>
+  <option value="160">160 MHz (faster — more heat/power draw)</option>
+</select>
+
 <button id="saveBtn" onclick="save()">Save &amp; Connect</button>
 <div id="msg"></div>
 </div>
@@ -570,7 +586,8 @@ function save() {
     ip:   document.getElementById('ip').value.trim(),
     port: document.getElementById('port').value,
     coinval: document.getElementById('coinval').value,
-    timeout: document.getElementById('timeout').value
+    timeout: document.getElementById('timeout').value,
+    cpufreq: document.getElementById('cpufreq').value
   });
   fetch('/save', {method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'}, body:data.toString()})
   .then(function(r){return r.json();})
@@ -622,6 +639,7 @@ void handle_save() {
     String port    = setupServer.arg("port");
     String coinval = setupServer.arg("coinval");
     String timeout = setupServer.arg("timeout");
+    String cpufreq = setupServer.arg("cpufreq");
 
     // Strip stray whitespace/CR/newline that commonly rides along when a PSK is
     // copy-pasted from a portal page, chat, or spreadsheet. An invisible
@@ -649,6 +667,7 @@ void handle_save() {
     cfg.portal_port = port.toInt()    > 0 ? (uint16_t)port.toInt()    : DEFAULT_PORTAL_PORT;
     cfg.coin_value  = coinval.toInt() > 0 ? (uint8_t)coinval.toInt()  : DEFAULT_COIN_VALUE;
     cfg.timeout_sec = timeout.toInt() > 0 ? (uint8_t)timeout.toInt()  : DEFAULT_TIMEOUT;
+    cfg.cpu_freq_mhz = (cpufreq.toInt() == 160) ? 160 : 80;   // anything else (blank, garbage) → safe 80MHz default
 
     if (saveConfig()) {
         setupServer.send(200, "application/json", "{\"ok\":true}");
@@ -1037,6 +1056,56 @@ void handle_set_wifi() {
     }
 }
 
+// /setfreq — portal-triggered CPU frequency change. Unlike /setwifi (which
+// defers and reconnects in-place), a frequency switch just reboots: the new
+// value is picked up by preloop_update_frequency() from the very first loop
+// after boot, and a reboot only takes ~1-2s versus the complexity of trying
+// to hot-swap frequency mid-session.
+//
+// Auth mirrors /reset and /setwifi exactly: portal-IP only + a single-use,
+// PSK-signed nonce that also binds the requested value:
+//   token = md5(PSK:nonce:freq:setfreq)
+void handle_set_freq() {
+    String caller = coinServer.client().remoteIP().toString();
+    if (caller != String(cfg.portal_ip)) {
+        coinServer.send(403, "application/json", "{\"ok\":false,\"error\":\"forbidden\"}");
+        return;
+    }
+    if (resetNonce.length() == 0 || (millis() - nonceIssuedMs) > NONCE_TTL_MS) {
+        coinServer.send(403, "application/json", "{\"ok\":false,\"error\":\"no_nonce\"}");
+        return;
+    }
+    String freq  = coinServer.arg("freq");
+    String token = coinServer.arg("token");
+    bool good = sig_ok(token, String(cfg.psk) + ":" + resetNonce + ":" + freq + ":setfreq");
+    resetNonce = "";   // single-use: burn the nonce regardless of outcome
+    if (!good) {
+        coinServer.send(403, "application/json", "{\"ok\":false,\"error\":\"bad_token\"}");
+        return;
+    }
+    int mhz = freq.toInt();
+    if (mhz != 80 && mhz != 160) {
+        coinServer.send(200, "application/json", "{\"ok\":false,\"error\":\"bad_freq\"}");
+        return;
+    }
+    // Refuse mid-session: same reasoning as /update's "busy" gate — a reboot
+    // right now would drop a customer's coin session and lose any pulses
+    // still in flight, so make the caller retry once the unit is idle.
+    if (sessionActive) {
+        coinServer.send(200, "application/json", "{\"ok\":false,\"error\":\"busy\"}");
+        return;
+    }
+    cfg.cpu_freq_mhz = (uint8_t)mhz;
+    bool saved = saveConfig();
+    coinServer.send(200, "application/json",
+        String("{\"ok\":") + (saved ? "true" : "false") +
+        ",\"msg\":\"rebooting at " + String(mhz) + "MHz\"}");
+    if (saved) {
+        delay(500);   // let the HTTP response actually drain before we drop the link
+        ESP.restart();
+    }
+}
+
 // ── OTA SELF-UPDATE ──────────────────────────────────────────────────────────
 // The portal (ota.sh) pushes a new firmware image to us as part of its own OTA,
 // but ONLY when our FW_VERSION differs from the release. Auth + flow mirror the
@@ -1067,7 +1136,8 @@ void handle_version() {
         return;
     }
     coinServer.send(200, "application/json",
-        String("{\"ok\":true,\"fw\":\"") + FW_VERSION + "\"}");
+        String("{\"ok\":true,\"fw\":\"") + FW_VERSION +
+        "\",\"cpu_mhz\":" + String(ESP.getCpuFreqMHz()) + "}");
 }
 
 void handle_update() {
@@ -1253,11 +1323,43 @@ void startNormalMode() {
     coinServer.on("/setwifi", handle_set_wifi);
     coinServer.on("/version", handle_version);
     coinServer.on("/update",  handle_update);
+    coinServer.on("/setfreq", handle_set_freq);
     coinServer.begin();
 }
 
+// ── RUNTIME CPU FREQUENCY CONTROL ──────────────────────────────────────
+// The ESP8266 Arduino core does NOT support changing CPU frequency at
+// runtime out of the box: whatever "CPU Frequency" you pick in the board
+// menu (80 or 160MHz) gets baked in as the F_CPU macro, and the core
+// silently RE-ASSERTS that compiled-in value on every single loop()
+// iteration via a hook called preloop_update_frequency() (see
+// core_esp8266_main.cpp). Calling system_update_cpu_freq() on its own
+// would get stomped back within microseconds, on the very next loop.
+//
+// preloop_update_frequency() is declared __attribute__((weak)) specifically
+// so a sketch can replace it — which is what we do here: instead of
+// reasserting the compile-time F_CPU value, we reassert cfg.cpu_freq_mhz
+// (loaded from /cfg.txt) every loop. Same self-healing mechanism the core
+// uses, just config-driven instead of compile-time-driven. This means the
+// board's own "CPU Frequency" menu selection no longer matters at all —
+// compile with either setting, cfg.cpu_freq_mhz is what actually wins.
+//
+// NOTE: this fires once BEFORE setup() even runs (cfg is still
+// zero-initialized then), so the very first instant after boot is at the
+// SDK's own default (80MHz) regardless — completely harmless, and every
+// loop after setup() has loaded the real config applies the right value.
+extern "C" void preloop_update_frequency() {
+    if (cfg.cpu_freq_mhz == 160) {
+        ets_update_cpu_frequency(160);
+        CPU2X |= 1UL;
+    } else {
+        ets_update_cpu_frequency(80);
+        CPU2X &= ~1UL;
+    }
+}
 
-// ═══════════════════════════════════���══════════════════════════════════
+
+// ══════════════════════════════════════════════════════════════════════
 // ARDUINO SETUP & LOOP
 // ══════════════════════════════════════════════════════════════════════
 
