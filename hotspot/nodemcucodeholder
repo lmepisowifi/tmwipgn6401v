@@ -26,7 +26,6 @@
 //   → From the portal machine, curl or wget:
 //      http://<nodemcu-ip>:8080/reset
 //   → Only accepts connections from PORTAL_IP (set in config)
-
 #include <ESP8266WiFi.h>
 #include <ESP8266WebServer.h>
 #include <ESP8266HTTPClient.h>
@@ -57,7 +56,7 @@ const int COIN_ENABLE_ACTIVE = HIGH;
 // ota.sh compares it against the release manifest's nodemcu_version and pushes a
 // self-flash ONLY when they differ, so a portal-only update (www2/hotspot files)
 // never needlessly reflashes the coin slot.
-#define FW_VERSION          "1.3.1"
+#define FW_VERSION          "1.3.2"
 // No AP password — open so owner can connect immediately on first setup
 
 // ── CONFIG STRUCT ─────────────────────────────────────────────────────
@@ -81,11 +80,28 @@ ESP8266WebServer coinServer(8080);
 WiFiClient       wifiClient;
 bool             isSetupMode = false;
 
+// Cached parse of cfg.portal_ip. Every admin endpoint and the WiFi watchdog
+// used to check the caller/gateway with `.toString() == String(cfg.portal_ip)`,
+// which allocates two throwaway Strings per check. portal_ip only ever
+// changes right before a reboot (setup Save / factory reset), so we parse it
+// once into an IPAddress here and compare IPAddress-to-IPAddress everywhere
+// else — zero heap traffic for what was actually the single largest
+// allocation source in the whole sketch: the admin checks fire per-request,
+// but the watchdog's isHealthy read in loop() ran UNCONDITIONALLY on every
+// loop() iteration (only the reconnect action was gated to every 10-15s),
+// and loop()'s only throttle is a trailing delay(10) — so this was firing on
+// the order of ~100 times/second, continuously, whether or not anyone was
+// using the machine.
+IPAddress        portalIPAddr;
+
 // ── COIN SESSION STATE ────────────────────────────────────────────────
 volatile int           coinPesos        = 0;
 bool                   sessionActive    = false;
 volatile bool          finalizing       = false;  // True when waiting for pulses to settle
-String                 activeSid        = "";
+char                   activeSid[17]    = "";      // sid is always exactly 16 chars (validated
+                                                     // in handle_coin_start) + NUL. Was a String;
+                                                     // fixed buffer means starting/ending a
+                                                     // session never touches the heap.
 volatile unsigned long sessionStartMs   = 0;      
 unsigned long          sessionTimeoutMs = 30000UL;
 volatile bool          cancelRequested  = false;  
@@ -135,7 +151,7 @@ volatile bool          pulseInProgress = false;
 volatile unsigned long lastEdgeMs = 0;
 volatile int           activeState = LOW; // Assumes NO by default
 bool   pendingResult  = false;
-String pendingBody    = "";
+char   pendingBody[96] = "";   // "sid="+16 + "&amount="+~10digits + "&sig="+32, +headroom
 int    pendingRetries = 0;
 
 // One-time, short-lived nonce backing the signed /reset flow (see coin.sh).
@@ -178,14 +194,15 @@ const uint8_t       HEAP_LOW_CONFIRM = 3;        // 3 low reads in a row (~30s) 
 // getFreeHeap() alone is NOT enough: heavy String concatenation + HTTPClient
 // chops the heap into small pieces, so TOTAL free heap can still look healthy
 // (well above HEAP_LOW_BYTES) while the LARGEST CONTIGUOUS block shrinks to a
-// few hundred bytes. Once that happens, the String/MD5Builder allocations
-// inside md5_hex()/sig_ok() silently fail and return empty — so the signature
-// check computes the wrong hash and EVERY /start is rejected with 403
-// "bad_sig" even though the PSK is perfectly correct. The unit then appears to
-// "destroy itself" and never recovers until a manual power cycle, because the
-// old free-heap-only watchdog never sees a problem. We therefore also watch
-// the largest free block (getMaxFreeBlockSize) and the fragmentation percent
-// (getHeapFragmentation) and reboot to defragment before signing breaks.
+// few hundred bytes. md5_hex_buf()/sig_ok_buf() no longer allocate at all (see
+// the SIGNING section below), so they can't be the ones failing anymore — but
+// coinServer.send(), WiFiClient/HTTPClient, and String::arg() still do, and
+// any of THOSE failing under a fragmented heap can still make a request
+// behave strangely, and the unit could still appear to "destroy itself" and
+// never recover until a manual power cycle, because the old free-heap-only
+// watchdog never sees a problem. We therefore also watch the largest free
+// block (getMaxFreeBlockSize) and the fragmentation percent
+// (getHeapFragmentation) and reboot to defragment before anything else breaks.
 const unsigned long HEAP_BLOCK_LOW_BYTES = 6000UL;  // largest contiguous block floor
 const uint8_t       HEAP_FRAG_HIGH_PCT   = 75;      // % fragmentation ceiling
 
@@ -219,8 +236,9 @@ unsigned long lastSessionEndMs = 0;       // millis() when the last coin session
 
 // One-line snapshot of heap health — free bytes, largest contiguous block,
 // and fragmentation %. When /start starts 403-ing, watch maxBlock/frag here:
-// if maxBlock is small or frag is high, the signature String allocations are
-// failing (the fragmentation bug). If heap looks fine, suspect the PSK.
+// md5_hex_buf()/sig_ok_buf() no longer allocate, so a small maxBlock/high frag
+// points at something else (HTTPClient/WiFiClient, coinServer.send()) rather
+// than the signature check itself. If heap looks fine, suspect the PSK.
 void dbgHeap(const char* tag) {
 #if DEBUG_SERIAL
     Serial.printf("[HEAP] %-14s free=%u maxBlock=%u frag=%u%%\n",
@@ -265,10 +283,26 @@ void dbgHexPsk() {
 // UTILITIES
 // ══════════════════════════════════════════════════════════════════════
 
-String md5_hex(const String& s) {
-    // Guard against a silent OOM: if the input String itself came back empty
-    // while the caller expected data, or the heap can't fit the working
-    // buffers, the resulting hash is meaningless. We log it so a 403 caused by
+// ── SIGNING — fixed buffers, zero heap traffic ─────────────────────────
+// The old md5_hex()/sig_ok() took Strings and every call site built the
+// "psk:sid:action" plaintext with chained String concatenation
+// (String(cfg.psk) + ":" + sid + ":start", etc). Each "+" allocates a new
+// throwaway String and frees the previous one. /status alone is polled
+// about once a second for the whole length of a session, so that one path
+// was doing 8-10 short-lived heap alloc/free cycles per second — exactly
+// the churn that chops the heap into the small blocks the watchdog above is
+// working around. These versions build the plaintext into a stack buffer
+// with snprintf and ask MD5Builder to write hex digits into another stack
+// buffer, so a signature check now allocates nothing at all.
+//
+// SIG_PLAIN_LEN covers the longest plaintext we ever sign: PSK(127) +
+// nonce(16) + ssid(63) + pass(63) + separators/literal ("setwifi" etc) —
+// rounded well up for headroom.
+#define SIG_PLAIN_LEN 320
+
+void md5_hex_buf(const char* plain, char out[33]) {
+    // Guard against a silent OOM: if the heap can't fit MD5Builder's working
+    // buffer the resulting hash is meaningless. Log it so a 403 caused by
     // allocation failure is distinguishable from a real PSK mismatch.
     if (ESP.getMaxFreeBlockSize() < 512) {
         DBG("[SIG] md5_hex: LOW heap block=%u — hash may be corrupt!\n",
@@ -276,41 +310,45 @@ String md5_hex(const String& s) {
     }
     MD5Builder b;
     b.begin();
-    b.add((uint8_t*)s.c_str(), s.length());
+    b.add((const uint8_t*)plain, strlen(plain));
     b.calculate();
-    String out = b.toString();
-    if (out.length() != 32) {
-        DBG("[SIG] md5_hex: BAD hash length=%u (expected 32) — allocation failed\n",
-            out.length());
+    uint8_t digest[16];
+    b.getBytes(digest);
+    static const char hexch[] = "0123456789abcdef";
+    for (int i = 0; i < 16; i++) {
+        out[i * 2]     = hexch[(digest[i] >> 4) & 0x0F];
+        out[i * 2 + 1] = hexch[digest[i] & 0x0F];
     }
-    return out;
+    out[32] = '\0';
 }
 
 // Constant-time signature compare — avoids leaking the expected MAC byte by
-// byte via response-timing differences (String '==' early-exits on first
-// mismatch). Cheap and behaviour-preserving for valid signatures.
-bool sig_ok(const String& sig, const String& plain) {
-    String expected = md5_hex(plain);
-    if (sig.length() != expected.length()) {
+// byte via response-timing differences. sig is the value received over the
+// wire (may be any length/garbage); plain is the already-formatted "psk:..."
+// message to hash and compare against.
+bool sig_ok_buf(const char* sig, const char* plain) {
+    char expected[33];
+    md5_hex_buf(plain, expected);
+    size_t sigLen = strlen(sig);
+    if (sigLen != 32) {
         // Length mismatch is almost always an OOM/fragmentation failure
         // (expected hash truncated) rather than a real bad signature.
-        DBG("[SIG] LEN MISMATCH recv_len=%u exp_len=%u\n",
-            sig.length(), expected.length());
-        DBG("[SIG]   recv=%s\n", sig.c_str());
-        DBG("[SIG]   exp =%s\n", expected.c_str());
+        DBG("[SIG] LEN MISMATCH recv_len=%u exp_len=32\n", (unsigned)sigLen);
+        DBG("[SIG]   recv=%s\n", sig);
+        DBG("[SIG]   exp =%s\n", expected);
         dbgHeap("sig_len_fail");
         return false;
     }
     uint8_t diff = 0;
-    for (size_t i = 0; i < expected.length(); i++)
+    for (size_t i = 0; i < 32; i++)
         diff |= (uint8_t)sig[i] ^ (uint8_t)expected[i];
     if (diff != 0) {
         // Correct length but different hash → the PSK stored on this unit does
         // NOT match what the portal signed with. This is the failure that
         // SURVIVES a reboot: check the [BOOT] PSK line against the portal.
         DBG("[SIG] HASH MISMATCH — stored PSK likely differs from portal PSK\n");
-        DBG("[SIG]   recv=%s\n", sig.c_str());
-        DBG("[SIG]   exp =%s\n", expected.c_str());
+        DBG("[SIG]   recv=%s\n", sig);
+        DBG("[SIG]   exp =%s\n", expected);
         DBG("[SIG]   psk =%s\n", dbgMask(cfg.psk).c_str());
     }
     return diff == 0;
@@ -703,8 +741,9 @@ void startSetupMode() {
 void post_result() {
     if (WiFi.status() != WL_CONNECTED) return;
     HTTPClient http;
-    String url = String("http://") + cfg.portal_ip + ":"
-                 + cfg.portal_port + "/cgi-bin/coin_result.sh";
+    char url[64];
+    snprintf(url, sizeof(url), "http://%s:%u/cgi-bin/coin_result.sh",
+             cfg.portal_ip, cfg.portal_port);
     http.begin(wifiClient, url);
     // Kept comfortably under the portal's own 2s wget timeout on /status
     // (both the resume-check and each poll attempt) — this call blocks
@@ -716,10 +755,11 @@ void post_result() {
     // LAN and only bounds the worst case.
     http.setTimeout(1500);
     http.addHeader("Content-Type", "application/x-www-form-urlencoded");
-    if (http.POST(pendingBody) > 0) {
+    // Post the fixed buffer directly by length — no String wrapper needed.
+    if (http.POST((uint8_t*)pendingBody, strlen(pendingBody)) > 0) {
         if (http.getString().indexOf("\"ok\":true") >= 0) {
             pendingResult  = false;
-            pendingBody    = "";
+            pendingBody[0] = '\0';
             pendingRetries = 0;
         }
     }
@@ -736,13 +776,14 @@ void endSession() {
     int finalAmount = coinPesos;
     coinPesos = 0;
 
-    String plain = String(cfg.psk) + ":" + activeSid + ":"
-                   + String(finalAmount) + ":end";
-    pendingBody    = "sid=" + activeSid + "&amount="
-                     + String(finalAmount) + "&sig=" + md5_hex(plain);
+    char plain[SIG_PLAIN_LEN], sig[33];
+    snprintf(plain, sizeof(plain), "%s:%s:%d:end", cfg.psk, activeSid, finalAmount);
+    md5_hex_buf(plain, sig);
+    snprintf(pendingBody, sizeof(pendingBody), "sid=%s&amount=%d&sig=%s",
+             activeSid, finalAmount, sig);
     pendingRetries = 0;
     pendingResult  = true;
-    activeSid      = "";
+    activeSid[0]   = '\0';
     lastSessionEndMs = millis();   // start the post-session grace clock for any queued reboot
     post_result();
 }
@@ -850,8 +891,10 @@ void handle_coin_start() {
         return;
     }
 
-    if (!sig_ok(sig, String(cfg.psk) + ":" + sid + ":start")) {
-        // sig_ok() has already logged WHY (heap/OOM vs PSK mismatch) above.
+    char plain[SIG_PLAIN_LEN];
+    snprintf(plain, sizeof(plain), "%s:%s:start", cfg.psk, sid.c_str());
+    if (!sig_ok_buf(sig.c_str(), plain)) {
+        // sig_ok_buf() has already logged WHY (heap/OOM vs PSK mismatch) above.
         DBGLN("[START] REJECT 403 bad_sig — see [SIG] lines above for cause");
         coinServer.send(403, "application/json", "{\"ok\":false,\"error\":\"bad_sig\"}");
         return;
@@ -861,7 +904,7 @@ void handle_coin_start() {
 sessionActive    = true;
     finalizing       = false;
     cancelRequested  = false;
-    activeSid        = sid;
+    sid.toCharArray(activeSid, sizeof(activeSid));  // sid.length()==16, validated above
     coinPesos        = 0;
     sessionStartMs   = millis();
     lastPulseMs      = millis(); // Init
@@ -900,7 +943,9 @@ void handle_coin_cancel() {
         coinServer.send(200, "application/json", "{\"ok\":true,\"msg\":\"already_ended\"}");
         return;
     }
-    if (!sig_ok(sig, String(cfg.psk) + ":" + sid + ":cancel")) {
+    char plain[SIG_PLAIN_LEN];
+    snprintf(plain, sizeof(plain), "%s:%s:cancel", cfg.psk, sid.c_str());
+    if (!sig_ok_buf(sig.c_str(), plain)) {
         coinServer.send(403, "application/json", "{\"ok\":false,\"error\":\"bad_sig\"}");
         return;
     }
@@ -926,12 +971,17 @@ void handle_coin_status() {
         // "active":false is what lets an updated portal tell this apart
         // from a genuine live session sitting at zero coins, instead of
         // treating the two the same and zeroing out a real balance.
-        String sig0 = md5_hex(String(cfg.psk) + ":" + sid + ":0:status");
-        coinServer.send(200, "application/json",
-            "{\"ok\":false,\"active\":false,\"amount\":0,\"sig\":\"" + sig0 + "\"}");
+        char plain0[SIG_PLAIN_LEN], sig0[33], resp0[128];
+        snprintf(plain0, sizeof(plain0), "%s:%s:0:status", cfg.psk, sid.c_str());
+        md5_hex_buf(plain0, sig0);
+        snprintf(resp0, sizeof(resp0),
+                 "{\"ok\":false,\"active\":false,\"amount\":0,\"sig\":\"%s\"}", sig0);
+        coinServer.send(200, "application/json", resp0);
         return;
     }
-    if (!sig_ok(sig, String(cfg.psk) + ":" + sid + ":poll")) {
+    char plainPoll[SIG_PLAIN_LEN];
+    snprintf(plainPoll, sizeof(plainPoll), "%s:%s:poll", cfg.psk, sid.c_str());
+    if (!sig_ok_buf(sig.c_str(), plainPoll)) {
         coinServer.send(403, "application/json", "{\"ok\":false,\"error\":\"bad_sig\"}");
         return;
     }
@@ -951,10 +1001,13 @@ void handle_coin_status() {
     if (remMs < 0) remMs = 0;
     int remaining = remMs / 1000;
 
-    String sig2 = md5_hex(String(cfg.psk) + ":" + sid + ":" + String(amt) + ":status");
-    coinServer.send(200, "application/json",
-        "{\"ok\":true,\"amount\":" + String(amt) + ",\"remaining\":" + String(remaining) +
-        ",\"sig\":\"" + sig2 + "\"}");
+    char plain2[SIG_PLAIN_LEN], sig2[33], resp2[160];
+    snprintf(plain2, sizeof(plain2), "%s:%s:%d:status", cfg.psk, sid.c_str(), amt);
+    md5_hex_buf(plain2, sig2);
+    snprintf(resp2, sizeof(resp2),
+             "{\"ok\":true,\"amount\":%d,\"remaining\":%d,\"sig\":\"%s\"}",
+             amt, remaining, sig2);
+    coinServer.send(200, "application/json", resp2);
 }
 
 // Soft factory reset — only accepts requests from the portal IP
@@ -962,8 +1015,9 @@ void handle_coin_status() {
 // portal IP so a random hotspot client can't farm nonces; the nonce is
 // useless anyway without the PSK to sign it.
 void handle_nonce() {
-    String caller = coinServer.client().remoteIP().toString();
-    if (caller != String(cfg.portal_ip)) {
+    // Compare IPAddress objects directly — was two String allocations
+    // (.toString() + String(cfg.portal_ip)) on every single admin request.
+    if (coinServer.client().remoteIP() != portalIPAddr) {
         coinServer.send(403, "application/json", "{\"ok\":false,\"error\":\"forbidden\"}");
         return;
     }
@@ -972,13 +1026,15 @@ void handle_nonce() {
              (unsigned)os_random(), (unsigned)os_random());
     resetNonce    = String(buf);
     nonceIssuedMs = millis();
-    coinServer.send(200, "application/json",
-        "{\"ok\":true,\"nonce\":\"" + resetNonce + "\"}");
+    char resp[48];
+    snprintf(resp, sizeof(resp), "{\"ok\":true,\"nonce\":\"%s\"}", buf);
+    coinServer.send(200, "application/json", resp);
 }
 
 void handle_admin_reset() {
-    String caller = coinServer.client().remoteIP().toString();
-    if (caller != String(cfg.portal_ip)) {
+    // Compare IPAddress objects directly — was two String allocations
+    // (.toString() + String(cfg.portal_ip)) on every single admin request.
+    if (coinServer.client().remoteIP() != portalIPAddr) {
         coinServer.send(403, "application/json", "{\"ok\":false,\"error\":\"forbidden\"}");
         return;
     }
@@ -991,7 +1047,9 @@ void handle_admin_reset() {
         return;
     }
     String token = coinServer.arg("token");
-    bool good = sig_ok(token, String(cfg.psk) + ":" + resetNonce + ":reset");
+    char plainRst[SIG_PLAIN_LEN];
+    snprintf(plainRst, sizeof(plainRst), "%s:%s:reset", cfg.psk, resetNonce.c_str());
+    bool good = sig_ok_buf(token.c_str(), plainRst);
     resetNonce = "";   // single-use: burn the nonce regardless of outcome
     if (!good) {
         coinServer.send(403, "application/json", "{\"ok\":false,\"error\":\"bad_token\"}");
@@ -1013,8 +1071,9 @@ void handle_admin_reset() {
 // Auth mirrors /reset: portal-IP only + a single-use, PSK-signed nonce that
 // also binds the exact ssid+pass:  token = md5(PSK:nonce:ssid:pass:setwifi)
 void handle_set_wifi() {
-    String caller = coinServer.client().remoteIP().toString();
-    if (caller != String(cfg.portal_ip)) {
+    // Compare IPAddress objects directly — was two String allocations
+    // (.toString() + String(cfg.portal_ip)) on every single admin request.
+    if (coinServer.client().remoteIP() != portalIPAddr) {
         coinServer.send(403, "application/json", "{\"ok\":false,\"error\":\"forbidden\"}");
         return;
     }
@@ -1025,8 +1084,10 @@ void handle_set_wifi() {
     String newSsid = coinServer.arg("ssid");
     String newPass = coinServer.arg("pass");
     String token   = coinServer.arg("token");
-    bool good = sig_ok(token, String(cfg.psk) + ":" + resetNonce + ":" +
-                              newSsid + ":" + newPass + ":setwifi");
+    char plainWifi[SIG_PLAIN_LEN];
+    snprintf(plainWifi, sizeof(plainWifi), "%s:%s:%s:%s:setwifi",
+             cfg.psk, resetNonce.c_str(), newSsid.c_str(), newPass.c_str());
+    bool good = sig_ok_buf(token.c_str(), plainWifi);
     resetNonce = "";   // single-use: burn the nonce regardless of outcome
     if (!good) {
         coinServer.send(403, "application/json", "{\"ok\":false,\"error\":\"bad_token\"}");
@@ -1046,9 +1107,11 @@ void handle_set_wifi() {
     newSsid.toCharArray(cfg.ssid, sizeof(cfg.ssid));
     newPass.toCharArray(cfg.pass, sizeof(cfg.pass));
     bool saved = saveConfig();
-    coinServer.send(200, "application/json",
-        String("{\"ok\":") + (saved ? "true" : "false") +
-        ",\"msg\":\"credentials accepted, switching shortly\"}");
+    char resp[96];
+    snprintf(resp, sizeof(resp),
+             "{\"ok\":%s,\"msg\":\"credentials accepted, switching shortly\"}",
+             saved ? "true" : "false");
+    coinServer.send(200, "application/json", resp);
     if (saved) {
         wifiChangePending = true;
         wifiChangeReqMs   = millis();   // apply after WIFI_CHANGE_DELAY_MS elapses
@@ -1065,8 +1128,9 @@ void handle_set_wifi() {
 // PSK-signed nonce that also binds the requested value:
 //   token = md5(PSK:nonce:freq:setfreq)
 void handle_set_freq() {
-    String caller = coinServer.client().remoteIP().toString();
-    if (caller != String(cfg.portal_ip)) {
+    // Compare IPAddress objects directly — was two String allocations
+    // (.toString() + String(cfg.portal_ip)) on every single admin request.
+    if (coinServer.client().remoteIP() != portalIPAddr) {
         coinServer.send(403, "application/json", "{\"ok\":false,\"error\":\"forbidden\"}");
         return;
     }
@@ -1076,7 +1140,10 @@ void handle_set_freq() {
     }
     String freq  = coinServer.arg("freq");
     String token = coinServer.arg("token");
-    bool good = sig_ok(token, String(cfg.psk) + ":" + resetNonce + ":" + freq + ":setfreq");
+    char plainFreq[SIG_PLAIN_LEN];
+    snprintf(plainFreq, sizeof(plainFreq), "%s:%s:%s:setfreq",
+             cfg.psk, resetNonce.c_str(), freq.c_str());
+    bool good = sig_ok_buf(token.c_str(), plainFreq);
     resetNonce = "";   // single-use: burn the nonce regardless of outcome
     if (!good) {
         coinServer.send(403, "application/json", "{\"ok\":false,\"error\":\"bad_token\"}");
@@ -1096,9 +1163,10 @@ void handle_set_freq() {
     }
     cfg.cpu_freq_mhz = (uint8_t)mhz;
     bool saved = saveConfig();
-    coinServer.send(200, "application/json",
-        String("{\"ok\":") + (saved ? "true" : "false") +
-        ",\"msg\":\"rebooting at " + String(mhz) + "MHz\"}");
+    char resp[80];
+    snprintf(resp, sizeof(resp), "{\"ok\":%s,\"msg\":\"rebooting at %dMHz\"}",
+             saved ? "true" : "false", mhz);
+    coinServer.send(200, "application/json", resp);
     if (saved) {
         delay(500);   // let the HTTP response actually drain before we drop the link
         ESP.restart();
@@ -1129,22 +1197,25 @@ void handle_set_freq() {
 // Report running firmware version. Portal-IP only — no reason to let a random
 // hotspot client fingerprint the coin slot's firmware.
 void handle_version() {
-    String caller = coinServer.client().remoteIP().toString();
-    if (caller != String(cfg.portal_ip)) {
+    // Compare IPAddress objects directly — was two String allocations
+    // (.toString() + String(cfg.portal_ip)) on every single admin request.
+    if (coinServer.client().remoteIP() != portalIPAddr) {
         coinServer.send(403, "application/json", "{\"ok\":false,\"error\":\"forbidden\"}");
         return;
     }
     // Read the actual hardware register (bit 0 of CPU2X: 1 = 160MHz, 0 = 80MHz)
     int actual_mhz = (CPU2X & 1) ? 160 : 80;
 
-    coinServer.send(200, "application/json",
-        String("{\"ok\":true,\"fw\":\"") + FW_VERSION +
-        "\",\"cpu_mhz\":" + String(actual_mhz) + "}");
+    char resp[80];
+    snprintf(resp, sizeof(resp), "{\"ok\":true,\"fw\":\"%s\",\"cpu_mhz\":%d}",
+             FW_VERSION, actual_mhz);
+    coinServer.send(200, "application/json", resp);
 }
 
 void handle_update() {
-    String caller = coinServer.client().remoteIP().toString();
-    if (caller != String(cfg.portal_ip)) {
+    // Compare IPAddress objects directly — was two String allocations
+    // (.toString() + String(cfg.portal_ip)) on every single admin request.
+    if (coinServer.client().remoteIP() != portalIPAddr) {
         coinServer.send(403, "application/json", "{\"ok\":false,\"error\":\"forbidden\"}");
         return;
     }
@@ -1156,7 +1227,10 @@ void handle_update() {
     String token = coinServer.arg("token");
     
     // Signed, single-use, and bound to the exact image we may flash:
-    bool good = sig_ok(token, String(cfg.psk) + ":" + resetNonce + ":" + md5 + ":update");
+    char plainUpd[SIG_PLAIN_LEN];
+    snprintf(plainUpd, sizeof(plainUpd), "%s:%s:%s:update",
+             cfg.psk, resetNonce.c_str(), md5.c_str());
+    bool good = sig_ok_buf(token.c_str(), plainUpd);
     resetNonce = "";   // single-use: burn the nonce regardless of outcome
     if (!good) {
         coinServer.send(403, "application/json", "{\"ok\":false,\"error\":\"bad_token\"}");
@@ -1181,7 +1255,9 @@ void handle_update() {
     setCoinAcceptor(false);    // block coins while we flash
 
     // Pull from our own portal over the trusted hotspot LAN
-    String url = String("http://") + cfg.portal_ip + ":" + cfg.portal_port + "/firmware/coin_nodemcu.bin";
+    char url[80];
+    snprintf(url, sizeof(url), "http://%s:%u/firmware/coin_nodemcu.bin",
+             cfg.portal_ip, cfg.portal_port);
     WiFiClient uc;
     HTTPClient http;
     
@@ -1264,43 +1340,45 @@ void handle_update() {
 
 
 bool connectWiFi() {
-    WiFi.persistent(false);        // don't rewrite creds to flash every boot (wear)
+    WiFi.persistent(false);
     WiFi.mode(WIFI_STA);
     WiFi.setSleepMode(WIFI_NONE_SLEEP);
-    WiFi.setAutoReconnect(false);  // we manage reconnects manually; avoids DHCP races
-    WiFi.begin(cfg.ssid, cfg.pass);
+    WiFi.setAutoReconnect(true);
 
-    // The ONT's hotspot AP can take 90-180s to come up at cold boot — far
-    // longer than this device. Wait patiently (up to ~150s) so we don't give
-    // up before the SSID is even broadcasting. yield()/delay() keeps the WiFi
-    // stack and watchdog fed during the wait.
-    const unsigned long TIMEOUT_MS = 150000UL;
+    // ── ACTIVE SCAN LOOP ──
+    // Re-check/re-trigger every 15 seconds to give full time for 
+    // channel scan, WPA2 handshake, and DHCP without interruptions.
+    const unsigned long MAX_BOOT_WAIT_MS = 120000UL; // 2 min total timeout
+    const unsigned long RETRY_INTERVAL_MS = 15000UL; // 15s retry interval
     unsigned long start = millis();
-    while (WiFi.status() != WL_CONNECTED && (millis() - start) < TIMEOUT_MS) {
+    unsigned long lastAttemptMs = 0;
+
+    while (WiFi.status() != WL_CONNECTED && (millis() - start) < MAX_BOOT_WAIT_MS) {
+        if (millis() - lastAttemptMs >= RETRY_INTERVAL_MS) {
+            lastAttemptMs = millis();
+            WiFi.begin(cfg.ssid, cfg.pass);
+        }
         delay(250);
         yield();
     }
 
     if (WiFi.status() != WL_CONNECTED) return false;
 
-    // WLAN may still be bridged to br0 (192.168.8.1) when we first associate —
-    // the hotspot daemon can take tens of seconds to move WLAN to br1 (portal IP).
-    // On each mismatch: disconnect, wait 5s, then call begin() (not reconnect())
-    // to force a clean DHCP DISCOVER; reconnect() can reuse the old br0 lease
-    // and return the wrong gateway even after br1 has taken over.
-    const unsigned long GW_WAIT_MS = 60000UL;
+    // Fast gateway verification (clean re-DHCP if initially on br0)
+    const unsigned long GW_WAIT_MS = 30000UL;
     unsigned long gwStart = millis();
-    while (WiFi.gatewayIP().toString() != String(cfg.portal_ip)) {
+    while (WiFi.gatewayIP() != portalIPAddr) {
         if (millis() - gwStart >= GW_WAIT_MS) {
-            WiFi.disconnect();
-            return false;   // br1 didn't bind in time; loop() watchdog will keep retrying
+            return false;
         }
-        WiFi.disconnect();
-        delay(5000);
+        delay(2500);
         yield();
+        WiFi.disconnect(false);
+        delay(100);
         WiFi.begin(cfg.ssid, cfg.pass);
+        
         unsigned long rStart = millis();
-        while (WiFi.status() != WL_CONNECTED && (millis() - rStart) < 15000UL) {
+        while (WiFi.status() != WL_CONNECTED && (millis() - rStart) < 8000UL) {
             delay(250);
             yield();
         }
@@ -1311,8 +1389,9 @@ bool connectWiFi() {
 }
 
 void handle_reboot() {
-    String caller = coinServer.client().remoteIP().toString();
-    if (caller != String(cfg.portal_ip)) {
+    // Compare IPAddress objects directly — was two String allocations
+    // (.toString() + String(cfg.portal_ip)) on every single admin request.
+    if (coinServer.client().remoteIP() != portalIPAddr) {
         coinServer.send(403, "application/json", "{\"ok\":false,\"error\":\"forbidden\"}");
         return;
     }
@@ -1321,7 +1400,9 @@ void handle_reboot() {
         return;
     }
     String token = coinServer.arg("token");
-    bool good = sig_ok(token, String(cfg.psk) + ":" + resetNonce + ":reboot");
+    char plainRbt[SIG_PLAIN_LEN];
+    snprintf(plainRbt, sizeof(plainRbt), "%s:%s:reboot", cfg.psk, resetNonce.c_str());
+    bool good = sig_ok_buf(token.c_str(), plainRbt);
     resetNonce = "";   // burn nonce
     if (!good) {
         coinServer.send(403, "application/json", "{\"ok\":false,\"error\":\"bad_token\"}");
@@ -1339,6 +1420,7 @@ void handle_reboot() {
 
 void startNormalMode() {
     isSetupMode = false;
+    portalIPAddr.fromString(cfg.portal_ip);   // parse once; see portalIPAddr declaration
 
     // Best-effort connect. CRITICAL: never wipeConfig() on failure here. At
     // cold boot the ONT hotspot AP may simply not be up yet, and erasing the
@@ -1559,27 +1641,35 @@ void loop() {
     // wrongGwStrikes: tolerate up to 3 consecutive wrong-gateway readings (45s)
     // before forcing re-DHCP, so a slow br0→br1 bridge transition doesn't cause
     // a tight disconnect/reconnect storm that prevents the correct lease arriving.
+// ── DYNAMIC FAST-RECOVERY WATCHDOG ──
+    // Healthy (connected with correct gateway): check every 15s (low overhead).
+    // Unhealthy (disconnected or wrong br0 gateway): check every 3s (fast recovery).
     static unsigned long lastWifiCheck = 0;
     static uint8_t wrongGwStrikes = 0;
-    if (millis() - lastWifiCheck > 15000) {
+
+    bool isHealthy = (WiFi.status() == WL_CONNECTED) && 
+                     (WiFi.gatewayIP() == portalIPAddr);
+    unsigned long checkInterval = isHealthy ? 15000UL : 10000UL;
+
+    if (millis() - lastWifiCheck > checkInterval) {
         lastWifiCheck = millis();
 
         if (WiFi.status() != WL_CONNECTED) {
             wrongGwStrikes = 0;
-            WiFi.begin(cfg.ssid, cfg.pass);   // full begin → clean DHCP DISCOVER
+            WiFi.begin(cfg.ssid, cfg.pass); // Re-trigger scan immediately
         }
-        else if (WiFi.gatewayIP().toString() != String(cfg.portal_ip)) {
-            // Wrong gateway (WLAN still on br0, or rogue DHCP).
-            // Give br1 time to bind before forcing re-DHCP.
-            if (++wrongGwStrikes >= 3) {
+        else if (WiFi.gatewayIP() != portalIPAddr) {
+            // Wrong gateway (still bridged to br0). Disconnect and re-DHCP
+            // after 2 strikes (~6 seconds instead of 45 seconds).
+            if (++wrongGwStrikes >= 2) {
                 wrongGwStrikes = 0;
-                WiFi.disconnect();
-                delay(1000);
-                WiFi.begin(cfg.ssid, cfg.pass);  // reconnect immediately, don't wait for next cycle
+                WiFi.disconnect(false);
+                delay(100);
+                WiFi.begin(cfg.ssid, cfg.pass);
             }
         }
         else {
-            wrongGwStrikes = 0;                  // correct gateway — all good
+            wrongGwStrikes = 0; // Correct gateway
         }
     }
 

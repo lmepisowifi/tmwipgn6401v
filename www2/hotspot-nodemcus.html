@@ -266,6 +266,7 @@ function renderNodemcus(){
             '<td>'+freqCtl+'</td>'+
             '<td>'+actions+'</td>';
         tbody.appendChild(tr);
+        fetchNodeMcuLive(n.id);
     });
 
     attachDragHandlers();
@@ -426,7 +427,10 @@ function applyFreq(id, btn){
     fetch('/cgi-bin/hotspot.cgi?action=nodemcu_setfreq',{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:'id='+id+'&freq='+freq})
     .then(function(r){ return r.json(); })
     .then(function(d){
-        if (d.ok){ toastr.success('Applied — unit rebooting at '+freq+'MHz'); }
+        if (d.ok){
+    toastr.success('Applied — unit rebooting at '+freq+'MHz');
+    setTimeout(function(){ fetchNodeMcuLive(id); }, 8000);
+}
         else if (d.error==='busy'){ toastr.error('Unit is mid-session — try again once it\'s idle'); }
         else { toastr.error('Failed: '+(d.error||'')); }
         btn.disabled=false; sel.disabled=false; btn.textContent='Apply';
@@ -501,6 +505,18 @@ function resetNodemcu(id, btn){
         btn.disabled = false; btn.textContent = orig;
         toastr.error('Network error');
     });
+}
+function fetchNodeMcuLive(id){
+    var sel = document.getElementById('nm-freq-' + id);
+    fetch('/cgi-bin/hotspot.cgi?action=nodemcu_status&id=' + id, { cache: 'no-store' })
+        .then(function(r){ return r.json(); })
+        .then(function(d){
+            if (d.ok && d.cpu_mhz && sel){
+                sel.value = String(d.cpu_mhz);
+                sel.title = 'Active: ' + d.cpu_mhz + ' MHz (FW v' + (d.fw || '?') + ')';
+            }
+        })
+        .catch(function(){});
 }
 window.addEventListener('DOMContentLoaded', loadNodemcus);
 </script>

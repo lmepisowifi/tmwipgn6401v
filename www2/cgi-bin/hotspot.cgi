@@ -2412,6 +2412,25 @@ if echo "$QS" | $BB grep -q "action=nodemcu_reboot"; then
 fi
 
 # ================================================================
+# GET ?action=nodemcu_status  body/query: id
+# Queries live firmware version and actual CPU frequency from the unit:
+# ================================================================
+if echo "$QS" | $BB grep -q "action=nodemcu_status"; then
+    NID=$(printf '%s' "$QS" | $BB sed -n 's/.*id=\([^&]*\).*/\1/p' | $BB tr -cd '0-9')
+    [ -z "$NID" ] && NID="1"
+
+    _nodemcu_conn "$NID"
+    [ -n "$NIP" ] || err_json "not_found"
+
+    RESP=$(wget -q -T 2 -O - "http://${NIP}:${NPT}/version" 2>/dev/null)
+    if [ -n "$RESP" ] && printf '%s' "$RESP" | $BB grep -q '"ok":true'; then
+        ok_json "$RESP"
+    else
+        ok_json "{\"ok\":false,\"online\":false}"
+    fi
+fi
+
+# ================================================================
 # POST ?action=nodemcu_setfreq  body: id, freq (80 or 160)
 # Pushes a signed CPU-frequency change to one NodeMCU unit and reboots it
 # to apply it. Same two-step signed handshake as action=coin_reset above,
