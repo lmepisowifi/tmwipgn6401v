@@ -30,3 +30,9 @@ your Corresponding Source available to your users (AGPLv3 §5, §13).
 
 - Claude (Sonnet & Opus series, mainly Sonnet was used due to not having claude code, or the paid plans.)
 - Gemini (3.8 Flash)
+
+# The purpose:
+- Repurpose capable/second hand realtek gpon onus a general wifi router (and also can be used as a wifi hotspot system)
+
+# Note
+- Hotspot feature is free to use, compared to other router based wifi hotspot system firmwares that use openwrt.
