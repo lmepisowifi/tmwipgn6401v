@@ -1631,6 +1631,19 @@ if echo "$QS" | $BB grep -q "action=nodemcu_add"; then
     rm -f /tmp/udhcpd.leases
     start_dhcp
     apply_extra_nodemcu_fw
+    # Flush any stale kernel ARP entry for the pool IP we just assigned —
+    # _next_free_nodemcu_ip() hands out the lowest free address in the pool,
+    # which may well have belonged to some OTHER device before (a removed
+    # NodeMCU, or a customer's dynamic lease before this address fell inside
+    # the reserved range). Without this, coin_result.sh's Guard 2 (ARP-based
+    # MAC verification) keeps matching the OLD MAC still cached for this IP
+    # and rejects every coin POST from the brand-new unit with "MAC
+    # mismatch" until the cache entry ages out on its own — which in
+    # practice meant "reboot the router" to get a newly-added NodeMCU
+    # working. Same fix nodemcu_edit/config_set already apply on their own
+    # IP changes just below.
+    ip neigh del "$NIPV" dev "$HOTSPOT_BR" 2>/dev/null
+    $BB arp -d "$NIPV" 2>/dev/null
     # Force this unit to drop its current association so it re-DHCPs right
     # away instead of sitting on its old address until its own lease/renewal
     # timer happens to fire. Only this MAC is kicked — other connected
