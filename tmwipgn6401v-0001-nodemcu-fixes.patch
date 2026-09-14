@@ -1,0 +1,95 @@
+From 78cb08a1e60db78f30f3a872b7ea88ba5b000206 Mon Sep 17 00:00:00 2001
+From: Claude <claude@anthropic.com>
+Date: Sun, 13 Sep 2026 15:21:33 +0000
+Subject: [PATCH] Fix NodeMCU add requiring reboot + first-coin debounce
+ false-reject
+
+nodemcu_add was missing the kernel ARP-cache flush that nodemcu_edit
+and config_set already do on their own IP changes. The pool IP handed
+to a brand-new unit may have belonged to some other device before, so
+a stale ARP entry for it can sit in the kernel until something clears
+it. coin_result.sh's Guard 2 (ARP-based MAC verification) then keeps
+matching the old MAC and rejects every coin POST from the new unit
+with "MAC mismatch" until that entry ages out on its own -- in
+practice this meant a full router reboot (which wipes the ARP table)
+was the only thing that made a newly-added NodeMCU actually work.
+Fix: flush ip neigh / arp for the new IP right after apply_extra_nodemcu_fw,
+same as the edit path already does.
+
+Separately, in the NodeMCU firmware: handle_coin_start() stamped
+lastPulseMs to "now" at the moment a session opens. That value is the
+baseline for onCoinPulse()'s 15ms anti-bounce debounce, which exists
+only to catch a single coin re-triggering the sensor from mechanical
+bounce -- it was never meant to apply across a session boundary. A
+customer who already has a coin sitting at the acceptor's gate when
+the slot goes live can have that very first coin's trailing edge land
+within 15ms of session start, so a completely legitimate first coin
+was silently discarded as a "bounce" of a coin that never happened.
+Fix: back-date the initial lastPulseMs by 1s so the first coin of a
+session can never trip the guard; later coins still debounce normally
+against each other. Bumped FW_VERSION to 1.3.3 so ota.sh pushes the
+fix to already-deployed coin slots.
+---
+ hotspot/nodemcucodeholder | 14 ++++++++++++--
+ www2/cgi-bin/hotspot.cgi  | 13 +++++++++++++
+ 2 files changed, 25 insertions(+), 2 deletions(-)
+
+diff --git a/hotspot/nodemcucodeholder b/hotspot/nodemcucodeholder
+index da6fda8..f255d60 100644
+--- a/hotspot/nodemcucodeholder
++++ b/hotspot/nodemcucodeholder
+@@ -56,7 +56,7 @@ const int COIN_ENABLE_ACTIVE = HIGH;
+ // ota.sh compares it against the release manifest's nodemcu_version and pushes a
+ // self-flash ONLY when they differ, so a portal-only update (www2/hotspot files)
+ // never needlessly reflashes the coin slot.
+-#define FW_VERSION          "1.3.2"
++#define FW_VERSION          "1.3.3"
+ // No AP password — open so owner can connect immediately on first setup
+ 
+ // ── CONFIG STRUCT ─────────────────────────────────────────────────────
+@@ -907,7 +907,17 @@ sessionActive    = true;
+     sid.toCharArray(activeSid, sizeof(activeSid));  // sid.length()==16, validated above
+     coinPesos        = 0;
+     sessionStartMs   = millis();
+-    lastPulseMs      = millis(); // Init
++    // Back-dated, not "now": onCoinPulse()'s 15ms debounce guard below
++    // treats (nowMs - lastPulseMs) < 15 as the SAME physical coin bouncing,
++    // and exists only to catch that. Stamping it to "now" at session start
++    // made it also apply across the session boundary — a customer who has a
++    // coin already at the gate when the slot goes live can have that first
++    // coin's trailing edge land within 15ms of this line, so a perfectly
++    // legitimate first coin was silently discarded as a "bounce" of a coin
++    // that never happened. Backdating it means the very first real coin of
++    // a session is never compared against session-start; every later coin
++    // in the session still debounces normally against the previous one.
++    lastPulseMs      = millis() - 1000;
+     lastPollMs       = millis(); // the /start request itself counts as fresh contact
+     countdownPaused  = false;
+ 
+diff --git a/www2/cgi-bin/hotspot.cgi b/www2/cgi-bin/hotspot.cgi
+index 4176eea..feb127f 100755
+--- a/www2/cgi-bin/hotspot.cgi
++++ b/www2/cgi-bin/hotspot.cgi
+@@ -1631,6 +1631,19 @@ if echo "$QS" | $BB grep -q "action=nodemcu_add"; then
+     rm -f /tmp/udhcpd.leases
+     start_dhcp
+     apply_extra_nodemcu_fw
++    # Flush any stale kernel ARP entry for the pool IP we just assigned —
++    # _next_free_nodemcu_ip() hands out the lowest free address in the pool,
++    # which may well have belonged to some OTHER device before (a removed
++    # NodeMCU, or a customer's dynamic lease before this address fell inside
++    # the reserved range). Without this, coin_result.sh's Guard 2 (ARP-based
++    # MAC verification) keeps matching the OLD MAC still cached for this IP
++    # and rejects every coin POST from the brand-new unit with "MAC
++    # mismatch" until the cache entry ages out on its own — which in
++    # practice meant "reboot the router" to get a newly-added NodeMCU
++    # working. Same fix nodemcu_edit/config_set already apply on their own
++    # IP changes just below.
++    ip neigh del "$NIPV" dev "$HOTSPOT_BR" 2>/dev/null
++    $BB arp -d "$NIPV" 2>/dev/null
+     # Force this unit to drop its current association so it re-DHCPs right
+     # away instead of sitting on its old address until its own lease/renewal
+     # timer happens to fire. Only this MAC is kicked — other connected
+-- 
+2.43.0
+
