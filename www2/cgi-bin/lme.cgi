@@ -120,6 +120,35 @@ update_startup_speed() {
     && busybox chmod 755 "$STARTUP_SH"
 }
 
+# update_startup_timezone <tz_string>
+#   Rewrites the BEGIN_TIMEZONE … END_TIMEZONE section of startup.sh so the
+#   chosen POSIX TZ string (e.g. "PST-8") is re-applied to /etc/TZ on every
+#   boot. Caller must validate <tz_string> first — it is written into a shell
+#   script verbatim.
+update_startup_timezone() {
+    _UPD_TZ="$1"
+
+    [ ! -f "$STARTUP_SH" ] && return
+
+    _UPD_TMP="/tmp/startup_sh_$$.tmp"
+
+    busybox awk \
+        -v tz="$_UPD_TZ" \
+        'BEGIN { in_sec=0 }
+         /^# --- BEGIN_TIMEZONE ---/ { print; in_sec=1; next }
+         /^# --- END_TIMEZONE ---/ {
+             if (tz != "") {
+                 print "echo \"" tz "\" > /etc/TZ"
+             }
+             in_sec=0; print; next
+         }
+         in_sec { next }
+         { print }' \
+        "$STARTUP_SH" > "$_UPD_TMP" \
+    && busybox mv "$_UPD_TMP" "$STARTUP_SH" \
+    && busybox chmod 755 "$STARTUP_SH"
+}
+
 # ---- WLAN revert state files ----
 REVERT_PENDING=/tmp/ssid_revert_pending
 REVERT_ROLLBACK=/tmp/ssid_rollback
@@ -396,6 +425,18 @@ if [ "$REQUEST_METHOD" = "GET" ]; then
         printf "Content-Type: application/json\r\n\r\n"
         printf '{"hw_serial_no":"%s","mac":"%s","pon_mode":%s,"pon_auto":%s}' \
             "$HW_SERIAL" "$MAC" "$PON_MODE" "$PON_AUTO"
+        exit 0
+    fi
+
+    # --- action=timezone_status: return current /etc/TZ value ---
+    if echo "$QUERY_STRING" | busybox grep -q "action=timezone_status"; then
+        CUR_TZ=""
+        [ -f /etc/TZ ] && CUR_TZ=$(busybox cat /etc/TZ | busybox tr -d '\r\n')
+        [ -z "$CUR_TZ" ] && CUR_TZ="UTC0"
+        ESC_TZ=$(printf '%s' "$CUR_TZ" | busybox sed 's/\\/\\\\/g; s/"/\\"/g')
+        printf "Status: 200 OK\r\n"
+        printf "Content-Type: application/json\r\n\r\n"
+        printf '{"tz":"%s"}' "$ESC_TZ"
         exit 0
     fi
 
@@ -1255,6 +1296,36 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
             ( sleep 3; sync; reboot ) &
             exit 0
         fi
+
+        printf "Status: 200 OK\r\n"
+        printf "Content-Type: text/plain\r\n\r\n"
+        printf "OK"
+        exit 0
+    fi
+
+    # --- action=timezone_settings: write /etc/TZ + persist across reboot ---
+    if echo "$QUERY_STRING" | busybox grep -q "action=timezone_settings"; then
+        FORM_TZ=$(echo "$POST_DATA" | busybox sed 's/&/\n/g' \
+            | busybox grep '^tz=' | busybox cut -d'=' -f2-)
+        FORM_TZ=$(busybox httpd -d "$FORM_TZ" | busybox tr -d '\r\n')
+
+        # Validate: POSIX TZ charset only (letters, digits, + - : , . / < >).
+        # This also blocks shell metacharacters before the value is written
+        # verbatim into startup.sh and /etc/TZ.
+        TZ_LEN=$(echo -n "$FORM_TZ" | busybox wc -c | busybox tr -d ' ')
+        if [ -z "$FORM_TZ" ] || [ "$TZ_LEN" -gt 64 ] \
+           || ! echo "$FORM_TZ" | busybox grep -qE '^[A-Za-z0-9+:,./<>-]+$'; then
+            printf "Status: 400 Bad Request\r\n"
+            printf "Content-Type: text/plain\r\n\r\n"
+            printf "Invalid timezone string"
+            exit 0
+        fi
+
+        # Apply immediately — new processes read /etc/TZ fresh, no reboot needed.
+        echo "$FORM_TZ" > /etc/TZ
+
+        # Persist across reboot.
+        update_startup_timezone "$FORM_TZ"
 
         printf "Status: 200 OK\r\n"
         printf "Content-Type: text/plain\r\n\r\n"

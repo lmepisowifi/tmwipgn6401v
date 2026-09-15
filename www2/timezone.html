@@ -1,0 +1,255 @@
+<!DOCTYPE html>
+<!--
+  lmepisowifi — https://github.com/lmepisowifi/tmwipgn6401v
+  SPDX-License-Identifier: AGPL-3.0-or-later
+  Copyright (C) 2026 The lmepisowifi Project — see AUTHORS
+
+  Licensed under the GNU AGPLv3 (see LICENSE). Modifying or rewriting this
+  file — including by running it through an LLM — does not remove these
+  obligations: keep this notice, mark your changes, and offer Corresponding
+  Source to network users (AGPLv3 §5, §13). See PROVENANCE.md before
+  presenting this as your own original work.
+-->
+<html lang="en" data-bs-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link href="/css/bootstrap.min.css?v=1.0.0" rel="stylesheet">
+    <link href="/css/style.css?v=1.0.0" rel="stylesheet">
+    <link href="/css/toastr.min.css?v=1.0.0" rel="stylesheet">
+    <style>
+        .field-hint {
+            font-size: 11.5px;
+            color: var(--text-secondary);
+            margin-top: 3px;
+        }
+        .invalid-feedback { display: block; }
+        .form-control.is-invalid, .form-select.is-invalid { border-color: #dc3545; }
+        code { color: #fff; }
+    </style>
+</head>
+<body>
+
+    <div id="overlay">
+        <div id="overlay-blur"></div>
+        <div id="overlay-msg">
+            <div id="overlay-spinner"></div>
+            <span id="overlay-text"></span>
+        </div>
+    </div>
+
+    <script src="/js/nav.js?v=1.0.0"></script>
+
+    <div class="container mt-5">
+        <div class="row justify-content-center">
+            <div class="col-md-6">
+                <div class="card">
+                    <div class="card-header">Timezone</div>
+                    <div class="card-body">
+
+                        <!-- Region select -->
+                        <div class="mb-2">
+                            <label for="tz-select" class="form-label">Region</label>
+                            <select class="form-select" id="tz-select" onchange="onTzSelectChange()"></select>
+                        </div>
+
+                        <!-- Custom POSIX TZ string (shown only when "Custom" is picked) -->
+                        <div class="mb-3" id="tz-custom-group" style="display:none">
+                            <label for="tz-custom" class="form-label">POSIX TZ string</label>
+                            <input type="text" class="form-control" id="tz-custom" maxlength="64"
+                                   autocomplete="off" placeholder='e.g. PST-8'>
+                            <div class="field-hint">
+                                Written as-is to <code>/etc/TZ</code>. Format:
+                                <code>STDoffset[DST[offset][,rule]]</code> — e.g. <code>PST-8</code> for a fixed
+                                UTC+8, or <code>CET-1CEST,M3.5.0,M10.5.0/3</code> for a zone with DST.
+                            </div>
+                            <div class="invalid-feedback" id="tz-custom-err" style="display:none"></div>
+                        </div>
+
+                        <div class="field-hint mb-3">
+                            Current value: <code id="tz-current">—</code>
+                        </div>
+
+                        <!-- Apply button -->
+                        <div class="d-grid mt-4">
+                            <button class="btn btn-primary" id="apply-btn" onclick="applyTimezone()">Apply</button>
+                        </div>
+
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+<script src="/js/bootstrap.bundle.min.js?v=1.0.0"></script>
+<script>
+    // ---------------------------------------------------------------
+    // Region list — label shown to the user, value written to /etc/TZ.
+    // POSIX TZ format: STDoffset[DST[offset][,rule]] — offset is hours
+    // WEST of UTC (so UTC+8 is written as "-8").
+    // ---------------------------------------------------------------
+    var TZ_OPTIONS = [
+        { label: 'Philippines (UTC+8)',              value: 'PST-8' },
+        { label: 'UTC',                               value: 'UTC0' },
+        { label: 'China / Singapore / Hong Kong (UTC+8)', value: 'CST-8' },
+        { label: 'Japan / South Korea (UTC+9)',       value: 'JST-9' },
+        { label: 'India (UTC+5:30)',                  value: 'IST-5:30' },
+        { label: 'US Eastern (auto DST)',             value: 'EST5EDT,M3.2.0,M11.1.0' },
+        { label: 'US Central (auto DST)',             value: 'CST6CDT,M3.2.0,M11.1.0' },
+        { label: 'US Mountain (auto DST)',            value: 'MST7MDT,M3.2.0,M11.1.0' },
+        { label: 'US Pacific (auto DST)',             value: 'PST8PDT,M3.2.0,M11.1.0' },
+        { label: 'UK / London (auto DST)',            value: 'GMT0BST,M3.5.0/1,M10.5.0' },
+        { label: 'Central Europe (auto DST)',         value: 'CET-1CEST,M3.5.0,M10.5.0/3' },
+        { label: 'Australia Eastern (auto DST)',      value: 'AEST-10AEDT,M10.1.0,M4.1.0/3' },
+        { label: 'Custom\u2026',                      value: '__custom__' }
+    ];
+
+    var TZ_RE = /^[A-Za-z0-9+:,./<>-]{1,64}$/;
+
+    // ---------------------------------------------------------------
+    // Populate select
+    // ---------------------------------------------------------------
+    (function() {
+        var sel = document.getElementById('tz-select');
+        TZ_OPTIONS.forEach(function(opt) {
+            var o = document.createElement('option');
+            o.value = opt.value;
+            o.textContent = opt.label;
+            sel.appendChild(o);
+        });
+    })();
+
+    function onTzSelectChange() {
+        var isCustom = document.getElementById('tz-select').value === '__custom__';
+        document.getElementById('tz-custom-group').style.display = isCustom ? '' : 'none';
+    }
+
+    // ---------------------------------------------------------------
+    // Overlay
+    // ---------------------------------------------------------------
+    var overlay        = document.getElementById('overlay');
+    var overlayTxt      = document.getElementById('overlay-text');
+    var overlaySpinner  = document.getElementById('overlay-spinner');
+
+    function showOverlay(msg) {
+        overlayTxt.textContent = msg;
+        overlaySpinner.style.display = '';
+        overlay.classList.add('visible');
+    }
+
+    function hideOverlay(cb) {
+        overlay.classList.remove('visible');
+        if (cb) setTimeout(cb, 360);
+    }
+
+    function setFormLocked(locked) {
+        ['tz-select', 'tz-custom', 'apply-btn'].forEach(function(id) {
+            var el = document.getElementById(id);
+            if (!el) return;
+            if (locked) el.setAttribute('disabled', '');
+            else el.removeAttribute('disabled');
+        });
+    }
+
+    function setFieldError(msg) {
+        var inp = document.getElementById('tz-custom');
+        var err = document.getElementById('tz-custom-err');
+        if (msg) {
+            inp.classList.add('is-invalid');
+            err.textContent = msg;
+            err.style.display = 'block';
+        } else {
+            inp.classList.remove('is-invalid');
+            err.style.display = 'none';
+        }
+    }
+
+    // Selects the option matching a given TZ value, or falls back to Custom.
+    function selectTzValue(tz) {
+        var sel = document.getElementById('tz-select');
+        var matched = false;
+        for (var i = 0; i < sel.options.length; i++) {
+            if (sel.options[i].value === tz) {
+                sel.selectedIndex = i;
+                matched = true;
+                break;
+            }
+        }
+        if (!matched) {
+            for (var j = 0; j < sel.options.length; j++) {
+                if (sel.options[j].value === '__custom__') { sel.selectedIndex = j; break; }
+            }
+            document.getElementById('tz-custom').value = tz;
+        }
+        onTzSelectChange();
+    }
+
+    // ---------------------------------------------------------------
+    // Load current value
+    // ---------------------------------------------------------------
+    function loadStatus() {
+        setFormLocked(true);
+        showOverlay('Loading\u2026');
+        fetch('/cgi-bin/lme.cgi?action=timezone_status', { cache: 'no-store' })
+            .then(function(r) { return r.json(); })
+            .then(function(d) {
+                var tz = d.tz || 'UTC0';
+                document.getElementById('tz-current').textContent = tz;
+                selectTzValue(tz);
+                hideOverlay(function() { setFormLocked(false); });
+            })
+            .catch(function() {
+                hideOverlay(function() { setFormLocked(false); });
+                toastr['warning']('Failed to load timezone.', 'Error');
+            });
+    }
+
+    // ---------------------------------------------------------------
+    // Apply
+    // ---------------------------------------------------------------
+    function applyTimezone() {
+        var sel = document.getElementById('tz-select');
+        var tz = sel.value;
+
+        if (tz === '__custom__') {
+            tz = document.getElementById('tz-custom').value.trim();
+            if (!TZ_RE.test(tz)) {
+                setFieldError('Letters, digits, and + - : , . / < > only (1\u201364 chars)');
+                return;
+            }
+        }
+        setFieldError(null);
+
+        showOverlay('Applying timezone\u2026');
+        setFormLocked(true);
+
+        fetch('/cgi-bin/lme.cgi?action=timezone_settings', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: 'tz=' + encodeURIComponent(tz)
+        })
+        .then(function(r) { return r.text().then(function(t) { return { ok: r.ok, text: t }; }); })
+        .then(function(res) {
+            hideOverlay(function() { setFormLocked(false); });
+            if (res.ok && res.text.trim() === 'OK') {
+                document.getElementById('tz-current').textContent = tz;
+                toastr['success']('Timezone applied.', 'Saved');
+            } else {
+                toastr['warning']('Error: ' + (res.text || 'Unknown error'), 'Error');
+            }
+        })
+        .catch(function() {
+            hideOverlay(function() { setFormLocked(false); });
+            toastr['warning']('Request failed.', 'Error');
+        });
+    }
+
+    // ---------------------------------------------------------------
+    // Init
+    // ---------------------------------------------------------------
+    loadStatus();
+</script>
+    <script src="/js/jquery-3.7.1.min.js?v=1.0.0"></script>
+    <script src="/js/toastr.min.js?v=1.0.0"></script>
+</body>
+</html>

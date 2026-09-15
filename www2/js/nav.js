@@ -80,6 +80,7 @@ setInterval(function () {
         { label: 'Terminal', href: '/terminal.html' },
         { label: 'System', children: [
             { label: 'Settings',         href: '/system.html'        },
+            { label: 'Timezone',         href: '/timezone.html'      },
             { label: 'Accounts',         href: '/accounts.html'      },
             { label: 'GPON Settings',    href: '/gpon.html'          },
             { label: 'Dashboard Layout', href: '/dashboard-layout.html' },

@@ -26,6 +26,8 @@
 //   → From the portal machine, curl or wget:
 //      http://<nodemcu-ip>:8080/reset
 //   → Only accepts connections from PORTAL_IP (set in config)
+
+
 #include <ESP8266WiFi.h>
 #include <ESP8266WebServer.h>
 #include <ESP8266HTTPClient.h>
@@ -56,7 +58,7 @@ const int COIN_ENABLE_ACTIVE = HIGH;
 // ota.sh compares it against the release manifest's nodemcu_version and pushes a
 // self-flash ONLY when they differ, so a portal-only update (www2/hotspot files)
 // never needlessly reflashes the coin slot.
-#define FW_VERSION          "1.3.3"
+#define FW_VERSION          "1.3.4"
 // No AP password — open so owner can connect immediately on first setup
 
 // ── CONFIG STRUCT ─────────────────────────────────────────────────────
@@ -922,17 +924,28 @@ sessionActive    = true;
     countdownPaused  = false;
 
     // Re-anchor the pulse auto-detect state machine right as the slot goes live.
-    // While idle/inhibited, a stray EMI edge on COIN_PIN can lock activeState to
-    // the wrong polarity (same interference class as the piezo-spark issue) and
-    // leave a half-finished pulse in flight. Left alone, that stale state gets
-    // compared against the customer's actual first coin and can misread or drop
-    // it with nothing visible to show why. Snapshot the current resting level as
-    // the new active-state baseline and clear any in-progress pulse so the first
-    // real coin of this session is judged fresh, not against leftover noise.
+    // While idle/inhibited, a stray EMI edge on COIN_PIN can leave a half-finished
+    // pulse in flight; that stale pulseInProgress flag gets compared against the
+    // customer's actual first coin and can misread or drop it with nothing visible
+    // to show why. Clear it so the first real coin of this session is judged fresh.
+    //
+    // We do NOT touch activeState here. activeState records which logic level the
+    // acceptor's opto pulls TO during a real pulse (NO vs NC) — a fixed hardware
+    // property that doesn't change between sessions, so the value already learned
+    // from a prior real edge is correct and should be left alone. digitalRead()'ing
+    // COIN_PIN here would only capture the RESTING level (the slot is still
+    // inhibited at this point — setCoinAcceptor(true) hasn't run yet), and storing
+    // that into activeState inverts the polarity: a coin already waiting at the
+    // gate that drops the instant the slot opens (within the 500ms auto-detect
+    // window below) would then have its leading edge ignored and its trailing edge
+    // misread as a new pulse starting — silently swallowing exactly the "inserted
+    // immediately when allowed" coin. Backdating lastEdgeMs instead guarantees the
+    // very next real edge (whenever it arrives) is treated as fresh by the ISR's
+    // own auto-detect branch, which derives activeState from an actual transition
+    // rather than a guess.
     noInterrupts();
-    activeState     = digitalRead(COIN_PIN);
     pulseInProgress = false;
-    lastEdgeMs      = millis();
+    lastEdgeMs      = millis() - 501;  // force next edge through auto-detect, see above
     interrupts();
     
     sessionTimeoutMs = (to.length() > 0)

@@ -50,6 +50,16 @@ wait_for_iface() {
 # --- END_LAN_SPEEDS ---
 
 # ---------------------------------------------------------------------------
+# Timezone.
+# This section is managed automatically by lme.cgi (timezone_settings action)
+# and re-applies the chosen POSIX TZ string to /etc/TZ on every boot, since
+# /etc is not guaranteed to survive across boots on its own. Do NOT edit by
+# hand.
+# ---------------------------------------------------------------------------
+# --- BEGIN_TIMEZONE ---
+# --- END_TIMEZONE ---
+
+# ---------------------------------------------------------------------------
 # Auto-reboot schedule daemon.
 # This line is managed automatically by lme.cgi (reboot_sched_set action).
 # Do NOT edit by hand.
