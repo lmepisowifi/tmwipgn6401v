@@ -68,6 +68,16 @@ MACFIX_MAP_FILE="/lmepisowifi/hotspot_data/device_fp.txt"
 MACFIX_BANK_FILE="/lmepisowifi/hotspot_data/coin_bank.txt"
 MACFIX_COOKIE_NAME="lme_fp"
 MACFIX_COOKIE_MAXAGE=31536000   # 1 year — a slow "remember this browser", not a login session
+# How long a fingerprint→MAC row is kept in MACFIX_MAP_FILE before the prune
+# at the end of mf_reconcile() drops it as stale. Without this, the file
+# grows by one permanent row for every hit whose cookie is never recognized
+# back — chiefly OS-level captive-portal probes (Android's
+# CaptivePortalLogin, iOS's CNA) that use a private, non-cookie-persisting
+# context for the very first hit that opens the portal, so that fp_id is
+# guaranteed to never recur. 30 days comfortably outlives any realistic
+# pause/return-visit window while keeping the file bounded to recent
+# traffic instead of the device's whole operational history.
+MACFIX_MAP_MAX_AGE=${MACFIX_MAP_MAX_AGE:-2592000}
 
 _mf_now() { $BB awk '{print int($1)}' /proc/uptime 2>/dev/null || date +%s; }
 
@@ -297,9 +307,26 @@ mf_reconcile() {
     # Keep the mapping current regardless: a first-ever sighting of this
     # fingerprint, or just a repeat visit on an unchanged MAC, both need
     # today's MAC/timestamp recorded so the next visit has something to
-    # compare against.
+    # compare against. Wall-clock here, not _mf_now()'s /proc/uptime — that
+    # resets to near-zero on every reboot, which would make the age-based
+    # prune below meaningless (a row written late in a long uptime could
+    # look newer than one written minutes after a reboot).
+    local now
+    now=$(date +%s 2>/dev/null || _mf_now)
+    case "$now" in ''|*[!0-9]*) now=0 ;; esac
     $BB grep -v "^${MF_FP_ID} " "$MACFIX_MAP_FILE" > "${MACFIX_MAP_FILE}.tmp" 2>/dev/null
-    printf '%s %s %s\n' "$MF_FP_ID" "$CLIENT_MAC" "$(_mf_now)" >> "${MACFIX_MAP_FILE}.tmp"
+    printf '%s %s %s\n' "$MF_FP_ID" "$CLIENT_MAC" "$now" >> "${MACFIX_MAP_FILE}.tmp"
+    # Drop rows past their keep-by date (MACFIX_MAP_MAX_AGE, above) so this
+    # file tracks recent traffic instead of accumulating one permanent row
+    # per hit forever. A row left over from before this prune existed
+    # carries a /proc/uptime value instead of wall-clock in this column;
+    # those are always far below any real cutoff here, so this same pass
+    # clears the existing backlog out too. Falls back to keeping everything
+    # unpruned (never to an empty/truncated file) if awk or the rename
+    # fails, same safety idiom _mf_reconcile_row uses above.
+    $BB awk -v cutoff="$(( now - MACFIX_MAP_MAX_AGE ))" '$3 >= cutoff' "${MACFIX_MAP_FILE}.tmp" \
+        > "${MACFIX_MAP_FILE}.tmp2" 2>/dev/null \
+        && $BB mv "${MACFIX_MAP_FILE}.tmp2" "${MACFIX_MAP_FILE}.tmp"
     $BB mv "${MACFIX_MAP_FILE}.tmp" "$MACFIX_MAP_FILE"
     _unlock
 
