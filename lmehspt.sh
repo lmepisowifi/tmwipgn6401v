@@ -110,6 +110,10 @@ HOTSPOT_ENABLED="1"
 ANTI_TETHER="1"
 LAN_ISOLATE="1"
 MAC_RANDOMIZATION_FIX="1"
+# See defaults.env for the full rationale — blocks client-to-client traffic
+# on the hotspot bridge so one customer's session (or its cookie) can't be
+# sniffed/replayed by another. Applied by apply_hotspot_isolate() below.
+HOTSPOT_ISOLATE="1"
 # See defaults.env for the full rationale. On (default): the one-time boot
 # sync (sync_to_persistent_db call inside the BOOT_MARKER block) converts
 # any users.txt row still "active" from before the reboot to "paused",
@@ -679,6 +683,61 @@ apply_extra_nodemcu_fw() {
     done < "$NODEMCU_EXTRA_FILE"
 }
 
+# ── Hotspot client isolation ────────────────────────────────────────────────
+# Blocks client-to-client traffic within the hotspot bridge (see
+# HOTSPOT_ISOLATE in defaults.env for the full rationale) without touching
+# client → router or client → WAN traffic, which never goes port-to-port
+# within this bridge in the first place. Re-entrant like
+# apply_extra_nodemcu_fw above: always tears down whatever it applied last
+# time (via the mark file) before deciding whether to re-apply, so a
+# changed HOTSPOT_BR or toggled-off state never leaves orphaned rules.
+HOTSPOT_ISOLATE_FW_MARK="/tmp/hotspot_isolate.mark"
+
+teardown_hotspot_isolate() {
+    if [ -f "$HOTSPOT_ISOLATE_FW_MARK" ]; then
+        while IFS='|' read -r _tool _a _b; do
+            [ -n "$_tool" ] || continue
+            case "$_tool" in
+                ebtables) ebtables -D FORWARD --logical-in "$_a" --logical-out "$_a" -j DROP 2>/dev/null ;;
+                physdev)  iptables -t filter -D FORWARD -m physdev --physdev-in "$_a" --physdev-out "$_b" -j DROP 2>/dev/null ;;
+            esac
+        done < "$HOTSPOT_ISOLATE_FW_MARK"
+    fi
+    : > "$HOTSPOT_ISOLATE_FW_MARK"
+}
+
+apply_hotspot_isolate() {
+    teardown_hotspot_isolate
+    case "${HOTSPOT_ISOLATE:-1}" in
+        1|yes|true) ;;
+        *) return 0 ;;
+    esac
+    if ebtables --version >/dev/null 2>&1 || $BB ebtables --version >/dev/null 2>&1; then
+        # One rule, self-adapting to whatever is currently bridged into
+        # $HOTSPOT_BR — a second AP added later on another VLAN/port is
+        # covered automatically, no port list to keep in sync here.
+        ebtables -A FORWARD --logical-in $HOTSPOT_BR --logical-out $HOTSPOT_BR -j DROP 2>/dev/null \
+            && printf 'ebtables|%s|\n' "$HOTSPOT_BR" >> "$HOTSPOT_ISOLATE_FW_MARK"
+        return 0
+    fi
+    # No ebtables on this build — fall back to enumerating the bridge's
+    # current member ports (same /sys/class/net/*/brif walk
+    # cleanup_old_hotspot uses below) and blocking every ordered pair via
+    # physdev. O(n^2) rules, but n is a handful of wifi/eth ports, never more.
+    _hi_ports=""
+    for ifpath in /sys/class/net/"$HOTSPOT_BR"/brif/*; do
+        [ -e "$ifpath" ] || continue
+        _hi_ports="$_hi_ports $($BB basename "$ifpath")"
+    done
+    for _hi_a in $_hi_ports; do
+        for _hi_b in $_hi_ports; do
+            [ "$_hi_a" = "$_hi_b" ] && continue
+            iptables -t filter -I FORWARD 1 -m physdev --physdev-in "$_hi_a" --physdev-out "$_hi_b" -j DROP 2>/dev/null \
+                && printf 'physdev|%s|%s\n' "$_hi_a" "$_hi_b" >> "$HOTSPOT_ISOLATE_FW_MARK"
+        done
+    done
+}
+
 cleanup_old_hotspot() {
     tc qdisc del dev $WAN_INT root 2>/dev/null
     for iface in $HOTSPOT_INTERFACES; do
@@ -725,6 +784,7 @@ cleanup_old_hotspot() {
     for _priv_net in $LAN_ISOLATE_PRIVATE_NETS; do
         iptables -t filter -D FORWARD -i $HOTSPOT_BR -d "$_priv_net" -j DROP 2>/dev/null
     done
+    teardown_hotspot_isolate
     iptables -t filter -D INPUT -i $HOTSPOT_BR -p tcp --dport $WWW2_PORT -j ACCEPT 2>/dev/null
     # Return hotspot-enslaved interfaces to br0 (the LAN bridge) BEFORE tearing
     # down the hotspot bridge. Without this, disabling the hotspot leaves the
@@ -939,6 +999,8 @@ setup_firewall() {
         iptables -t filter -D INPUT -i $HOTSPOT_BR -p tcp --dport $WWW2_PORT -j ACCEPT 2>/dev/null
         ;;
     esac
+    # ── Hotspot client isolation ────────────────────────────────────────────────
+    apply_hotspot_isolate
     # ──────────────────────────────────────────────────────────────────────────
     # Tag with a comment so the port-80 watchdog can tell these apart from
     # vendor-added rules later. Not every embedded iptables build has the
@@ -1734,6 +1796,7 @@ write_coin_config() {
         printf 'ANTI_TETHER="%s"\n'         "${ANTI_TETHER:-0}"
         printf 'LAN_ISOLATE="%s"\n'         "${LAN_ISOLATE:-1}"
         printf 'MAC_RANDOMIZATION_FIX="%s"\n' "${MAC_RANDOMIZATION_FIX:-1}"
+        printf 'HOTSPOT_ISOLATE="%s"\n'     "${HOTSPOT_ISOLATE:-1}"
         # Same "without this line..." reasoning as MAC_RANDOMIZATION_FIX just
         # above — PAUSE_ON_BOOT is only actually consulted once, at the
         # BOOT_MARKER gate near the bottom of this file, but that check reads
@@ -2188,6 +2251,15 @@ fi
                 iptables -t filter -I INPUT 1 -i $HOTSPOT_BR -p tcp --dport $WWW2_PORT -j ACCEPT
                 ;;
             esac
+        fi
+
+        # Hotspot client isolation hot-toggle: if HOTSPOT_ISOLATE changed
+        # since last tick, re-apply (apply_hotspot_isolate tears down its
+        # own prior state first regardless of the new value).
+        _hi_want="${HOTSPOT_ISOLATE:-1}"
+        if [ "${_hi_last:-unset}" != "$_hi_want" ]; then
+            _hi_last="$_hi_want"
+            apply_hotspot_isolate
         fi
 
         # Re-evaluate upstream interface (repurpose may have been toggled)

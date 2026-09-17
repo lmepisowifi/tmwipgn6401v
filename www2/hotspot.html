@@ -109,6 +109,19 @@
             <hr class="my-0" style="border-color:var(--border-color);">
             <div class="d-flex align-items-start justify-content-between gap-3 p-3">
                 <div>
+                    <div style="font-weight:500;">Hotspot Client Isolation</div>
+                    <div class="field-hint">Blocks clients on the hotspot from reaching each other directly — closes off sniffing/replaying another customer's session cookie over shared WiFi. Portal and internet access are unaffected.</div>
+                </div>
+                <div class="d-flex align-items-center gap-2 flex-shrink-0">
+                    <span id="hi-badge" class="at-badge off">Off</span>
+                    <div id="hi-toggle" class="wlan-toggle" onclick="toggleHotspotIsolate()" title="Toggle hotspot client isolation">
+                        <div class="wlan-toggle-knob"></div>
+                    </div>
+                </div>
+            </div>
+            <hr class="my-0" style="border-color:var(--border-color);">
+            <div class="d-flex align-items-start justify-content-between gap-3 p-3">
+                <div>
                     <div style="font-weight:500;">Pause Active Users on Boot</div>
                     <div class="field-hint">On reboot, converts any session still marked active into paused (preserving its remaining time) instead of leaving it stale. Off skips the one-time boot conversion — the periodic 5-minute self-heal sync still catches it later if it's still stale then.</div>
                 </div>
@@ -487,6 +500,7 @@ function loadConfig(){
             setAntiTetherUI(d.anti_tether===true||d.anti_tether==='1'||d.anti_tether===1);
             setLanIsolateUI(d.lan_isolate===true||d.lan_isolate==='1'||d.lan_isolate===1);
             setMacFixUI(d.mac_randomization_fix===true||d.mac_randomization_fix==='1'||d.mac_randomization_fix===1);
+            setHotspotIsolateUI(d.hotspot_isolate===true||d.hotspot_isolate==='1'||d.hotspot_isolate===1);
             setPauseOnBootUI(d.pause_on_boot===true||d.pause_on_boot==='1'||d.pause_on_boot===1);
             setCoinInternetUI(d.coin_require_internet===true||d.coin_require_internet==='1'||d.coin_require_internet===1);
             setVoucherInternetUI(d.voucher_require_internet===true||d.voucher_require_internet==='1'||d.voucher_require_internet===1);
@@ -637,6 +651,25 @@ function toggleMacFix(){
     postForm('mac_fix_set','enabled='+newVal,function(d){
         tog.classList.remove('busy');
         if(d.ok){ setMacFixUI(d.mac_randomization_fix); toastr.success('MAC randomization fix '+(d.mac_randomization_fix?'enabled':'disabled')); }
+        else toastr.error('Failed: '+(d.error||'unknown'));
+    });
+}
+
+/* ── Hotspot client isolation toggle ── */
+function setHotspotIsolateUI(on){
+    var tog=document.getElementById('hi-toggle');
+    var badge=document.getElementById('hi-badge');
+    if(on){ tog.classList.add('on'); badge.textContent='On'; badge.className='at-badge on'; }
+    else  { tog.classList.remove('on'); badge.textContent='Off'; badge.className='at-badge off'; }
+}
+function toggleHotspotIsolate(){
+    var tog=document.getElementById('hi-toggle');
+    if(tog.classList.contains('busy')) return;
+    var newVal=tog.classList.contains('on')?0:1;
+    tog.classList.add('busy');
+    postForm('hotspot_isolate_set','enabled='+newVal,function(d){
+        tog.classList.remove('busy');
+        if(d.ok){ setHotspotIsolateUI(d.hotspot_isolate); toastr.success('Hotspot client isolation '+(d.hotspot_isolate?'enabled':'disabled')); }
         else toastr.error('Failed: '+(d.error||'unknown'));
     });
 }

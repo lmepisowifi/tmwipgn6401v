@@ -653,6 +653,8 @@ if echo "$QS" | $BB grep -q "action=config_get"; then
     LI_BOOL="true"; [ "${LI:-1}" = "0" ] && LI_BOOL="false"
     MRF="${MAC_RANDOMIZATION_FIX:-$(read_lmehspt_var MAC_RANDOMIZATION_FIX)}"
     MRF_BOOL="true"; [ "${MRF:-1}" = "0" ] && MRF_BOOL="false"
+    HI="${HOTSPOT_ISOLATE:-$(read_lmehspt_var HOTSPOT_ISOLATE)}"
+    HI_BOOL="true"; [ "${HI:-1}" = "0" ] && HI_BOOL="false"
     POB="${PAUSE_ON_BOOT:-$(read_lmehspt_var PAUSE_ON_BOOT)}"
     POB_BOOL="true"; [ "${POB:-1}" = "0" ] && POB_BOOL="false"
     CRI="${COIN_REQUIRE_INTERNET:-$(read_lmehspt_var COIN_REQUIRE_INTERNET)}"
@@ -701,6 +703,7 @@ if echo "$QS" | $BB grep -q "action=config_get"; then
 \"anti_tether\":$AT_BOOL,
 \"lan_isolate\":$LI_BOOL,
 \"mac_randomization_fix\":$MRF_BOOL,
+\"hotspot_isolate\":$HI_BOOL,
 \"pause_on_boot\":$POB_BOOL,
 \"coin_require_internet\":$CRI_BOOL,
 \"voucher_require_internet\":$VRI_BOOL,
@@ -2189,6 +2192,68 @@ if echo "$QS" | $BB grep -q "action=mac_fix_set"; then
             set_lmehspt_var   "MAC_RANDOMIZATION_FIX" "0"
             set_globals_var   "MAC_RANDOMIZATION_FIX" "0"
             ok_json '{"ok":true,"mac_randomization_fix":false}'
+            ;;
+        *) err_json "bad_value" ;;
+    esac
+fi
+
+# ================================================================
+# POST ?action=hotspot_isolate_set   body: enabled=1|0
+# Instantly applies or removes client-to-client isolation on the hotspot
+# bridge (see HOTSPOT_ISOLATE in defaults.env / apply_hotspot_isolate() in
+# lmehspt.sh for the full rationale — this is the network-level backstop
+# for the fact that MAC_RANDOMIZATION_FIX's cookie above travels over
+# plain HTTP on shared WiFi). Uses the same mark-file format as
+# lmehspt.sh's own apply/teardown, so whichever runs next — this request,
+# or the watchdog's own next tick — tears down exactly what was actually
+# applied rather than assuming.
+# ================================================================
+if echo "$QS" | $BB grep -q "action=hotspot_isolate_set"; then
+    read -n "${CONTENT_LENGTH:-0}" POST_DATA
+    VAL=$(printf '%s' "$POST_DATA" | $BB sed -n 's/.*enabled=\([^&]*\).*/\1/p')
+    load_coin_env
+    HBR="${HOTSPOT_BR:-$(read_lmehspt_var HOTSPOT_BR)}"
+    HBR="${HBR:-br1}"
+    _HI_MARK="/tmp/hotspot_isolate.mark"
+    if [ -f "$_HI_MARK" ]; then
+        while IFS='|' read -r _tool _a _b; do
+            [ -n "$_tool" ] || continue
+            case "$_tool" in
+                ebtables) ebtables -D FORWARD --logical-in "$_a" --logical-out "$_a" -j DROP 2>/dev/null ;;
+                physdev)  iptables -t filter -D FORWARD -m physdev --physdev-in "$_a" --physdev-out "$_b" -j DROP 2>/dev/null ;;
+            esac
+        done < "$_HI_MARK"
+    fi
+    : > "$_HI_MARK"
+    case "$VAL" in
+        1)
+            if ebtables --version >/dev/null 2>&1 || $BB ebtables --version >/dev/null 2>&1; then
+                ebtables -A FORWARD --logical-in "$HBR" --logical-out "$HBR" -j DROP 2>/dev/null \
+                    && printf 'ebtables|%s|\n' "$HBR" >> "$_HI_MARK"
+            else
+                _hi_ports=""
+                for ifpath in /sys/class/net/"$HBR"/brif/*; do
+                    [ -e "$ifpath" ] || continue
+                    _hi_ports="$_hi_ports $($BB basename "$ifpath")"
+                done
+                for _hi_a in $_hi_ports; do
+                    for _hi_b in $_hi_ports; do
+                        [ "$_hi_a" = "$_hi_b" ] && continue
+                        iptables -t filter -I FORWARD 1 -m physdev --physdev-in "$_hi_a" --physdev-out "$_hi_b" -j DROP 2>/dev/null \
+                            && printf 'physdev|%s|%s\n' "$_hi_a" "$_hi_b" >> "$_HI_MARK"
+                    done
+                done
+            fi
+            save_coin_env_var "HOTSPOT_ISOLATE" "1"
+            set_lmehspt_var   "HOTSPOT_ISOLATE" "1"
+            set_globals_var   "HOTSPOT_ISOLATE" "1"
+            ok_json '{"ok":true,"hotspot_isolate":true}'
+            ;;
+        0)
+            save_coin_env_var "HOTSPOT_ISOLATE" "0"
+            set_lmehspt_var   "HOTSPOT_ISOLATE" "0"
+            set_globals_var   "HOTSPOT_ISOLATE" "0"
+            ok_json '{"ok":true,"hotspot_isolate":false}'
             ;;
         *) err_json "bad_value" ;;
     esac

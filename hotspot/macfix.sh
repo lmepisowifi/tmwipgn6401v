@@ -47,6 +47,18 @@
 # same cookie back), including the locked-down CNA-style sandboxes that
 # have previously thrown SecurityErrors on localStorage in this project.
 #
+# The captive portal necessarily runs over plain HTTP, so this cookie is
+# visible in cleartext to anything else on the same WiFi segment — it's a
+# bearer token, not proof of hardware identity. A copy of it presented from
+# a second, different MAC looks identical to a genuine MAC-randomization
+# reconnect. mf_reconcile() narrows that gap with one check: a real
+# reconnect is a disassociate-then-reassociate, so if the OLD MAC is still
+# showing live network activity at the same moment the cookie shows up on
+# a NEW one, that's not a phone rotating its own address — it's two devices
+# existing at once. See the ip-neigh check inside mf_reconcile() below.
+# Every reconciliation attempt — applied or refused — is appended to
+# MACFIX_LOG_FILE for later forensics (see _mf_log_migration).
+#
 # Toggle: MAC_RANDOMIZATION_FIX ("1"/"0", default "1" — see defaults.env,
 # www2 > Hotspot).
 #
@@ -101,6 +113,27 @@ _mf_secret() {
 # digest" idiom coin.sh/coin_result.sh already use for NodeMCU reply
 # signatures, just sha256 instead of md5 since this token lives for a year.
 _mf_sign() { printf '%s:%s' "$(_mf_secret)" "$1" | sha256sum | awk '{print $1}'; }
+
+MACFIX_LOG_FILE="/lmepisowifi/hotspot_data/macfix_migrations.log"
+MACFIX_LOG_MAX_LINES=${MACFIX_LOG_MAX_LINES:-2000}
+
+# Appends one forensics line for every reconciliation attempt — both the
+# ones actually applied and the ones the concurrent-activity guard below
+# refuses — so a question like "who ended up with this MAC's balance, and
+# when" can be answered by reading a log instead of reconstructing it after
+# the fact from OUI bits and uptime-vs-reboot arithmetic. Bounded by line
+# count rather than age: these events should be rare, so a fixed tail is
+# enough to keep this self-trimming without needing timestamp math like
+# MACFIX_MAP_FILE's own prune above.
+_mf_log_migration() {
+    local verdict="$1" fp="$2" old="$3" new="$4"
+    printf '%s verdict=%s fp=%s old=%s new=%s ua=%s\n' \
+        "$(date +%s 2>/dev/null || _mf_now)" "$verdict" "$fp" "$old" "$new" \
+        "$(printf '%s' "${HTTP_USER_AGENT:-}" | $BB tr -d '\n\r' | $BB head -c 120)" \
+        >> "$MACFIX_LOG_FILE" 2>/dev/null
+    $BB tail -n "$MACFIX_LOG_MAX_LINES" "$MACFIX_LOG_FILE" > "${MACFIX_LOG_FILE}.tmp" 2>/dev/null \
+        && $BB mv "${MACFIX_LOG_FILE}.tmp" "$MACFIX_LOG_FILE"
+}
 
 # Verifies $HTTP_COOKIE's fingerprint cookie, if any. Sets MF_FP_ID and
 # returns 0 on a signature match; returns 1 (MF_FP_ID cleared) for anything
@@ -270,6 +303,35 @@ mf_reconcile() {
     PREV_MAC=$($BB grep "^${MF_FP_ID} " "$MACFIX_MAP_FILE" 2>/dev/null | $BB tail -1 | $BB awk '{print $2}')
 
     if [ -n "$PREV_MAC" ] && [ "$PREV_MAC" != "$CLIENT_MAC" ]; then
+        # Genuine MAC randomization is a disassociate-then-reassociate: by
+        # the time the new MAC shows up with this cookie, the old MAC's
+        # radio session is gone. If the old MAC is still showing live
+        # activity right now, this isn't one phone rotating its own
+        # address — it's two devices existing at once, which means this
+        # cookie most likely got copied off the wire and is being replayed
+        # from a second, still-connected device. Refuse the migration and
+        # mint this request a brand-new, unrelated identity instead, same
+        # as if it had presented no cookie at all: PREV_MAC's row is left
+        # completely untouched below, so the real device is still
+        # recognized normally whenever it genuinely does reconnect under a
+        # new MAC later. Fails open — if `ip` isn't available/usable for
+        # any reason, this check is skipped rather than blocking a
+        # legitimate migration over a diagnostic tool coming up empty.
+        _mf_old_live=0
+        if command -v ip >/dev/null 2>&1; then
+            ip neigh show 2>/dev/null | $BB grep -i " ${PREV_MAC} " \
+                | $BB grep -q -e REACHABLE -e STALE -e DELAY -e PROBE && _mf_old_live=1
+        fi
+        if [ "$_mf_old_live" = "1" ]; then
+            _mf_log_migration "refused" "$MF_FP_ID" "$PREV_MAC" "$CLIENT_MAC"
+            MF_FP_ID=$(printf '%s %s %s %d %d\n' \
+                "$(cat /proc/uptime 2>/dev/null)" "$CLIENT_MAC" "$(date +%s 2>/dev/null)" "$$" "$RANDOM" \
+                | sha256sum | awk '{print $1}')
+            PREV_MAC=""
+        fi
+    fi
+
+    if [ -n "$PREV_MAC" ] && [ "$PREV_MAC" != "$CLIENT_MAC" ]; then
         # Same browser, different MAC than last time - exactly what a
         # reconnect-time MAC rotation looks like. CLIENT_MAC may already
         # have its own live row here too (e.g. it was paid for separately
@@ -302,6 +364,7 @@ mf_reconcile() {
         # implemented as one more _mf_reconcile_row "kind" because it needs
         # that file's own live/frozen split, not a generic single-file sum.
         command -v rv_reconcile_mac >/dev/null 2>&1 && rv_reconcile_mac "$PREV_MAC" "$CLIENT_MAC"
+        _mf_log_migration "applied" "$MF_FP_ID" "$PREV_MAC" "$CLIENT_MAC"
     fi
 
     # Keep the mapping current regardless: a first-ever sighting of this
