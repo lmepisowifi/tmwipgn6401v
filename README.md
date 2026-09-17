@@ -36,3 +36,6 @@ your Corresponding Source available to your users (AGPLv3 §5, §13).
 
 # Note
 - Hotspot feature is free to use, compared to other router based wifi hotspot system firmwares that use openwrt.
+****
+Donate: 
+https://buymeacoffee.com/lmepisowifi
