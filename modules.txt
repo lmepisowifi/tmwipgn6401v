@@ -1,14 +1,14 @@
 # modules.txt — installable www2 modules (written by release CI)
 id=hotspot
 name=Hotspot / Piso-Wifi
-version=1.5.44
-url=https://github.com/lmepisowifi/tmwipgn6401v/releases/download/v1.5.44/lmepisowifi-hotspot-1.5.44.tar.gz
-sha256=9696472f0bbad50d9a906d546920ab424ad7e0fa6e1a43fca5a24e2f5b7e3169
+version=1.5.45
+url=https://github.com/lmepisowifi/tmwipgn6401v/releases/download/v1.5.45/lmepisowifi-hotspot-1.5.45.tar.gz
+sha256=878bd05828259309c9ef9013bc3a6afb231a353f2af043f6076f0aa195819d48
 description=Captive portal, coin acceptor (NodeMCU), vouchers, WiFi rates, DHCP settings and QoS.
 
 id=tailscale
 name=Tailscale VPN
-version=1.5.44
-url=https://github.com/lmepisowifi/tmwipgn6401v/releases/download/v1.5.44/lmepisowifi-tailscale-1.5.44.tar.gz
-sha256=564d39e7d8b86b43b881dc6233b3ed89bbf31a3ba08cd3878d715d25e8d58f7e
+version=1.5.45
+url=https://github.com/lmepisowifi/tmwipgn6401v/releases/download/v1.5.45/lmepisowifi-tailscale-1.5.45.tar.gz
+sha256=e06d292c17821471a83d9d68e08df940a333ffcca51ca6e64cfd9c44e2eca61a
 description=Tailscale VPN in userspace mode — advertise subnet routes and Tailscale SSH; configure on the www2 Tailscale page.
