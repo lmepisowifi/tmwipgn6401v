@@ -712,15 +712,22 @@ apply_hotspot_isolate() {
         1|yes|true) ;;
         *) return 0 ;;
     esac
-    if ebtables --version >/dev/null 2>&1 || $BB ebtables --version >/dev/null 2>&1; then
-        # One rule, self-adapting to whatever is currently bridged into
-        # $HOTSPOT_BR — a second AP added later on another VLAN/port is
-        # covered automatically, no port list to keep in sync here.
-        ebtables -A FORWARD --logical-in $HOTSPOT_BR --logical-out $HOTSPOT_BR -j DROP 2>/dev/null \
-            && printf 'ebtables|%s|\n' "$HOTSPOT_BR" >> "$HOTSPOT_ISOLATE_FW_MARK"
+    if (ebtables --version >/dev/null 2>&1 || $BB ebtables --version >/dev/null 2>&1) \
+        && ebtables -I FORWARD 1 --logical-in $HOTSPOT_BR --logical-out $HOTSPOT_BR -j DROP 2>/dev/null \
+        && ebtables -L FORWARD 2>/dev/null | $BB grep -q "$HOTSPOT_BR"; then
+        # Inserted at position 1, not appended: this chain also carries
+        # several vendor jump-targets (wlan_block, ISOLATION_MAP, etc.)
+        # that are empty today but, if ever populated, could ACCEPT a
+        # frame before it reaches an appended rule — ebtables (like
+        # iptables) stops evaluating a chain the moment something gives a
+        # terminating verdict. Confirmed via -L, not just a clean exit
+        # code — some ebtables ports parse --version fine but silently
+        # reject or no-op --logical-in/--logical-out.
+        printf 'ebtables|%s|\n' "$HOTSPOT_BR" >> "$HOTSPOT_ISOLATE_FW_MARK"
         return 0
     fi
-    # No ebtables on this build — fall back to enumerating the bridge's
+    # ebtables missing, or present but this build doesn't actually honor
+    # --logical-in/--logical-out — fall back to enumerating the bridge's
     # current member ports (same /sys/class/net/*/brif walk
     # cleanup_old_hotspot uses below) and blocking every ordered pair via
     # physdev. O(n^2) rules, but n is a handful of wifi/eth ports, never more.

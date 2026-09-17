@@ -1130,7 +1130,23 @@ restart_services() {
     ( setsid $BB httpd -h "$ROOT/www2" -p 8080 >/dev/null 2>&1 & ) 2>/dev/null || \
         ( $BB httpd -h "$ROOT/www2" -p 8080 >/dev/null 2>&1 & )
 
-    # portal + hotspot watchdog + firewall: lmehspt.sh tears down and rebuilds.
+    # portal + hotspot watchdog + firewall: lmehspt.sh tears down and
+    # rebuilds. Kill any instance still running from before this update
+    # first — it was parsed from the OLD file and keeps executing the OLD
+    # function bodies (e.g. a pre-fix apply_hotspot_isolate) in memory
+    # regardless of what's now on disk. Left alive, its own periodic tick
+    # can re-assert stale firewall/isolation state right after the fresh
+    # instance below has just fixed it, racing it indefinitely — nothing
+    # used to kill this old PID, so the symptom only ever cleared on a
+    # reboot, which resets the whole process table.
+    for pid in $($BB ps w 2>/dev/null | grep "[l]mehspt\.sh" | awk '{print $1}'); do
+        kill "$pid" 2>/dev/null
+    done
+    sleep 1
+    for pid in $($BB ps w 2>/dev/null | grep "[l]mehspt\.sh" | awk '{print $1}'); do
+        kill -9 "$pid" 2>/dev/null
+    done
+
     ( setsid sh "$ROOT/lmehspt.sh" --force >/tmp/ota_lmehspt.log 2>&1 & ) 2>/dev/null || \
         ( sh "$ROOT/lmehspt.sh" --force >/tmp/ota_lmehspt.log 2>&1 & )
     sleep 4

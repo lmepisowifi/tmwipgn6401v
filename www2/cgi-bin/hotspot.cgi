@@ -2227,9 +2227,13 @@ if echo "$QS" | $BB grep -q "action=hotspot_isolate_set"; then
     : > "$_HI_MARK"
     case "$VAL" in
         1)
-            if ebtables --version >/dev/null 2>&1 || $BB ebtables --version >/dev/null 2>&1; then
-                ebtables -A FORWARD --logical-in "$HBR" --logical-out "$HBR" -j DROP 2>/dev/null \
-                    && printf 'ebtables|%s|\n' "$HBR" >> "$_HI_MARK"
+            if (ebtables --version >/dev/null 2>&1 || $BB ebtables --version >/dev/null 2>&1) \
+                && ebtables -I FORWARD 1 --logical-in "$HBR" --logical-out "$HBR" -j DROP 2>/dev/null \
+                && ebtables -L FORWARD 2>/dev/null | $BB grep -q "$HBR"; then
+                # Inserted at position 1 (see lmehspt.sh's apply_hotspot_isolate
+                # for the full rationale) and confirmed via -L, not just a
+                # clean exit code.
+                printf 'ebtables|%s|\n' "$HBR" >> "$_HI_MARK"
             else
                 _hi_ports=""
                 for ifpath in /sys/class/net/"$HBR"/brif/*; do
