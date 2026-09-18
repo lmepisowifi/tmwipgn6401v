@@ -375,7 +375,8 @@
                             network actually connects before relying on it.
                         </div>
                     </div>
-                    <div class="mb-1">
+                    <!-- BSSID locking hidden: driver does not support this feature -->
+                    <div class="mb-1" style="display:none;">
                         <label for="mc-bssid" class="form-label" style="font-size:12px;">
                             BSSID <span style="font-weight:400;color:var(--text-secondary);">(optional — pins to one specific AP)</span>
                         </label>
@@ -1191,7 +1192,16 @@
                 toastr["warning"](txt || ('HTTP ' + r.status), 'Connect failed');
             }
         } catch (e) {
-            toastr["warning"]('Connect request failed: ' + e.message, 'Error');
+            // A network error (TypeError) here almost always means the wlan_apply
+            // restart cut the admin's WiFi before the response arrived —
+            // treat it as a successful apply rather than showing a false error.
+            if (e instanceof TypeError) {
+                toastr["success"]('Applied. ' + (clientTarget ? clientTarget.label : 'Interface') +
+                    ' is now joining "' + (ap.ssid || '') + '". (Reconnecting\u2026)', 'Connecting');
+                setStatus('Connecting to ' + (ap.ssid || 'network') + '\u2026');
+            } else {
+                toastr["warning"]('Connect request failed: ' + e.message, 'Error');
+            }
         } finally {
             hideOverlay();
             btn.disabled = false;
@@ -1328,14 +1338,7 @@
             }
         }
 
-        var bssidRaw = document.getElementById('mc-bssid').value.trim();
-        var bssidHex = bssidRaw.toLowerCase().replace(/[^0-9a-f]/g, '');
-        if (bssidRaw && bssidHex.length !== 12) {
-            toastr["warning"]('BSSID must be a full MAC address (AA:BB:CC:DD:EE:FF), or leave it blank.', 'Invalid BSSID');
-            document.getElementById('mc-bssid').focus();
-            return;
-        }
-
+        // BSSID locking not sent — driver does not support this feature
         var band = getIs5G() ? 5 : 24;
         var body = 'ssid='               + encodeURIComponent(ssid) +
                    '&encrypt='           + m.enc +
@@ -1345,8 +1348,7 @@
                    '&wep='               + (m.wep ? 1 : 0) +
                    '&wepKeyType='        + wepKeyType +
                    '&wepKeyIdx=0' +
-                   '&wepKey='            + wepKeyHex +
-                   '&bssid='             + bssidHex;
+                   '&wepKey='            + wepKeyHex;
 
         var btn = document.getElementById('mc-connect-btn');
         btn.disabled = true;
@@ -1374,7 +1376,16 @@
                 toastr["warning"](txt || ('HTTP ' + r.status), 'Connect failed');
             }
         } catch (e) {
-            toastr["warning"]('Connect request failed: ' + e.message, 'Error');
+            // A network error (TypeError) here almost always means the wlan_apply
+            // restart cut the admin's WiFi before the response arrived —
+            // treat it as a successful apply rather than showing a false error.
+            if (e instanceof TypeError) {
+                toastr["success"]('Applied. ' + (clientTarget ? clientTarget.label : 'Interface') +
+                    ' is now joining "' + ssid + '". (Reconnecting\u2026)', 'Connecting');
+                setStatus('Connecting to ' + ssid + '\u2026');
+            } else {
+                toastr["warning"]('Connect request failed: ' + e.message, 'Error');
+            }
         } finally {
             hideOverlay();
             btn.disabled = false;

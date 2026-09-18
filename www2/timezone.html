@@ -89,19 +89,19 @@
     // WEST of UTC (so UTC+8 is written as "-8").
     // ---------------------------------------------------------------
     var TZ_OPTIONS = [
-        { label: 'Philippines (UTC+8)',              value: 'PST-8' },
-        { label: 'UTC',                               value: 'UTC0' },
-        { label: 'China / Singapore / Hong Kong (UTC+8)', value: 'CST-8' },
-        { label: 'Japan / South Korea (UTC+9)',       value: 'JST-9' },
-        { label: 'India (UTC+5:30)',                  value: 'IST-5:30' },
-        { label: 'US Eastern (auto DST)',             value: 'EST5EDT,M3.2.0,M11.1.0' },
-        { label: 'US Central (auto DST)',             value: 'CST6CDT,M3.2.0,M11.1.0' },
-        { label: 'US Mountain (auto DST)',            value: 'MST7MDT,M3.2.0,M11.1.0' },
-        { label: 'US Pacific (auto DST)',             value: 'PST8PDT,M3.2.0,M11.1.0' },
-        { label: 'UK / London (auto DST)',            value: 'GMT0BST,M3.5.0/1,M10.5.0' },
-        { label: 'Central Europe (auto DST)',         value: 'CET-1CEST,M3.5.0,M10.5.0/3' },
-        { label: 'Australia Eastern (auto DST)',      value: 'AEST-10AEDT,M10.1.0,M4.1.0/3' },
-        { label: 'Custom\u2026',                      value: '__custom__' }
+        { label: 'Philippines (UTC+8)',              value: 'PST-8',                         zoneinfo: 'Asia/Manila' },
+        { label: 'UTC',                               value: 'UTC0',                          zoneinfo: 'UTC' },
+        { label: 'China / Singapore / Hong Kong (UTC+8)', value: 'CST-8',                   zoneinfo: 'Asia/Shanghai' },
+        { label: 'Japan / South Korea (UTC+9)',       value: 'JST-9',                        zoneinfo: 'Asia/Tokyo' },
+        { label: 'India (UTC+5:30)',                  value: 'IST-5:30',                     zoneinfo: 'Asia/Kolkata' },
+        { label: 'US Eastern (auto DST)',             value: 'EST5EDT,M3.2.0,M11.1.0',       zoneinfo: 'America/New_York' },
+        { label: 'US Central (auto DST)',             value: 'CST6CDT,M3.2.0,M11.1.0',       zoneinfo: 'America/Chicago' },
+        { label: 'US Mountain (auto DST)',            value: 'MST7MDT,M3.2.0,M11.1.0',       zoneinfo: 'America/Denver' },
+        { label: 'US Pacific (auto DST)',             value: 'PST8PDT,M3.2.0,M11.1.0',       zoneinfo: 'America/Los_Angeles' },
+        { label: 'UK / London (auto DST)',            value: 'GMT0BST,M3.5.0/1,M10.5.0',     zoneinfo: 'Europe/London' },
+        { label: 'Central Europe (auto DST)',         value: 'CET-1CEST,M3.5.0,M10.5.0/3',  zoneinfo: 'Europe/Berlin' },
+        { label: 'Australia Eastern (auto DST)',      value: 'AEST-10AEDT,M10.1.0,M4.1.0/3',zoneinfo: 'Australia/Sydney' },
+        { label: 'Custom\u2026',                      value: '__custom__',                    zoneinfo: '' }
     ];
 
     var TZ_RE = /^[A-Za-z0-9+:,./<>-]{1,64}$/;
@@ -211,12 +211,18 @@
         var sel = document.getElementById('tz-select');
         var tz = sel.value;
 
+        // Find the zoneinfo path for the selected preset (empty for Custom).
+        var zoninfoPath = '';
+        var selectedOpt = TZ_OPTIONS.find(function(o) { return o.value === sel.value; });
+        if (selectedOpt) { zoninfoPath = selectedOpt.zoneinfo || ''; }
+
         if (tz === '__custom__') {
             tz = document.getElementById('tz-custom').value.trim();
             if (!TZ_RE.test(tz)) {
                 setFieldError('Letters, digits, and + - : , . / < > only (1\u201364 chars)');
                 return;
             }
+            zoninfoPath = ''; // no known zoneinfo for freeform POSIX strings
         }
         setFieldError(null);
 
@@ -226,7 +232,7 @@
         fetch('/cgi-bin/lme.cgi?action=timezone_settings', {
             method: 'POST',
             headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-            body: 'tz=' + encodeURIComponent(tz)
+            body: 'tz=' + encodeURIComponent(tz) + '&zoneinfo=' + encodeURIComponent(zoninfoPath)
         })
         .then(function(r) { return r.text().then(function(t) { return { ok: r.ok, text: t }; }); })
         .then(function(res) {

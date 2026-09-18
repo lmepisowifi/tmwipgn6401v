@@ -438,7 +438,7 @@ body {
 
 /* 3. The Open State */
 .dropdown-menu.show {
-    max-height: 350px;       /* Keeps shrink time proportional to expansion */
+    max-height: 600px;       /* Keeps shrink time proportional to expansion */
     opacity: 1;
     visibility: visible;
     padding: 4px 0 !important; 

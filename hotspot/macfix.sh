@@ -281,10 +281,6 @@ _mf_reconcile_row() {
     return 0
 }
 
-# The entry point. Call once CLIENT_MAC is known and BEFORE the caller's own
-# SESSION_FILE/USERS_FILE lookups. Always sets MF_COOKIE_HEADER (possibly to
-# "") — the caller should print it, when non-empty, as part of its one
-# header block (see login.sh/status.sh/logout.sh for the exact spot).
 mf_reconcile() {
     MF_COOKIE_HEADER=""
     [ "${MAC_RANDOMIZATION_FIX:-1}" = "1" ] || return 0
@@ -292,36 +288,49 @@ mf_reconcile() {
 
     if ! _mf_verify_cookie; then
         # First time we've seen this browser (or its old cookie didn't
-        # verify) — mint a fresh identity. Same uptime+MAC+PID+RANDOM
-        # entropy mix coin.sh uses for its SID generation.
+        # verify) — mint a fresh identity.
         MF_FP_ID=$(printf '%s %s %s %d %d\n' \
             "$(cat /proc/uptime 2>/dev/null)" "$CLIENT_MAC" "$(date +%s 2>/dev/null)" "$$" "$RANDOM" \
             | sha256sum | awk '{print $1}')
     fi
 
-    _lock
+    # Unlocked read: Read PREV_MAC and perform the liveness probe before
+    # taking _lock so the ARP timeout (~1s) doesn't stall other clients.
     PREV_MAC=$($BB grep "^${MF_FP_ID} " "$MACFIX_MAP_FILE" 2>/dev/null | $BB tail -1 | $BB awk '{print $2}')
 
     if [ -n "$PREV_MAC" ] && [ "$PREV_MAC" != "$CLIENT_MAC" ]; then
-        # Genuine MAC randomization is a disassociate-then-reassociate: by
-        # the time the new MAC shows up with this cookie, the old MAC's
-        # radio session is gone. If the old MAC is still showing live
-        # activity right now, this isn't one phone rotating its own
-        # address — it's two devices existing at once, which means this
-        # cookie most likely got copied off the wire and is being replayed
-        # from a second, still-connected device. Refuse the migration and
-        # mint this request a brand-new, unrelated identity instead, same
-        # as if it had presented no cookie at all: PREV_MAC's row is left
-        # completely untouched below, so the real device is still
-        # recognized normally whenever it genuinely does reconnect under a
-        # new MAC later. Fails open — if `ip` isn't available/usable for
-        # any reason, this check is skipped rather than blocking a
-        # legitimate migration over a diagnostic tool coming up empty.
         _mf_old_live=0
-        if command -v ip >/dev/null 2>&1; then
-            ip neigh show 2>/dev/null | $BB grep -i " ${PREV_MAC} " \
-                | $BB grep -q -e REACHABLE -e STALE -e DELAY -e PROBE && _mf_old_live=1
+        if command -v ip >/dev/null 2>&1 || command -v arp >/dev/null 2>&1; then
+            _mf_br="${HOTSPOT_BR:-br1}"
+
+            # 1. Scoped strictly to the hotspot bridge (ignores wlan0-vxd/br0)
+            #    and excludes FAILED entries in case multiple IPs exist on br1.
+            _mf_old_ip=$(ip -f inet neigh show dev "$_mf_br" 2>/dev/null \
+                | $BB grep -i " ${PREV_MAC} " | $BB grep -vi FAILED | $BB awk '{print $1}' | $BB head -1)
+            [ -z "$_mf_old_ip" ] && _mf_old_ip=$($BB grep -i "^${PREV_MAC} " \
+                /tmp/hotspot_ip_map.txt 2>/dev/null | $BB awk '{print $2}' | $BB head -1)
+
+            if [ -n "$_mf_old_ip" ]; then
+                # 2. Flush cached state to force kernel into NUD_INCOMPLETE (broadcast ARP)
+                $BB arp -d "$_mf_old_ip" 2>/dev/null
+                ip neigh flush to "$_mf_old_ip" dev "$_mf_br" 2>/dev/null
+
+                # 3. Ping sends ICMP and triggers ARP request
+                $BB ping -c 1 -W 1 "$_mf_old_ip" >/dev/null 2>&1
+
+                # 4. Extract resolved MAC portably across BusyBox versions
+                _mf_resolved=$(ip -f inet neigh show to "$_mf_old_ip" dev "$_mf_br" 2>/dev/null \
+                    | $BB grep -i REACHABLE | $BB awk 'NR==1{print $5}')
+                [ -z "$_mf_resolved" ] && _mf_resolved=$(ip -f inet neigh show dev "$_mf_br" 2>/dev/null \
+                    | $BB grep -i "^${_mf_old_ip} " | $BB grep -i REACHABLE | $BB awk 'NR==1{print $5}')
+
+                # 5. Case-normalized comparison
+                _mf_pmac_lc=$(printf '%s' "$PREV_MAC" | $BB tr 'A-Z' 'a-z')
+                _mf_res_lc=$(printf '%s' "$_mf_resolved" | $BB tr 'A-Z' 'a-z')
+                [ -n "$_mf_res_lc" ] && [ "$_mf_pmac_lc" = "$_mf_res_lc" ] && _mf_old_live=1
+            fi
         fi
+
         if [ "$_mf_old_live" = "1" ]; then
             _mf_log_migration "refused" "$MF_FP_ID" "$PREV_MAC" "$CLIENT_MAC"
             MF_FP_ID=$(printf '%s %s %s %d %d\n' \
@@ -331,62 +340,30 @@ mf_reconcile() {
         fi
     fi
 
+    # Lock is only acquired when mutating files and iptables
+    _lock
+
     if [ -n "$PREV_MAC" ] && [ "$PREV_MAC" != "$CLIENT_MAC" ]; then
-        # Same browser, different MAC than last time - exactly what a
-        # reconnect-time MAC rotation looks like. CLIENT_MAC may already
-        # have its own live row here too (e.g. it was paid for separately
-        # before this browser's cookie tied the two MACs together) -
-        # _mf_reconcile_row tells the two cases apart: no collision, just
-        # rename PREV_MAC's row onto CLIENT_MAC; collision, combine the
-        # remaining time from both into a single row under CLIENT_MAC. So
-        # the caller's own "grep ^$CLIENT_MAC" below always finds exactly
-        # one row, in both cases.
         if _mf_reconcile_row "$SESSION_FILE" "$PREV_MAC" "$CLIENT_MAC" session; then
             iptables -t nat -D HOTSPOT -m mac --mac-source "$PREV_MAC" -j RETURN 2>/dev/null
             iptables -t filter -D HOTSPOT_FWD -m mac --mac-source "$PREV_MAC" -j ACCEPT 2>/dev/null
-            # Also drop any rule CLIENT_MAC already had of its own, so a
-            # collision merge can never leave two RETURN/ACCEPT rules
-            # stacked for the same MAC - a no-op in the plain-rename case,
-            # where CLIENT_MAC never had one to begin with.
             iptables -t nat -D HOTSPOT -m mac --mac-source "$CLIENT_MAC" -j RETURN 2>/dev/null
             iptables -t filter -D HOTSPOT_FWD -m mac --mac-source "$CLIENT_MAC" -j ACCEPT 2>/dev/null
             iptables -t nat -I HOTSPOT 1 -m mac --mac-source "$CLIENT_MAC" -j RETURN 2>/dev/null
             iptables -t filter -I HOTSPOT_FWD 1 -m mac --mac-source "$CLIENT_MAC" -j ACCEPT 2>/dev/null
         fi
         _mf_reconcile_row "$USERS_FILE" "$PREV_MAC" "$CLIENT_MAC" users
-        # Below-minimum-tier coin balance follows the browser too, same as
-        # the session/users rows above — MACFIX_BANK_FILE is a fixed
-        # constant (not caller-supplied), so this runs for every caller
-        # regardless of whether SESSION_FILE/USERS_FILE were defined.
         _mf_reconcile_row "$MACFIX_BANK_FILE" "$PREV_MAC" "$CLIENT_MAC" bank
-        # WiFi Rates expiry/validity bucket — optional feature file, only
-        # migrated when the caller has also sourced ratevalidity.sh. Not
-        # implemented as one more _mf_reconcile_row "kind" because it needs
-        # that file's own live/frozen split, not a generic single-file sum.
         command -v rv_reconcile_mac >/dev/null 2>&1 && rv_reconcile_mac "$PREV_MAC" "$CLIENT_MAC"
         _mf_log_migration "applied" "$MF_FP_ID" "$PREV_MAC" "$CLIENT_MAC"
     fi
 
-    # Keep the mapping current regardless: a first-ever sighting of this
-    # fingerprint, or just a repeat visit on an unchanged MAC, both need
-    # today's MAC/timestamp recorded so the next visit has something to
-    # compare against. Wall-clock here, not _mf_now()'s /proc/uptime — that
-    # resets to near-zero on every reboot, which would make the age-based
-    # prune below meaningless (a row written late in a long uptime could
-    # look newer than one written minutes after a reboot).
     local now
     now=$(date +%s 2>/dev/null || _mf_now)
     case "$now" in ''|*[!0-9]*) now=0 ;; esac
     $BB grep -v "^${MF_FP_ID} " "$MACFIX_MAP_FILE" > "${MACFIX_MAP_FILE}.tmp" 2>/dev/null
     printf '%s %s %s\n' "$MF_FP_ID" "$CLIENT_MAC" "$now" >> "${MACFIX_MAP_FILE}.tmp"
-    # Drop rows past their keep-by date (MACFIX_MAP_MAX_AGE, above) so this
-    # file tracks recent traffic instead of accumulating one permanent row
-    # per hit forever. A row left over from before this prune existed
-    # carries a /proc/uptime value instead of wall-clock in this column;
-    # those are always far below any real cutoff here, so this same pass
-    # clears the existing backlog out too. Falls back to keeping everything
-    # unpruned (never to an empty/truncated file) if awk or the rename
-    # fails, same safety idiom _mf_reconcile_row uses above.
+
     $BB awk -v cutoff="$(( now - MACFIX_MAP_MAX_AGE ))" '$3 >= cutoff' "${MACFIX_MAP_FILE}.tmp" \
         > "${MACFIX_MAP_FILE}.tmp2" 2>/dev/null \
         && $BB mv "${MACFIX_MAP_FILE}.tmp2" "${MACFIX_MAP_FILE}.tmp"

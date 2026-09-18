@@ -120,13 +120,16 @@ update_startup_speed() {
     && busybox chmod 755 "$STARTUP_SH"
 }
 
-# update_startup_timezone <tz_string>
+# update_startup_timezone <tz_string> [zoneinfo_path]
 #   Rewrites the BEGIN_TIMEZONE … END_TIMEZONE section of startup.sh so the
 #   chosen POSIX TZ string (e.g. "PST-8") is re-applied to /etc/TZ on every
-#   boot. Caller must validate <tz_string> first — it is written into a shell
+#   boot.  If zoneinfo_path is given (e.g. "Asia/Manila"), bind-mount lines
+#   for /etc/localtime and /var/localtime are also written.
+#   Caller must validate both arguments first — they are written into a shell
 #   script verbatim.
 update_startup_timezone() {
     _UPD_TZ="$1"
+    _UPD_ZI="$2"   # optional: e.g. "Asia/Manila"
 
     [ ! -f "$STARTUP_SH" ] && return
 
@@ -134,11 +137,18 @@ update_startup_timezone() {
 
     busybox awk \
         -v tz="$_UPD_TZ" \
+        -v zi="$_UPD_ZI" \
         'BEGIN { in_sec=0 }
          /^# --- BEGIN_TIMEZONE ---/ { print; in_sec=1; next }
          /^# --- END_TIMEZONE ---/ {
              if (tz != "") {
                  print "echo \"" tz "\" > /etc/TZ"
+             }
+             if (zi != "") {
+                 print "# bind-mount zoneinfo so binaries that read /etc/localtime or /var/localtime"
+                 print "# get the correct tz data — /etc/TZ alone is not enough for all tools."
+                 print "[ -f \"/usr/share/zoneinfo/" zi "\" ] && mount -o bind \"/usr/share/zoneinfo/" zi "\" /etc/localtime 2>/dev/null || true"
+                 print "[ -f \"/usr/share/zoneinfo/" zi "\" ] && { mkdir -p /var; mount -o bind \"/usr/share/zoneinfo/" zi "\" /var/localtime 2>/dev/null || true; }"
              }
              in_sec=0; print; next
          }
@@ -1324,8 +1334,34 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
         # Apply immediately — new processes read /etc/TZ fresh, no reboot needed.
         echo "$FORM_TZ" > /etc/TZ
 
-        # Persist across reboot.
-        update_startup_timezone "$FORM_TZ"
+        # Optional zoneinfo path (e.g. "Asia/Manila").
+        # Allowed chars: letters, digits, / and _ only — no shell metacharacters.
+        FORM_ZONEINFO=$(echo "$POST_DATA" | busybox sed 's/&/\n/g' \
+            | busybox grep '^zoneinfo=' | busybox cut -d'=' -f2-)
+        FORM_ZONEINFO=$(busybox httpd -d "$FORM_ZONEINFO" | busybox tr -d '\r\n')
+
+        if [ -n "$FORM_ZONEINFO" ]; then
+            ZI_LEN=$(echo -n "$FORM_ZONEINFO" | busybox wc -c | busybox tr -d ' ')
+            if [ "$ZI_LEN" -gt 64 ] \
+               || ! echo "$FORM_ZONEINFO" | busybox grep -qE '^[A-Za-z0-9/_]+$'; then
+                FORM_ZONEINFO=""   # silently ignore malformed paths
+            fi
+        fi
+
+        # Bind-mount the corresponding zoneinfo file so binaries that consult
+        # /etc/localtime or /var/localtime (instead of $TZ) also show the right
+        # time.  Failures are silently ignored — /etc/TZ is still written above.
+        if [ -n "$FORM_ZONEINFO" ]; then
+            ZI_SRC="/usr/share/zoneinfo/$FORM_ZONEINFO"
+            if [ -f "$ZI_SRC" ]; then
+                mount -o bind "$ZI_SRC" /etc/localtime 2>/dev/null || true
+                mkdir -p /var
+                mount -o bind "$ZI_SRC" /var/localtime 2>/dev/null || true
+            fi
+        fi
+
+        # Persist across reboot (writes /etc/TZ line + optional bind-mount lines).
+        update_startup_timezone "$FORM_TZ" "$FORM_ZONEINFO"
 
         printf "Status: 200 OK\r\n"
         printf "Content-Type: text/plain\r\n\r\n"
