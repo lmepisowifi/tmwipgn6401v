@@ -238,30 +238,24 @@ _persist_pending() {
 # Drop the non-volatile mirror once a session is finished or abandoned.
 _clear_pending() { rm -f "${COIN_PENDING_DIR}/${1}" "${COIN_PENDING_DIR}/${1}.tmp" 2>/dev/null; $BB sync; }
 
-# ── Audit webhook — NodeMCU error events → hardcoded Discord channel ──────────
+# ── NodeMCU error alerts → same Telegram/Discord as sale notifications ─────
+# Routed through notify.sh (same transport, queueing, and config as every
+# other alert here) instead of a separate/hardcoded webhook, so it uses
+# whatever Telegram bot or Discord webhook the admin already set up on the
+# Income & Alerts page. Muted independently via that page's "Which alerts
+# to send" list (event key "coin_errors" → NOTIFY_EVT_COIN_ERRORS in
+# notify.env) — leaving the master "Enable alerts" switch off silences
+# this too, same as every other event. Dedup key is "label:mac" so a
+# NodeMCU stuck offline doesn't re-alert every poll, but a different
+# error type for the same device still gets through immediately.
 _coin_alert() {
     local label="$1" detail="$2"
-    local _now _mac _esc _payload
+    local _now _mac _msg
     _now=$(awk '{print int($1)}' /proc/uptime 2>/dev/null)
     _mac=$(printf '%s' "${CLIENT_MAC:-unknown}" | awk '{print toupper($0)}')
-    _esc=$(printf '**[CoinSlot Error]** `%s`\n**MAC:** `%s`\n**Info:** %s\n**Uptime:** %ss' \
-        "$label" "$_mac" "$detail" "$_now" | awk '{
-        if (NR > 1) out = out "\\n"
-        n = length($0)
-        for (i = 1; i <= n; i++) {
-            c = substr($0, i, 1)
-            if      (c == "\\") out = out "\\\\"
-            else if (c == "\"") out = out "\\\""
-            else if (c == "\t") out = out "\\t"
-            else                out = out c
-        }
-    } END { printf "%s", out }')
-    _payload="{\"content\":\"${_esc}\"}"
-    ( /bin/wget -q -T 5 --no-check-certificate -O /dev/null \
-        --header="Content-Type: application/json" \
-        --post-data="$_payload" \
-        "https://discord.com/api/webhooks/1526438496355749992/YqHs01cHzrCSzN3ZFnFxtCuefLy3KyBW0n_yGZO7uYeDcrl0CBKojBLUGDaYwXy0lUlJ" \
-        2>/dev/null ) &
+    _msg=$(printf -- '-------CoinSlot Error-------\nType: %s\nMAC: %s\nInfo: %s\nUptime: %ss' \
+        "$label" "$_mac" "$detail" "$_now")
+    ( /lmepisowifi/hotspot/notify.sh "$_msg" "" coin_errors "${label}:${_mac}" >/dev/null 2>&1 </dev/null & )
 }
 get_qs() {
     printf '%s' "$QUERY_STRING" | tr '&' '\n' | grep "^${1}=" | sed 's/^[^=]*=//' | head -1

@@ -2725,7 +2725,7 @@ if echo "$QS" | $BB grep -q "action=notify_get"; then
     NOTIFY_EVT_NEW_SALE=1; NOTIFY_EVT_COINS_INSERTED=1; NOTIFY_EVT_ANTI_TROLL=1
     NOTIFY_EVT_SESSION_EXPIRED=1; NOTIFY_EVT_SESSION_PAUSED=1; NOTIFY_EVT_SESSION_RESUMED=1
     NOTIFY_EVT_VOUCHER_REDEEMED=1; NOTIFY_EVT_DAILY_REPORT=1
-    NOTIFY_EVT_MONTHLY_REPORT=1; NOTIFY_EVT_YEARLY_REPORT=1
+    NOTIFY_EVT_MONTHLY_REPORT=1; NOTIFY_EVT_YEARLY_REPORT=1; NOTIFY_EVT_COIN_ERRORS=1
     NOTIFY_DEDUP_WINDOW=30
     [ -f "$NF" ] && . "$NF" 2>/dev/null
     EN_STR="false"; [ "${NOTIFY_ENABLED:-0}" = "1" ] && EN_STR="true"
@@ -2756,7 +2756,8 @@ if echo "$QS" | $BB grep -q "action=notify_get"; then
 \"voucher_redeemed\":$(_evb "$NOTIFY_EVT_VOUCHER_REDEEMED"),\
 \"daily_report\":$(_evb "$NOTIFY_EVT_DAILY_REPORT"),\
 \"monthly_report\":$(_evb "$NOTIFY_EVT_MONTHLY_REPORT"),\
-\"yearly_report\":$(_evb "$NOTIFY_EVT_YEARLY_REPORT")}}"
+\"yearly_report\":$(_evb "$NOTIFY_EVT_YEARLY_REPORT"),\
+\"coin_errors\":$(_evb "$NOTIFY_EVT_COIN_ERRORS")}}"
 fi
 
 # ================================================================
@@ -2810,6 +2811,7 @@ if echo "$QS" | $BB grep -q "action=notify_set"; then
     EVT_DAILY_REPORT=$(evt_flag evt_daily_report)
     EVT_MONTHLY_REPORT=$(evt_flag evt_monthly_report)
     EVT_YEARLY_REPORT=$(evt_flag evt_yearly_report)
+    EVT_COIN_ERRORS=$(evt_flag evt_coin_errors)
 
     mkdir -p "$HDATA"
     {
@@ -2830,6 +2832,7 @@ if echo "$QS" | $BB grep -q "action=notify_set"; then
         echo "NOTIFY_EVT_DAILY_REPORT=\"$EVT_DAILY_REPORT\""
         echo "NOTIFY_EVT_MONTHLY_REPORT=\"$EVT_MONTHLY_REPORT\""
         echo "NOTIFY_EVT_YEARLY_REPORT=\"$EVT_YEARLY_REPORT\""
+        echo "NOTIFY_EVT_COIN_ERRORS=\"$EVT_COIN_ERRORS\""
     } > "$HDATA/notify.env.tmp"
     $BB mv "$HDATA/notify.env.tmp" "$HDATA/notify.env"
     ok_json "{\"ok\":true}"

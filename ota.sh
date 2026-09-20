@@ -579,6 +579,21 @@ do_apply() {
         # bump nodemcu_version is a no-op here. Never fails the portal OTA.
         sync_nodemcu
 
+        # Installed modules (Tailscale, etc.) ship as separate tarballs from a
+        # separate registry (modules.txt) and were previously only refreshed by
+        # module_ctl.sh's own auto_update — which was wired ONLY into do_cron()'s
+        # unconditional tail call. That left the far more common path — an admin
+        # manually clicking Apply from the web UI, since OTA_AUTO defaults to "0"
+        # and cron only notifies in that mode — with no way to trigger it: this
+        # do_apply() run never happens inside do_cron() in that case, so an
+        # installed module just sat on its old version until the next 6h cron
+        # tick happened to land (or, coincidentally, a later release also
+        # touched ota.sh, piggy-backing a do_cron relaunch below for unrelated
+        # self-heal reasons). Call it directly here, mirroring sync_nodemcu just
+        # above, so every successful apply — manual or automatic — refreshes
+        # installed modules right away. Best-effort: never fails the portal OTA.
+        [ -x "$ROOT/module_ctl.sh" ] && "$ROOT/module_ctl.sh" auto_update >> "$LOG" 2>&1
+
         # If THIS apply swapped in a different ota.sh, any new self-heal fixes it
         # carries (like ensure_module_ctl above) ran under the OLD script for
         # this apply's own self_heal call at the top — they don't take effect
@@ -1183,7 +1198,9 @@ do_cron() {
         if [ "$OTA_AUTO" = "1" ]; then
             log "cron: auto-updating to $_lat"
             do_apply "$_lat"
-            # sync_nodemcu is already called inside do_apply on success; skip here.
+            # sync_nodemcu and module_ctl.sh auto_update are already called
+            # inside do_apply() on success (see there) — skip both here so a
+            # freshly-applied device doesn't check modules twice in a row.
         else
             # Notify only ONCE per new version so the 6-hour check doesn't spam.
             _seen_file="$ROOT/hotspot_data/.ota_notified"
@@ -1199,6 +1216,11 @@ do_cron() {
             # The hotspot/firmware/coin_nodemcu.bin on disk is still the old bundle,
             # and the manifest's nodemcu_version refers to the not-yet-applied release.
             # sync_nodemcu() will run after the user hits Apply.
+            #
+            # Modules are independent of the pending portal update (separate
+            # registry, separate tarballs) — check them on this tick instead of
+            # making them wait on the admin applying the portal update too.
+            [ -x "$ROOT/module_ctl.sh" ] && "$ROOT/module_ctl.sh" auto_update >> "$LOG" 2>&1
         fi
     else
         log "cron: portal up to date"
@@ -1219,12 +1241,13 @@ do_cron() {
                 log "cron: no nodemcu_version in manifest — skipping nodemcu check"
             fi
         fi
-    fi
 
-    # Auto-update installed modules when MOD_AUTO_UPDATE is enabled (default: on).
-    # Runs on every cron tick regardless of whether a portal update was applied, so
-    # modules stay current even in between portal releases.
-    [ -x "$ROOT/module_ctl.sh" ] && "$ROOT/module_ctl.sh" auto_update >> "$LOG" 2>&1
+        # Auto-update installed modules when MOD_AUTO_UPDATE is enabled (default:
+        # on). No portal update landed on this tick, so this is what keeps
+        # modules current in between portal releases (the other two branches
+        # above each trigger it themselves — via do_apply() or directly).
+        [ -x "$ROOT/module_ctl.sh" ] && "$ROOT/module_ctl.sh" auto_update >> "$LOG" 2>&1
+    fi
 }
 
 # ---- auto-update toggle (persists OTA_AUTO in ota.env) ----
