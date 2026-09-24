@@ -79,7 +79,11 @@ MACFIX_MAP_FILE="/lmepisowifi/hotspot_data/device_fp.txt"
 # status.sh instead of centralizing it.
 MACFIX_BANK_FILE="/lmepisowifi/hotspot_data/coin_bank.txt"
 MACFIX_COOKIE_NAME="lme_fp"
-MACFIX_COOKIE_MAXAGE=31536000   # 1 year — a slow "remember this browser", not a login session
+MACFIX_COOKIE_MAXAGE=2678400   # ~31 days — was 1 year, but MACFIX_MAP_MAX_AGE below prunes the
+                                # fp->MAC row after 30 days anyway, so a cookie that outlives it
+                                # can't reconcile anything; keeping it that short instead of a
+                                # year also shrinks the window a copy of it (sniffed in cleartext
+                                # off this WiFi segment — see notes above) stays worth anything
 # How long a fingerprint→MAC row is kept in MACFIX_MAP_FILE before the prune
 # at the end of mf_reconcile() drops it as stale. Without this, the file
 # grows by one permanent row for every hit whose cookie is never recognized
@@ -100,11 +104,33 @@ _mf_now() { $BB awk '{print int($1)}' /proc/uptime 2>/dev/null || date +%s; }
 # matching the "no secrets in globals.env" rule at the top of defaults.env.
 _mf_secret() {
     if [ ! -s "$MACFIX_SECRET_FILE" ]; then
-        $BB mkdir -p /lmepisowifi/hotspot_data 2>/dev/null
-        printf '%s %d %d %s\n' \
-            "$(cat /proc/uptime 2>/dev/null)" "$$" "$RANDOM" "$(date +%s 2>/dev/null)" \
-            | sha256sum | awk '{print $1}' > "${MACFIX_SECRET_FILE}.tmp" 2>/dev/null
-        $BB mv "${MACFIX_SECRET_FILE}.tmp" "$MACFIX_SECRET_FILE" 2>/dev/null
+        # _lock/_unlock close the check-then-create race: without it, every
+        # request that hits this on a bare/just-provisioned device before
+        # the file exists would independently pass the "-s" check and each
+        # mint its own key, with whichever mv() lands last silently
+        # invalidating cookies already signed against the others.
+        _lock
+        if [ ! -s "$MACFIX_SECRET_FILE" ]; then
+            $BB mkdir -p /lmepisowifi/hotspot_data 2>/dev/null
+            # Kernel CSPRNG, not the old uptime+$$+$RANDOM+date mix: uptime
+            # is near-zero at boot, $$ is a small guessable PID range on a
+            # freshly booted embedded system, ash's $RANDOM is 15 bits, and
+            # date is public — combined they're brute-forceable offline
+            # against one observed cookie, which breaks the "can't forge a
+            # signature" guarantee this whole file depends on.
+            if ! ( $BB dd if=/dev/urandom bs=32 count=1 2>/dev/null | sha256sum | awk '{print $1}' \
+                    > "${MACFIX_SECRET_FILE}.tmp" 2>/dev/null ) || [ ! -s "${MACFIX_SECRET_FILE}.tmp" ]; then
+                # /dev/urandom missing/unreadable should not happen on any
+                # real Linux kernel; kept only so provisioning still
+                # completes instead of leaving the file empty forever.
+                printf '%s %d %d %s\n' \
+                    "$(cat /proc/uptime 2>/dev/null)" "$$" "${RANDOM:-0}" "$(date +%s 2>/dev/null)" \
+                    | sha256sum | awk '{print $1}' > "${MACFIX_SECRET_FILE}.tmp" 2>/dev/null
+            fi
+            $BB chmod 600 "${MACFIX_SECRET_FILE}.tmp" 2>/dev/null
+            $BB mv "${MACFIX_SECRET_FILE}.tmp" "$MACFIX_SECRET_FILE" 2>/dev/null
+        fi
+        _unlock
     fi
     cat "$MACFIX_SECRET_FILE" 2>/dev/null
 }
@@ -112,10 +138,32 @@ _mf_secret() {
 # Keyed hash of $1 using the private secret above — same "PSK:payload →
 # digest" idiom coin.sh/coin_result.sh already use for NodeMCU reply
 # signatures, just sha256 instead of md5 since this token lives for a year.
-_mf_sign() { printf '%s:%s' "$(_mf_secret)" "$1" | sha256sum | awk '{print $1}'; }
+_mf_sign() {
+    local key
+    key=$(_mf_secret)
+    # Never sign with an empty key: sha256(":$payload") would be
+    # computable by anyone, silently turning "verified" cookies into
+    # unverified ones the moment secret persistence ever fails (e.g. the
+    # disk-space glitches already seen elsewhere on this fleet). Returning
+    # empty here makes _mf_verify_cookie's comparison fail closed instead,
+    # which just disables the MAC-continuity fix rather than faking it.
+    [ -n "$key" ] || return 1
+    printf '%s:%s' "$key" "$1" | sha256sum | awk '{print $1}'
+}
 
 MACFIX_LOG_FILE="/lmepisowifi/hotspot_data/macfix_migrations.log"
 MACFIX_LOG_MAX_LINES=${MACFIX_LOG_MAX_LINES:-2000}
+# Minimum seconds between liveness probes (ping + ip neigh, ~1s each, forked
+# per attempt) for the SAME fp_id after a "refused" verdict. None of
+# login.sh/status.sh/coin.sh rate-limit ahead of mf_reconcile() (status.sh's
+# poll loop has no rate limiter at all, and login.sh's own is keyed on
+# REMOTE_ADDR and applied after this call), so without this, a client that
+# keeps presenting a mismatched MAC - deliberately (retrying a sniffed
+# cookie, hoping the real device goes idle) or just buggy - can force a
+# fresh probe on every single request. A successful "applied" migration
+# never needs this: once it lands, PREV_MAC becomes CLIENT_MAC and the
+# mismatch that triggers a probe stops recurring for that fp_id on its own.
+MACFIX_REFUSAL_COOLDOWN=${MACFIX_REFUSAL_COOLDOWN:-5}
 
 # Appends one forensics line for every reconciliation attempt — both the
 # ones actually applied and the ones the concurrent-activity guard below
@@ -127,6 +175,9 @@ MACFIX_LOG_MAX_LINES=${MACFIX_LOG_MAX_LINES:-2000}
 # MACFIX_MAP_FILE's own prune above.
 _mf_log_migration() {
     local verdict="$1" fp="$2" old="$3" new="$4"
+    # This log links a browser fingerprint to real customer MACs and visit
+    # timestamps - lock it down on first write instead of trusting umask.
+    [ -e "$MACFIX_LOG_FILE" ] || { : > "$MACFIX_LOG_FILE" 2>/dev/null; $BB chmod 600 "$MACFIX_LOG_FILE" 2>/dev/null; }
     printf '%s verdict=%s fp=%s old=%s new=%s ua=%s\n' \
         "$(date +%s 2>/dev/null || _mf_now)" "$verdict" "$fp" "$old" "$new" \
         "$(printf '%s' "${HTTP_USER_AGENT:-}" | $BB tr -d '\n\r' | $BB head -c 120)" \
@@ -278,11 +329,35 @@ _mf_reconcile_row() {
     fi
 
     $BB mv "${file}.tmp" "$file"
+    # $file is always SESSION_FILE/USERS_FILE/MACFIX_BANK_FILE - every one of
+    # them MAC-linked, and every one of them already chmod 600'd by its own
+    # writer elsewhere (login.sh/logout.sh/coin.sh/coin_result.sh). Without
+    # re-applying it here too, a migration landing right after one of those
+    # writes would silently put the file back to umask-default permissions
+    # via this mv, undoing that protection until the next unrelated write.
+    $BB chmod 600 "$file" 2>/dev/null
     return 0
 }
 
 mf_reconcile() {
     MF_COOKIE_HEADER=""
+    # Shape-check CLIENT_MAC first and UNCONDITIONALLY - ahead of the
+    # MAC_RANDOMIZATION_FIX toggle below, not behind it. login.sh/logout.sh/
+    # status.sh/coin.sh each already refuse to proceed on an empty
+    # CLIENT_MAC right after calling this function; blanking a malformed
+    # (non-empty, non-shape) value here means every one of those existing
+    # guards is what ends up rejecting it, in all four callers, whether or
+    # not this feature happens to be enabled - instead of leaving each
+    # caller's own grep "^${mac} " / iptables --mac-source call to trust
+    # whatever shape CLIENT_MAC arrived in. Everything below still treats
+    # CLIENT_MAC/PREV_MAC as a plain literal token, so this is the one
+    # place a bad value from a future caller gets stopped, rather than
+    # turning into a BRE metacharacter or an unexpected iptables argument
+    # five call sites downstream.
+    case "$CLIENT_MAC" in
+        ''|[0-9a-fA-F][0-9a-fA-F]:[0-9a-fA-F][0-9a-fA-F]:[0-9a-fA-F][0-9a-fA-F]:[0-9a-fA-F][0-9a-fA-F]:[0-9a-fA-F][0-9a-fA-F]:[0-9a-fA-F][0-9a-fA-F]) ;;
+        *) CLIENT_MAC=""; return 0 ;;
+    esac
     [ "${MAC_RANDOMIZATION_FIX:-1}" = "1" ] || return 0
     [ -n "$CLIENT_MAC" ] && [ "$CLIENT_MAC" != "00:00:00:00:00:00" ] || return 0
 
@@ -297,6 +372,24 @@ mf_reconcile() {
     # Unlocked read: Read PREV_MAC and perform the liveness probe before
     # taking _lock so the ARP timeout (~1s) doesn't stall other clients.
     PREV_MAC=$($BB grep "^${MF_FP_ID} " "$MACFIX_MAP_FILE" 2>/dev/null | $BB tail -1 | $BB awk '{print $2}')
+
+    if [ -n "$PREV_MAC" ] && [ "$PREV_MAC" != "$CLIENT_MAC" ]; then
+        _mf_last_refusal=$($BB grep " verdict=refused fp=${MF_FP_ID} " "$MACFIX_LOG_FILE" 2>/dev/null \
+            | $BB tail -1 | $BB awk '{print $1}')
+        case "$_mf_last_refusal" in ''|*[!0-9]*) _mf_last_refusal="" ;; esac
+        if [ -n "$_mf_last_refusal" ]; then
+            _mf_since=$(( $(date +%s 2>/dev/null || _mf_now) - _mf_last_refusal ))
+            if [ "$_mf_since" -ge 0 ] && [ "$_mf_since" -lt "$MACFIX_REFUSAL_COOLDOWN" ]; then
+                # Same fp_id, refused this recently already - repeat the
+                # verdict without forking ping/ip neigh again.
+                _mf_log_migration "refused" "$MF_FP_ID" "$PREV_MAC" "$CLIENT_MAC"
+                MF_FP_ID=$(printf '%s %s %s %d %d\n' \
+                    "$(cat /proc/uptime 2>/dev/null)" "$CLIENT_MAC" "$(date +%s 2>/dev/null)" "$$" "$RANDOM" \
+                    | sha256sum | awk '{print $1}')
+                PREV_MAC=""
+            fi
+        fi
+    fi
 
     if [ -n "$PREV_MAC" ] && [ "$PREV_MAC" != "$CLIENT_MAC" ]; then
         _mf_old_live=0
@@ -368,6 +461,7 @@ mf_reconcile() {
         > "${MACFIX_MAP_FILE}.tmp2" 2>/dev/null \
         && $BB mv "${MACFIX_MAP_FILE}.tmp2" "${MACFIX_MAP_FILE}.tmp"
     $BB mv "${MACFIX_MAP_FILE}.tmp" "$MACFIX_MAP_FILE"
+    $BB chmod 600 "$MACFIX_MAP_FILE" 2>/dev/null
     _unlock
 
     MF_COOKIE_HEADER="Set-Cookie: ${MACFIX_COOKIE_NAME}=${MF_FP_ID}.$(_mf_sign "$MF_FP_ID"); Path=/; Max-Age=${MACFIX_COOKIE_MAXAGE}; HttpOnly; SameSite=Lax"

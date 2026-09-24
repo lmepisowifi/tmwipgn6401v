@@ -1,0 +1,223 @@
+diff --git a/hotspot/cgi-bin/coin.sh b/hotspot/cgi-bin/coin.sh
+index 131a3e5..d89c889 100755
+--- a/hotspot/cgi-bin/coin.sh
++++ b/hotspot/cgi-bin/coin.sh
+@@ -122,6 +122,10 @@ _bank_add() {
+     $BB grep -v "^${_ba_mac} " "$COIN_BANK_FILE" > "${COIN_BANK_FILE}.tmp" 2>/dev/null
+     printf '%s %s\n' "$_ba_mac" "$_ba_after" >> "${COIN_BANK_FILE}.tmp"
+     $BB mv "${COIN_BANK_FILE}.tmp" "$COIN_BANK_FILE"
++    # MAC-to-pesos, same sensitivity class as macfix.sh's own data files -
++    # mv carries over the .tmp file's mode, not the old file's, so this
++    # has to be re-applied on every write, not just once at creation.
++    $BB chmod 600 "$COIN_BANK_FILE" 2>/dev/null
+     # See coin_result.sh's _bank_set: rename alone doesn't guarantee this has
+     # left the page cache, so force it to flash now.
+     $BB sync
+@@ -411,6 +415,7 @@ start)
+                 else
+                     $BB grep -v "^$CLIENT_MAC " /tmp/coin_strikes.txt > /tmp/cs.tmp 2>/dev/null
+                     $BB mv /tmp/cs.tmp /tmp/coin_strikes.txt
++                    $BB chmod 600 /tmp/coin_strikes.txt 2>/dev/null
+                 fi
+             fi
+         fi
+diff --git a/hotspot/cgi-bin/coin_result.sh b/hotspot/cgi-bin/coin_result.sh
+index 42de81d..dc64beb 100755
+--- a/hotspot/cgi-bin/coin_result.sh
++++ b/hotspot/cgi-bin/coin_result.sh
+@@ -102,6 +102,10 @@ _bank_set() {
+     $BB grep -v "^${mac} " "$COIN_BANK_FILE" > "${COIN_BANK_FILE}.tmp" 2>/dev/null
+     [ "$amt" -gt 0 ] && printf '%s %s\n' "$mac" "$amt" >> "${COIN_BANK_FILE}.tmp"
+     mv "${COIN_BANK_FILE}.tmp" "$COIN_BANK_FILE"
++    # MAC-to-pesos, same sensitivity class as macfix.sh's own data files -
++    # mv carries over the .tmp file's mode, not the old file's, so this
++    # has to be re-applied on every write, not just once at creation.
++    chmod 600 "$COIN_BANK_FILE" 2>/dev/null
+     # Rename is atomic/crash-consistent on ubifs, but that says nothing about
+     # whether this write has actually reached NAND yet vs. still sitting dirty
+     # in the page cache. Force it out now so a power-cut/crash right after a
+@@ -168,6 +172,13 @@ _users_file_stage_excl() {
+ # append could still change out from under it.
+ _users_file_commit() {
+     mv "${USERS_FILE}.tmp" "$USERS_FILE"
++    # Same reasoning as macfix.sh's MACFIX_MAP_FILE/MACFIX_LOG_FILE: this
++    # file links a real customer MAC to a balance/status, so it shouldn't
++    # be left world-readable by whatever the process umask happens to be.
++    # mv doesn't inherit the destination's old mode - it carries over
++    # whatever mode the just-written .tmp file had - so this has to be
++    # re-applied after every commit, not just once at creation.
++    chmod 600 "$USERS_FILE" 2>/dev/null
+     # Rename is atomic/crash-consistent on ubifs, but that only guarantees
+     # you never see a half-written file - it says nothing about whether
+     # this specific write has actually reached the NAND yet vs. still
+@@ -352,6 +363,7 @@ if [ "${AMOUNT:-0}" -eq 0 ]; then
+             $BB grep -v "^$CLIENT_MAC " /tmp/coin_strikes.txt > /tmp/cs.tmp 2>/dev/null
+             printf '%s %s %s\n' "$CLIENT_MAC" "$STRIKES" "$NOW" >> /tmp/cs.tmp
+             $BB mv /tmp/cs.tmp /tmp/coin_strikes.txt
++            $BB chmod 600 /tmp/coin_strikes.txt 2>/dev/null
+ 
+             # Notify once when suspension is first triggered (strikes exactly == threshold)
+             _ST=${COIN_STRIKE_THRESHOLD:-3}
+@@ -433,6 +445,7 @@ CONSUMED=$(( TOTAL_FOR_TIME - BANK_AFTER ))
+ if [ "${MINUTES:-0}" -gt 0 ]; then
+     $BB grep -v "^$CLIENT_MAC " /tmp/coin_strikes.txt > /tmp/cs.tmp 2>/dev/null
+     $BB mv /tmp/cs.tmp /tmp/coin_strikes.txt
++    $BB chmod 600 /tmp/coin_strikes.txt 2>/dev/null
+ 
+     SECS=$(( MINUTES * 60 ))
+     EXISTING=$(grep "^$CLIENT_MAC " "$SESSION_FILE" 2>/dev/null | head -1)
+@@ -453,6 +466,7 @@ if [ "${MINUTES:-0}" -gt 0 ]; then
+         grep -v "^$CLIENT_MAC " "$SESSION_FILE" > "${SESSION_FILE}.tmp" 2>/dev/null
+         printf '%s %s %s\n' "$CLIENT_MAC" "$NEW_EXP" "$NEW_TOTAL" >> "${SESSION_FILE}.tmp"
+         mv "${SESSION_FILE}.tmp" "$SESSION_FILE"
++        chmod 600 "$SESSION_FILE" 2>/dev/null
+     else
+         # Correctly stack coin time onto paused sessions
+         if [ -n "$PAUSED" ]; then
+@@ -468,6 +482,7 @@ if [ "${MINUTES:-0}" -gt 0 ]; then
+ 
+         NEW_EXP=$(( NOW + SECS ))
+         printf '%s %s %s\n' "$CLIENT_MAC" "$NEW_EXP" "$NEW_TOTAL" >> "$SESSION_FILE"
++        chmod 600 "$SESSION_FILE" 2>/dev/null
+         iptables -t nat -I HOTSPOT 1 -m mac --mac-source "$CLIENT_MAC" -j RETURN 2>/dev/null
+         iptables -t filter -I HOTSPOT_FWD 1 -m mac --mac-source "$CLIENT_MAC" -j ACCEPT 2>/dev/null
+     fi
+diff --git a/hotspot/cgi-bin/login.sh b/hotspot/cgi-bin/login.sh
+index f0f67c1..5c9c85c 100755
+--- a/hotspot/cgi-bin/login.sh
++++ b/hotspot/cgi-bin/login.sh
+@@ -102,6 +102,13 @@ _users_file_stage_excl() {
+ # under it.
+ _users_file_commit() {
+     $BB mv "${USERS_FILE}.tmp" "$USERS_FILE"
++    # Same reasoning as macfix.sh's MACFIX_MAP_FILE/MACFIX_LOG_FILE: this
++    # file links a real customer MAC to a balance/status, so it shouldn't
++    # be left world-readable by whatever the process umask happens to be.
++    # mv doesn't inherit the destination's old mode - it carries over
++    # whatever mode the just-written .tmp file had - so this has to be
++    # re-applied after every commit, not just once at creation.
++    $BB chmod 600 "$USERS_FILE" 2>/dev/null
+     # Rename is atomic/crash-consistent on ubifs, but that only guarantees
+     # you never see a half-written file - it says nothing about whether
+     # this specific write has actually reached the NAND yet vs. still
+@@ -125,6 +132,10 @@ _voucher_file_replace_excl() {
+     $BB grep -v "^${code} " "$VOUCHER_FILE" > "${VOUCHER_FILE}.tmp" 2>/dev/null || rc=$?
+     if [ "$existed" -eq 0 ] || [ "$rc" -le 1 ]; then
+         $BB mv "${VOUCHER_FILE}.tmp" "$VOUCHER_FILE"
++        # Same as USERS_FILE above - mv carries over the .tmp file's mode,
++        # not the old VOUCHER_FILE's, so this has to be re-applied on
++        # every commit.
++        $BB chmod 600 "$VOUCHER_FILE" 2>/dev/null
+         # Force the burned code out to flash now - without this, a
+         # power-cut between this redemption and the users.txt grant
+         # further down could roll vouchers.txt back to "unredeemed"
+@@ -319,6 +330,7 @@ else
+                     # Cooldown elapsed — clear the slate for this device.
+                     $BB grep -v "^$CLIENT_MAC " /tmp/voucher_strikes.txt > /tmp/vs.tmp 2>/dev/null
+                     $BB mv /tmp/vs.tmp /tmp/voucher_strikes.txt
++                    $BB chmod 600 /tmp/voucher_strikes.txt 2>/dev/null
+                 fi
+             fi
+         fi
+@@ -346,6 +358,7 @@ else
+             $BB grep -v "^$CLIENT_MAC " /tmp/voucher_strikes.txt > /tmp/vs.tmp 2>/dev/null
+             printf '%s %s %s\n' "$CLIENT_MAC" "$VSTRIKES" "$NOW" >> /tmp/vs.tmp
+             $BB mv /tmp/vs.tmp /tmp/voucher_strikes.txt
++            $BB chmod 600 /tmp/voucher_strikes.txt 2>/dev/null
+ 
+             # Notify once when suspension is first triggered (strikes exactly == threshold)
+             _VST=${VOUCHER_STRIKE_THRESHOLD:-3}
+@@ -365,6 +378,7 @@ else
+     # wrong-voucher strikes this device had accumulated.
+     $BB grep -v "^$CLIENT_MAC " /tmp/voucher_strikes.txt > /tmp/vs.tmp 2>/dev/null
+     $BB mv /tmp/vs.tmp /tmp/voucher_strikes.txt
++    $BB chmod 600 /tmp/voucher_strikes.txt 2>/dev/null
+ 
+     DURATION=$($BB echo "$VOUCHER_LINE" | $BB awk '{print $2}')
+     VALID_UNTIL=$($BB echo "$VOUCHER_LINE" | $BB awk '{print $3}')
+@@ -442,6 +456,7 @@ $BB mv "${SESSION_FILE}.tmp" "$SESSION_FILE"
+ 
+ # Format: MAC EXPIRY TOTAL
+ $BB echo "$CLIENT_MAC $NEW_EXPIRY $NEW_TOTAL" >> "$SESSION_FILE"
++$BB chmod 600 "$SESSION_FILE" 2>/dev/null
+ 
+ # Immediately write state to persistent Flash database as 'active'
+ REMAINING_SECS=$(( NEW_EXPIRY - NOW ))
+diff --git a/hotspot/cgi-bin/logout.sh b/hotspot/cgi-bin/logout.sh
+index 6a8fe88..3cc5d06 100755
+--- a/hotspot/cgi-bin/logout.sh
++++ b/hotspot/cgi-bin/logout.sh
+@@ -108,6 +108,13 @@ _users_file_stage_excl() {
+ # under it.
+ _users_file_commit() {
+     $BB mv "${USERS_FILE}.tmp" "$USERS_FILE"
++    # Same reasoning as macfix.sh's MACFIX_MAP_FILE/MACFIX_LOG_FILE: this
++    # file links a real customer MAC to a balance/status, so it shouldn't
++    # be left world-readable by whatever the process umask happens to be.
++    # mv doesn't inherit the destination's old mode - it carries over
++    # whatever mode the just-written .tmp file had - so this has to be
++    # re-applied after every commit, not just once at creation.
++    $BB chmod 600 "$USERS_FILE" 2>/dev/null
+     # Rename is atomic/crash-consistent on ubifs, but that only guarantees
+     # you never see a half-written file - it says nothing about whether
+     # this specific write has actually reached the NAND yet vs. still
+@@ -158,6 +165,7 @@ REMAINING=$(( EXPIRY - NOW ))
+ 
+ $BB grep -v "^$CLIENT_MAC " "$SESSION_FILE" > "${SESSION_FILE}.tmp"
+ $BB mv "${SESSION_FILE}.tmp" "$SESSION_FILE"
++$BB chmod 600 "$SESSION_FILE" 2>/dev/null
+ 
+ # Freeze this MAC's expiring (rate-validity) bucket, if it has one, into
+ # its own paused-mode row so its deadline keeps ticking while offline
+diff --git a/hotspot/macfix.sh b/hotspot/macfix.sh
+index a012546..70a952c 100755
+--- a/hotspot/macfix.sh
++++ b/hotspot/macfix.sh
+@@ -329,23 +329,37 @@ _mf_reconcile_row() {
+     fi
+ 
+     $BB mv "${file}.tmp" "$file"
++    # $file is always SESSION_FILE/USERS_FILE/MACFIX_BANK_FILE - every one of
++    # them MAC-linked, and every one of them already chmod 600'd by its own
++    # writer elsewhere (login.sh/logout.sh/coin.sh/coin_result.sh). Without
++    # re-applying it here too, a migration landing right after one of those
++    # writes would silently put the file back to umask-default permissions
++    # via this mv, undoing that protection until the next unrelated write.
++    $BB chmod 600 "$file" 2>/dev/null
+     return 0
+ }
+ 
+ mf_reconcile() {
+     MF_COOKIE_HEADER=""
+-    [ "${MAC_RANDOMIZATION_FIX:-1}" = "1" ] || return 0
+-    [ -n "$CLIENT_MAC" ] && [ "$CLIENT_MAC" != "00:00:00:00:00:00" ] || return 0
+-    # Belt-and-suspenders: everything below treats CLIENT_MAC/PREV_MAC as a
+-    # plain literal token (grep "^${mac} " anchors, iptables --mac-source
+-    # args). Whatever normalizes it upstream should already guarantee this
+-    # shape, but refusing anything that isn't exactly it here means a bad
+-    # value from a future caller can't turn into a BRE metacharacter or an
+-    # unexpected iptables argument instead of just failing a lookup.
++    # Shape-check CLIENT_MAC first and UNCONDITIONALLY - ahead of the
++    # MAC_RANDOMIZATION_FIX toggle below, not behind it. login.sh/logout.sh/
++    # status.sh/coin.sh each already refuse to proceed on an empty
++    # CLIENT_MAC right after calling this function; blanking a malformed
++    # (non-empty, non-shape) value here means every one of those existing
++    # guards is what ends up rejecting it, in all four callers, whether or
++    # not this feature happens to be enabled - instead of leaving each
++    # caller's own grep "^${mac} " / iptables --mac-source call to trust
++    # whatever shape CLIENT_MAC arrived in. Everything below still treats
++    # CLIENT_MAC/PREV_MAC as a plain literal token, so this is the one
++    # place a bad value from a future caller gets stopped, rather than
++    # turning into a BRE metacharacter or an unexpected iptables argument
++    # five call sites downstream.
+     case "$CLIENT_MAC" in
+-        [0-9a-fA-F][0-9a-fA-F]:[0-9a-fA-F][0-9a-fA-F]:[0-9a-fA-F][0-9a-fA-F]:[0-9a-fA-F][0-9a-fA-F]:[0-9a-fA-F][0-9a-fA-F]:[0-9a-fA-F][0-9a-fA-F]) ;;
+-        *) return 0 ;;
++        ''|[0-9a-fA-F][0-9a-fA-F]:[0-9a-fA-F][0-9a-fA-F]:[0-9a-fA-F][0-9a-fA-F]:[0-9a-fA-F][0-9a-fA-F]:[0-9a-fA-F][0-9a-fA-F]:[0-9a-fA-F][0-9a-fA-F]) ;;
++        *) CLIENT_MAC=""; return 0 ;;
+     esac
++    [ "${MAC_RANDOMIZATION_FIX:-1}" = "1" ] || return 0
++    [ -n "$CLIENT_MAC" ] && [ "$CLIENT_MAC" != "00:00:00:00:00:00" ] || return 0
+ 
+     if ! _mf_verify_cookie; then
+         # First time we've seen this browser (or its old cookie didn't

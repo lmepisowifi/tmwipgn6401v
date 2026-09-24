@@ -122,6 +122,10 @@ _bank_add() {
     $BB grep -v "^${_ba_mac} " "$COIN_BANK_FILE" > "${COIN_BANK_FILE}.tmp" 2>/dev/null
     printf '%s %s\n' "$_ba_mac" "$_ba_after" >> "${COIN_BANK_FILE}.tmp"
     $BB mv "${COIN_BANK_FILE}.tmp" "$COIN_BANK_FILE"
+    # MAC-to-pesos, same sensitivity class as macfix.sh's own data files -
+    # mv carries over the .tmp file's mode, not the old file's, so this
+    # has to be re-applied on every write, not just once at creation.
+    $BB chmod 600 "$COIN_BANK_FILE" 2>/dev/null
     # See coin_result.sh's _bank_set: rename alone doesn't guarantee this has
     # left the page cache, so force it to flash now.
     $BB sync
@@ -411,6 +415,7 @@ start)
                 else
                     $BB grep -v "^$CLIENT_MAC " /tmp/coin_strikes.txt > /tmp/cs.tmp 2>/dev/null
                     $BB mv /tmp/cs.tmp /tmp/coin_strikes.txt
+                    $BB chmod 600 /tmp/coin_strikes.txt 2>/dev/null
                 fi
             fi
         fi

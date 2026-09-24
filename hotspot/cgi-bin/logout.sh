@@ -108,6 +108,13 @@ _users_file_stage_excl() {
 # under it.
 _users_file_commit() {
     $BB mv "${USERS_FILE}.tmp" "$USERS_FILE"
+    # Same reasoning as macfix.sh's MACFIX_MAP_FILE/MACFIX_LOG_FILE: this
+    # file links a real customer MAC to a balance/status, so it shouldn't
+    # be left world-readable by whatever the process umask happens to be.
+    # mv doesn't inherit the destination's old mode - it carries over
+    # whatever mode the just-written .tmp file had - so this has to be
+    # re-applied after every commit, not just once at creation.
+    $BB chmod 600 "$USERS_FILE" 2>/dev/null
     # Rename is atomic/crash-consistent on ubifs, but that only guarantees
     # you never see a half-written file - it says nothing about whether
     # this specific write has actually reached the NAND yet vs. still
@@ -158,6 +165,7 @@ REMAINING=$(( EXPIRY - NOW ))
 
 $BB grep -v "^$CLIENT_MAC " "$SESSION_FILE" > "${SESSION_FILE}.tmp"
 $BB mv "${SESSION_FILE}.tmp" "$SESSION_FILE"
+$BB chmod 600 "$SESSION_FILE" 2>/dev/null
 
 # Freeze this MAC's expiring (rate-validity) bucket, if it has one, into
 # its own paused-mode row so its deadline keeps ticking while offline

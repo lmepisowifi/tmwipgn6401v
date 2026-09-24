@@ -102,6 +102,10 @@ _bank_set() {
     $BB grep -v "^${mac} " "$COIN_BANK_FILE" > "${COIN_BANK_FILE}.tmp" 2>/dev/null
     [ "$amt" -gt 0 ] && printf '%s %s\n' "$mac" "$amt" >> "${COIN_BANK_FILE}.tmp"
     mv "${COIN_BANK_FILE}.tmp" "$COIN_BANK_FILE"
+    # MAC-to-pesos, same sensitivity class as macfix.sh's own data files -
+    # mv carries over the .tmp file's mode, not the old file's, so this
+    # has to be re-applied on every write, not just once at creation.
+    chmod 600 "$COIN_BANK_FILE" 2>/dev/null
     # Rename is atomic/crash-consistent on ubifs, but that says nothing about
     # whether this write has actually reached NAND yet vs. still sitting dirty
     # in the page cache. Force it out now so a power-cut/crash right after a
@@ -168,6 +172,13 @@ _users_file_stage_excl() {
 # append could still change out from under it.
 _users_file_commit() {
     mv "${USERS_FILE}.tmp" "$USERS_FILE"
+    # Same reasoning as macfix.sh's MACFIX_MAP_FILE/MACFIX_LOG_FILE: this
+    # file links a real customer MAC to a balance/status, so it shouldn't
+    # be left world-readable by whatever the process umask happens to be.
+    # mv doesn't inherit the destination's old mode - it carries over
+    # whatever mode the just-written .tmp file had - so this has to be
+    # re-applied after every commit, not just once at creation.
+    chmod 600 "$USERS_FILE" 2>/dev/null
     # Rename is atomic/crash-consistent on ubifs, but that only guarantees
     # you never see a half-written file - it says nothing about whether
     # this specific write has actually reached the NAND yet vs. still
@@ -352,6 +363,7 @@ if [ "${AMOUNT:-0}" -eq 0 ]; then
             $BB grep -v "^$CLIENT_MAC " /tmp/coin_strikes.txt > /tmp/cs.tmp 2>/dev/null
             printf '%s %s %s\n' "$CLIENT_MAC" "$STRIKES" "$NOW" >> /tmp/cs.tmp
             $BB mv /tmp/cs.tmp /tmp/coin_strikes.txt
+            $BB chmod 600 /tmp/coin_strikes.txt 2>/dev/null
 
             # Notify once when suspension is first triggered (strikes exactly == threshold)
             _ST=${COIN_STRIKE_THRESHOLD:-3}
@@ -433,6 +445,7 @@ CONSUMED=$(( TOTAL_FOR_TIME - BANK_AFTER ))
 if [ "${MINUTES:-0}" -gt 0 ]; then
     $BB grep -v "^$CLIENT_MAC " /tmp/coin_strikes.txt > /tmp/cs.tmp 2>/dev/null
     $BB mv /tmp/cs.tmp /tmp/coin_strikes.txt
+    $BB chmod 600 /tmp/coin_strikes.txt 2>/dev/null
 
     SECS=$(( MINUTES * 60 ))
     EXISTING=$(grep "^$CLIENT_MAC " "$SESSION_FILE" 2>/dev/null | head -1)
@@ -453,6 +466,7 @@ if [ "${MINUTES:-0}" -gt 0 ]; then
         grep -v "^$CLIENT_MAC " "$SESSION_FILE" > "${SESSION_FILE}.tmp" 2>/dev/null
         printf '%s %s %s\n' "$CLIENT_MAC" "$NEW_EXP" "$NEW_TOTAL" >> "${SESSION_FILE}.tmp"
         mv "${SESSION_FILE}.tmp" "$SESSION_FILE"
+        chmod 600 "$SESSION_FILE" 2>/dev/null
     else
         # Correctly stack coin time onto paused sessions
         if [ -n "$PAUSED" ]; then
@@ -468,6 +482,7 @@ if [ "${MINUTES:-0}" -gt 0 ]; then
 
         NEW_EXP=$(( NOW + SECS ))
         printf '%s %s %s\n' "$CLIENT_MAC" "$NEW_EXP" "$NEW_TOTAL" >> "$SESSION_FILE"
+        chmod 600 "$SESSION_FILE" 2>/dev/null
         iptables -t nat -I HOTSPOT 1 -m mac --mac-source "$CLIENT_MAC" -j RETURN 2>/dev/null
         iptables -t filter -I HOTSPOT_FWD 1 -m mac --mac-source "$CLIENT_MAC" -j ACCEPT 2>/dev/null
     fi

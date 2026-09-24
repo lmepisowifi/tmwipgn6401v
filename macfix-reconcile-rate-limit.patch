@@ -1,0 +1,66 @@
+diff --git a/hotspot/macfix.sh b/hotspot/macfix.sh
+index a5ba389..a012546 100755
+--- a/hotspot/macfix.sh
++++ b/hotspot/macfix.sh
+@@ -153,6 +153,17 @@ _mf_sign() {
+ 
+ MACFIX_LOG_FILE="/lmepisowifi/hotspot_data/macfix_migrations.log"
+ MACFIX_LOG_MAX_LINES=${MACFIX_LOG_MAX_LINES:-2000}
++# Minimum seconds between liveness probes (ping + ip neigh, ~1s each, forked
++# per attempt) for the SAME fp_id after a "refused" verdict. None of
++# login.sh/status.sh/coin.sh rate-limit ahead of mf_reconcile() (status.sh's
++# poll loop has no rate limiter at all, and login.sh's own is keyed on
++# REMOTE_ADDR and applied after this call), so without this, a client that
++# keeps presenting a mismatched MAC - deliberately (retrying a sniffed
++# cookie, hoping the real device goes idle) or just buggy - can force a
++# fresh probe on every single request. A successful "applied" migration
++# never needs this: once it lands, PREV_MAC becomes CLIENT_MAC and the
++# mismatch that triggers a probe stops recurring for that fp_id on its own.
++MACFIX_REFUSAL_COOLDOWN=${MACFIX_REFUSAL_COOLDOWN:-5}
+ 
+ # Appends one forensics line for every reconciliation attempt — both the
+ # ones actually applied and the ones the concurrent-activity guard below
+@@ -348,6 +359,24 @@ mf_reconcile() {
+     # taking _lock so the ARP timeout (~1s) doesn't stall other clients.
+     PREV_MAC=$($BB grep "^${MF_FP_ID} " "$MACFIX_MAP_FILE" 2>/dev/null | $BB tail -1 | $BB awk '{print $2}')
+ 
++    if [ -n "$PREV_MAC" ] && [ "$PREV_MAC" != "$CLIENT_MAC" ]; then
++        _mf_last_refusal=$($BB grep " verdict=refused fp=${MF_FP_ID} " "$MACFIX_LOG_FILE" 2>/dev/null \
++            | $BB tail -1 | $BB awk '{print $1}')
++        case "$_mf_last_refusal" in ''|*[!0-9]*) _mf_last_refusal="" ;; esac
++        if [ -n "$_mf_last_refusal" ]; then
++            _mf_since=$(( $(date +%s 2>/dev/null || _mf_now) - _mf_last_refusal ))
++            if [ "$_mf_since" -ge 0 ] && [ "$_mf_since" -lt "$MACFIX_REFUSAL_COOLDOWN" ]; then
++                # Same fp_id, refused this recently already - repeat the
++                # verdict without forking ping/ip neigh again.
++                _mf_log_migration "refused" "$MF_FP_ID" "$PREV_MAC" "$CLIENT_MAC"
++                MF_FP_ID=$(printf '%s %s %s %d %d\n' \
++                    "$(cat /proc/uptime 2>/dev/null)" "$CLIENT_MAC" "$(date +%s 2>/dev/null)" "$$" "$RANDOM" \
++                    | sha256sum | awk '{print $1}')
++                PREV_MAC=""
++            fi
++        fi
++    fi
++
+     if [ -n "$PREV_MAC" ] && [ "$PREV_MAC" != "$CLIENT_MAC" ]; then
+         _mf_old_live=0
+         if command -v ip >/dev/null 2>&1 || command -v arp >/dev/null 2>&1; then
+diff --git a/hotspot/cgi-bin/login.sh b/hotspot/cgi-bin/login.sh
+index b888fc3..f0f67c1 100755
+--- a/hotspot/cgi-bin/login.sh
++++ b/hotspot/cgi-bin/login.sh
+@@ -182,12 +182,12 @@ fi
+ 
+ # 4. DOS Protection: Reject overly large payloads early.
+ CLEN=$($BB echo "$CONTENT_LENGTH" | $BB tr -dc '0-9')
+-if [ -n "$CLEN" ] && [ "$CLEN" -gt 256 ]; then
++if [ -z "$CLEN" ] || [ "$CLEN" -gt 256 ]; then
+     echo '{"ok":false,"error":"invalid"}'
+     exit 0
+ fi
+ 
+-read -n "$CONTENT_LENGTH" POST_DATA
++read -n "$CLEN" POST_DATA
+ 
+ # 5. Extract inputs securely
+ VOUCHER=$(

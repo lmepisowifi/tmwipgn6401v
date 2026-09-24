@@ -102,6 +102,13 @@ _users_file_stage_excl() {
 # under it.
 _users_file_commit() {
     $BB mv "${USERS_FILE}.tmp" "$USERS_FILE"
+    # Same reasoning as macfix.sh's MACFIX_MAP_FILE/MACFIX_LOG_FILE: this
+    # file links a real customer MAC to a balance/status, so it shouldn't
+    # be left world-readable by whatever the process umask happens to be.
+    # mv doesn't inherit the destination's old mode - it carries over
+    # whatever mode the just-written .tmp file had - so this has to be
+    # re-applied after every commit, not just once at creation.
+    $BB chmod 600 "$USERS_FILE" 2>/dev/null
     # Rename is atomic/crash-consistent on ubifs, but that only guarantees
     # you never see a half-written file - it says nothing about whether
     # this specific write has actually reached the NAND yet vs. still
@@ -125,6 +132,10 @@ _voucher_file_replace_excl() {
     $BB grep -v "^${code} " "$VOUCHER_FILE" > "${VOUCHER_FILE}.tmp" 2>/dev/null || rc=$?
     if [ "$existed" -eq 0 ] || [ "$rc" -le 1 ]; then
         $BB mv "${VOUCHER_FILE}.tmp" "$VOUCHER_FILE"
+        # Same as USERS_FILE above - mv carries over the .tmp file's mode,
+        # not the old VOUCHER_FILE's, so this has to be re-applied on
+        # every commit.
+        $BB chmod 600 "$VOUCHER_FILE" 2>/dev/null
         # Force the burned code out to flash now - without this, a
         # power-cut between this redemption and the users.txt grant
         # further down could roll vouchers.txt back to "unredeemed"
@@ -182,12 +193,12 @@ fi
 
 # 4. DOS Protection: Reject overly large payloads early.
 CLEN=$($BB echo "$CONTENT_LENGTH" | $BB tr -dc '0-9')
-if [ -n "$CLEN" ] && [ "$CLEN" -gt 256 ]; then
+if [ -z "$CLEN" ] || [ "$CLEN" -gt 256 ]; then
     echo '{"ok":false,"error":"invalid"}'
     exit 0
 fi
 
-read -n "$CONTENT_LENGTH" POST_DATA
+read -n "$CLEN" POST_DATA
 
 # 5. Extract inputs securely
 VOUCHER=$(
@@ -319,6 +330,7 @@ else
                     # Cooldown elapsed — clear the slate for this device.
                     $BB grep -v "^$CLIENT_MAC " /tmp/voucher_strikes.txt > /tmp/vs.tmp 2>/dev/null
                     $BB mv /tmp/vs.tmp /tmp/voucher_strikes.txt
+                    $BB chmod 600 /tmp/voucher_strikes.txt 2>/dev/null
                 fi
             fi
         fi
@@ -346,6 +358,7 @@ else
             $BB grep -v "^$CLIENT_MAC " /tmp/voucher_strikes.txt > /tmp/vs.tmp 2>/dev/null
             printf '%s %s %s\n' "$CLIENT_MAC" "$VSTRIKES" "$NOW" >> /tmp/vs.tmp
             $BB mv /tmp/vs.tmp /tmp/voucher_strikes.txt
+            $BB chmod 600 /tmp/voucher_strikes.txt 2>/dev/null
 
             # Notify once when suspension is first triggered (strikes exactly == threshold)
             _VST=${VOUCHER_STRIKE_THRESHOLD:-3}
@@ -365,6 +378,7 @@ else
     # wrong-voucher strikes this device had accumulated.
     $BB grep -v "^$CLIENT_MAC " /tmp/voucher_strikes.txt > /tmp/vs.tmp 2>/dev/null
     $BB mv /tmp/vs.tmp /tmp/voucher_strikes.txt
+    $BB chmod 600 /tmp/voucher_strikes.txt 2>/dev/null
 
     DURATION=$($BB echo "$VOUCHER_LINE" | $BB awk '{print $2}')
     VALID_UNTIL=$($BB echo "$VOUCHER_LINE" | $BB awk '{print $3}')
@@ -442,6 +456,7 @@ $BB mv "${SESSION_FILE}.tmp" "$SESSION_FILE"
 
 # Format: MAC EXPIRY TOTAL
 $BB echo "$CLIENT_MAC $NEW_EXPIRY $NEW_TOTAL" >> "$SESSION_FILE"
+$BB chmod 600 "$SESSION_FILE" 2>/dev/null
 
 # Immediately write state to persistent Flash database as 'active'
 REMAINING_SECS=$(( NEW_EXPIRY - NOW ))

@@ -1,0 +1,111 @@
+diff --git a/hotspot/macfix.sh b/hotspot/macfix.sh
+index e991b15..a5ba389 100755
+--- a/hotspot/macfix.sh
++++ b/hotspot/macfix.sh
+@@ -79,7 +79,11 @@ MACFIX_MAP_FILE="/lmepisowifi/hotspot_data/device_fp.txt"
+ # status.sh instead of centralizing it.
+ MACFIX_BANK_FILE="/lmepisowifi/hotspot_data/coin_bank.txt"
+ MACFIX_COOKIE_NAME="lme_fp"
+-MACFIX_COOKIE_MAXAGE=31536000   # 1 year — a slow "remember this browser", not a login session
++MACFIX_COOKIE_MAXAGE=2678400   # ~31 days — was 1 year, but MACFIX_MAP_MAX_AGE below prunes the
++                                # fp->MAC row after 30 days anyway, so a cookie that outlives it
++                                # can't reconcile anything; keeping it that short instead of a
++                                # year also shrinks the window a copy of it (sniffed in cleartext
++                                # off this WiFi segment — see notes above) stays worth anything
+ # How long a fingerprint→MAC row is kept in MACFIX_MAP_FILE before the prune
+ # at the end of mf_reconcile() drops it as stale. Without this, the file
+ # grows by one permanent row for every hit whose cookie is never recognized
+@@ -100,11 +104,33 @@ _mf_now() { $BB awk '{print int($1)}' /proc/uptime 2>/dev/null || date +%s; }
+ # matching the "no secrets in globals.env" rule at the top of defaults.env.
+ _mf_secret() {
+     if [ ! -s "$MACFIX_SECRET_FILE" ]; then
+-        $BB mkdir -p /lmepisowifi/hotspot_data 2>/dev/null
+-        printf '%s %d %d %s\n' \
+-            "$(cat /proc/uptime 2>/dev/null)" "$$" "$RANDOM" "$(date +%s 2>/dev/null)" \
+-            | sha256sum | awk '{print $1}' > "${MACFIX_SECRET_FILE}.tmp" 2>/dev/null
+-        $BB mv "${MACFIX_SECRET_FILE}.tmp" "$MACFIX_SECRET_FILE" 2>/dev/null
++        # _lock/_unlock close the check-then-create race: without it, every
++        # request that hits this on a bare/just-provisioned device before
++        # the file exists would independently pass the "-s" check and each
++        # mint its own key, with whichever mv() lands last silently
++        # invalidating cookies already signed against the others.
++        _lock
++        if [ ! -s "$MACFIX_SECRET_FILE" ]; then
++            $BB mkdir -p /lmepisowifi/hotspot_data 2>/dev/null
++            # Kernel CSPRNG, not the old uptime+$$+$RANDOM+date mix: uptime
++            # is near-zero at boot, $$ is a small guessable PID range on a
++            # freshly booted embedded system, ash's $RANDOM is 15 bits, and
++            # date is public — combined they're brute-forceable offline
++            # against one observed cookie, which breaks the "can't forge a
++            # signature" guarantee this whole file depends on.
++            if ! ( $BB dd if=/dev/urandom bs=32 count=1 2>/dev/null | sha256sum | awk '{print $1}' \
++                    > "${MACFIX_SECRET_FILE}.tmp" 2>/dev/null ) || [ ! -s "${MACFIX_SECRET_FILE}.tmp" ]; then
++                # /dev/urandom missing/unreadable should not happen on any
++                # real Linux kernel; kept only so provisioning still
++                # completes instead of leaving the file empty forever.
++                printf '%s %d %d %s\n' \
++                    "$(cat /proc/uptime 2>/dev/null)" "$$" "${RANDOM:-0}" "$(date +%s 2>/dev/null)" \
++                    | sha256sum | awk '{print $1}' > "${MACFIX_SECRET_FILE}.tmp" 2>/dev/null
++            fi
++            $BB chmod 600 "${MACFIX_SECRET_FILE}.tmp" 2>/dev/null
++            $BB mv "${MACFIX_SECRET_FILE}.tmp" "$MACFIX_SECRET_FILE" 2>/dev/null
++        fi
++        _unlock
+     fi
+     cat "$MACFIX_SECRET_FILE" 2>/dev/null
+ }
+@@ -112,7 +138,18 @@ _mf_secret() {
+ # Keyed hash of $1 using the private secret above — same "PSK:payload →
+ # digest" idiom coin.sh/coin_result.sh already use for NodeMCU reply
+ # signatures, just sha256 instead of md5 since this token lives for a year.
+-_mf_sign() { printf '%s:%s' "$(_mf_secret)" "$1" | sha256sum | awk '{print $1}'; }
++_mf_sign() {
++    local key
++    key=$(_mf_secret)
++    # Never sign with an empty key: sha256(":$payload") would be
++    # computable by anyone, silently turning "verified" cookies into
++    # unverified ones the moment secret persistence ever fails (e.g. the
++    # disk-space glitches already seen elsewhere on this fleet). Returning
++    # empty here makes _mf_verify_cookie's comparison fail closed instead,
++    # which just disables the MAC-continuity fix rather than faking it.
++    [ -n "$key" ] || return 1
++    printf '%s:%s' "$key" "$1" | sha256sum | awk '{print $1}'
++}
+ 
+ MACFIX_LOG_FILE="/lmepisowifi/hotspot_data/macfix_migrations.log"
+ MACFIX_LOG_MAX_LINES=${MACFIX_LOG_MAX_LINES:-2000}
+@@ -127,6 +164,9 @@ MACFIX_LOG_MAX_LINES=${MACFIX_LOG_MAX_LINES:-2000}
+ # MACFIX_MAP_FILE's own prune above.
+ _mf_log_migration() {
+     local verdict="$1" fp="$2" old="$3" new="$4"
++    # This log links a browser fingerprint to real customer MACs and visit
++    # timestamps - lock it down on first write instead of trusting umask.
++    [ -e "$MACFIX_LOG_FILE" ] || { : > "$MACFIX_LOG_FILE" 2>/dev/null; $BB chmod 600 "$MACFIX_LOG_FILE" 2>/dev/null; }
+     printf '%s verdict=%s fp=%s old=%s new=%s ua=%s\n' \
+         "$(date +%s 2>/dev/null || _mf_now)" "$verdict" "$fp" "$old" "$new" \
+         "$(printf '%s' "${HTTP_USER_AGENT:-}" | $BB tr -d '\n\r' | $BB head -c 120)" \
+@@ -285,6 +325,16 @@ mf_reconcile() {
+     MF_COOKIE_HEADER=""
+     [ "${MAC_RANDOMIZATION_FIX:-1}" = "1" ] || return 0
+     [ -n "$CLIENT_MAC" ] && [ "$CLIENT_MAC" != "00:00:00:00:00:00" ] || return 0
++    # Belt-and-suspenders: everything below treats CLIENT_MAC/PREV_MAC as a
++    # plain literal token (grep "^${mac} " anchors, iptables --mac-source
++    # args). Whatever normalizes it upstream should already guarantee this
++    # shape, but refusing anything that isn't exactly it here means a bad
++    # value from a future caller can't turn into a BRE metacharacter or an
++    # unexpected iptables argument instead of just failing a lookup.
++    case "$CLIENT_MAC" in
++        [0-9a-fA-F][0-9a-fA-F]:[0-9a-fA-F][0-9a-fA-F]:[0-9a-fA-F][0-9a-fA-F]:[0-9a-fA-F][0-9a-fA-F]:[0-9a-fA-F][0-9a-fA-F]:[0-9a-fA-F][0-9a-fA-F]) ;;
++        *) return 0 ;;
++    esac
+ 
+     if ! _mf_verify_cookie; then
+         # First time we've seen this browser (or its old cookie didn't
+@@ -368,6 +418,7 @@ mf_reconcile() {
+         > "${MACFIX_MAP_FILE}.tmp2" 2>/dev/null \
+         && $BB mv "${MACFIX_MAP_FILE}.tmp2" "${MACFIX_MAP_FILE}.tmp"
+     $BB mv "${MACFIX_MAP_FILE}.tmp" "$MACFIX_MAP_FILE"
++    $BB chmod 600 "$MACFIX_MAP_FILE" 2>/dev/null
+     _unlock
+ 
+     MF_COOKIE_HEADER="Set-Cookie: ${MACFIX_COOKIE_NAME}=${MF_FP_ID}.$(_mf_sign "$MF_FP_ID"); Path=/; Max-Age=${MACFIX_COOKIE_MAXAGE}; HttpOnly; SameSite=Lax"
