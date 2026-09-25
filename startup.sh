@@ -130,14 +130,36 @@
     # The OTA update check (a long, fixed 6h interval, stateless check) is
     # scheduled here instead of a hand-rolled sleep-loop. Written once;
     # the BEGIN/END marker guards against duplicating the line on every boot.
+    #
+    # BusyBox crond only runs a crontab file whose NAME matches a real account
+    # in /etc/passwd — it looks the name up with getpwnam() before running
+    # anything in it, and silently skips the file if that lookup fails. It
+    # does NOT treat "root" as a synonym for uid 0. On this device /etc/passwd
+    # has no "root" entry at all; uid 0 is the "Admin" account instead:
+    #   Admin:...:0:0::/tmp:/bin/sh
+    # A hardcoded /config/crontabs/root is therefore inert on this device —
+    # crond loads it, can't resolve "root" to a user, and drops it — so the
+    # OTA check below never actually fires. Resolve the real uid-0 account
+    # name from /etc/passwd instead of assuming it's "root".
+    CRON_USER=$(busybox awk -F: '$3 == 0 { print $1; exit }' /etc/passwd 2>/dev/null)
+    [ -n "$CRON_USER" ] || CRON_USER="root"   # fallback if /etc/passwd is missing/unreadable
+    CRON_FILE="/config/crontabs/$CRON_USER"
+
     mkdir -p /config/crontabs
-    touch /config/crontabs/root
-    if ! busybox grep -q '^# --- BEGIN_OTA_CRON ---$' /config/crontabs/root 2>/dev/null; then
+    # Migrate a stale root-named file left behind by older builds of this
+    # script (before this fix) on a device whose uid-0 account isn't "root" —
+    # otherwise its OTA marker lingers forever, unread by crond, while a
+    # second copy gets written under $CRON_FILE below.
+    if [ "$CRON_FILE" != "/config/crontabs/root" ] && [ -f /config/crontabs/root ] && [ ! -f "$CRON_FILE" ]; then
+        mv /config/crontabs/root "$CRON_FILE"
+    fi
+    touch "$CRON_FILE"
+    if ! busybox grep -q '^# --- BEGIN_OTA_CRON ---$' "$CRON_FILE" 2>/dev/null; then
         {
             echo "# --- BEGIN_OTA_CRON ---"
             echo "0 */6 * * * [ -x /lmepisowifi/ota.sh ] && /lmepisowifi/ota.sh cron >/dev/null 2>&1"
             echo "# --- END_OTA_CRON ---"
-        } >> /config/crontabs/root
+        } >> "$CRON_FILE"
     fi
     busybox pidof crond >/dev/null || busybox crond -c /config/crontabs -l 8 &
     # SSH (dropbear) lifecycle is managed entirely by ipacl.sh, called via

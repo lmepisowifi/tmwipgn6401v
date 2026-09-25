@@ -1360,6 +1360,21 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
             fi
         fi
 
+        # Force busybox ntpd to actually pick up the new timezone now, not
+        # just "new processes" in general. ntpd is a long-lived daemon
+        # (launched once by lmehspt.sh's start_ntp() and left running for
+        # days) and never re-reads /etc/TZ once it's up, so without this it
+        # would keep showing/using whatever timezone was in effect when it
+        # was first launched, until the device is rebooted. Kill it here;
+        # lmehspt.sh's watchdog calls start_ntp() every ~60s and relaunches
+        # it — exporting the freshly-written /etc/TZ — as soon as it notices
+        # ntpd isn't running anymore. Same ps|grep idiom lmehspt.sh itself
+        # uses for ntpd: BusyBox pidof/killall can't reliably match it when
+        # it's invoked via the multicall binary.
+        for _tz_pid in $(busybox ps ww | busybox grep "ntpd -S" | busybox grep -v grep | busybox awk '{print $1}'); do
+            kill -9 "$_tz_pid" 2>/dev/null
+        done
+
         # Persist across reboot (writes /etc/TZ line + optional bind-mount lines).
         update_startup_timezone "$FORM_TZ" "$FORM_ZONEINFO"
 

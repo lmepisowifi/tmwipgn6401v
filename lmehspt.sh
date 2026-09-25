@@ -2004,6 +2004,19 @@ start_ntp() {
     for s in $NTP_SERVERS; do NTP_PEERS="$NTP_PEERS -p $s"; done
     [ -n "$NTP_PEERS" ] || return 0
 
+    # Export the admin's configured timezone into ntpd's own environment
+    # instead of leaving it to pick up /etc/TZ on its own. This matters
+    # because ntpd is long-lived (started once here, then left running for
+    # days) but /etc/TZ can change at any time from the web UI — and a
+    # process that's already running never re-reads /etc/TZ, only a freshly
+    # forked one does. Reading it fresh right before every (re)spawn is what
+    # actually makes a timezone change "take" for ntpd: lme.cgi's
+    # timezone_settings action kills any running ntpd on a TZ change, and
+    # this watchdog's next start_ntp() call relaunches it with the new value
+    # exported here, so the change is picked up within ~60s instead of only
+    # on the next reboot.
+    [ -f /etc/TZ ] && TZ=$($BB cat /etc/TZ | $BB tr -d '\r\n') && export TZ
+
     # NOTE: we deliberately do NOT pass -N. On this RTL9607C busybox build the
     # high-priority -N flag needs CAP_SYS_NICE; without it ntpd aborts at launch
     # and no daemon is left running (the reported `ps | grep ntp` showed none).

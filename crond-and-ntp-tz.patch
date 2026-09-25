@@ -1,0 +1,94 @@
+diff --git a/lmehspt.sh b/lmehspt.sh
+index aa17fc4..47281d9 100755
+--- a/lmehspt.sh
++++ b/lmehspt.sh
+@@ -2004,6 +2004,19 @@ start_ntp() {
+     for s in $NTP_SERVERS; do NTP_PEERS="$NTP_PEERS -p $s"; done
+     [ -n "$NTP_PEERS" ] || return 0
+ 
++    # Export the admin's configured timezone into ntpd's own environment
++    # instead of leaving it to pick up /etc/TZ on its own. This matters
++    # because ntpd is long-lived (started once here, then left running for
++    # days) but /etc/TZ can change at any time from the web UI — and a
++    # process that's already running never re-reads /etc/TZ, only a freshly
++    # forked one does. Reading it fresh right before every (re)spawn is what
++    # actually makes a timezone change "take" for ntpd: lme.cgi's
++    # timezone_settings action kills any running ntpd on a TZ change, and
++    # this watchdog's next start_ntp() call relaunches it with the new value
++    # exported here, so the change is picked up within ~60s instead of only
++    # on the next reboot.
++    [ -f /etc/TZ ] && TZ=$($BB cat /etc/TZ | $BB tr -d '\r\n') && export TZ
++
+     # NOTE: we deliberately do NOT pass -N. On this RTL9607C busybox build the
+     # high-priority -N flag needs CAP_SYS_NICE; without it ntpd aborts at launch
+     # and no daemon is left running (the reported `ps | grep ntp` showed none).
+diff --git a/startup.sh b/startup.sh
+index f71777f..14486a8 100755
+--- a/startup.sh
++++ b/startup.sh
+@@ -130,14 +130,36 @@
+     # The OTA update check (a long, fixed 6h interval, stateless check) is
+     # scheduled here instead of a hand-rolled sleep-loop. Written once;
+     # the BEGIN/END marker guards against duplicating the line on every boot.
++    #
++    # BusyBox crond only runs a crontab file whose NAME matches a real account
++    # in /etc/passwd — it looks the name up with getpwnam() before running
++    # anything in it, and silently skips the file if that lookup fails. It
++    # does NOT treat "root" as a synonym for uid 0. On this device /etc/passwd
++    # has no "root" entry at all; uid 0 is the "Admin" account instead:
++    #   Admin:...:0:0::/tmp:/bin/sh
++    # A hardcoded /config/crontabs/root is therefore inert on this device —
++    # crond loads it, can't resolve "root" to a user, and drops it — so the
++    # OTA check below never actually fires. Resolve the real uid-0 account
++    # name from /etc/passwd instead of assuming it's "root".
++    CRON_USER=$(busybox awk -F: '$3 == 0 { print $1; exit }' /etc/passwd 2>/dev/null)
++    [ -n "$CRON_USER" ] || CRON_USER="root"   # fallback if /etc/passwd is missing/unreadable
++    CRON_FILE="/config/crontabs/$CRON_USER"
++
+     mkdir -p /config/crontabs
+-    touch /config/crontabs/root
+-    if ! busybox grep -q '^# --- BEGIN_OTA_CRON ---$' /config/crontabs/root 2>/dev/null; then
++    # Migrate a stale root-named file left behind by older builds of this
++    # script (before this fix) on a device whose uid-0 account isn't "root" —
++    # otherwise its OTA marker lingers forever, unread by crond, while a
++    # second copy gets written under $CRON_FILE below.
++    if [ "$CRON_FILE" != "/config/crontabs/root" ] && [ -f /config/crontabs/root ] && [ ! -f "$CRON_FILE" ]; then
++        mv /config/crontabs/root "$CRON_FILE"
++    fi
++    touch "$CRON_FILE"
++    if ! busybox grep -q '^# --- BEGIN_OTA_CRON ---$' "$CRON_FILE" 2>/dev/null; then
+         {
+             echo "# --- BEGIN_OTA_CRON ---"
+             echo "0 */6 * * * [ -x /lmepisowifi/ota.sh ] && /lmepisowifi/ota.sh cron >/dev/null 2>&1"
+             echo "# --- END_OTA_CRON ---"
+-        } >> /config/crontabs/root
++        } >> "$CRON_FILE"
+     fi
+     busybox pidof crond >/dev/null || busybox crond -c /config/crontabs -l 8 &
+     # SSH (dropbear) lifecycle is managed entirely by ipacl.sh, called via
+diff --git a/www2/cgi-bin/lme.cgi b/www2/cgi-bin/lme.cgi
+index 19e0189..0e81d83 100755
+--- a/www2/cgi-bin/lme.cgi
++++ b/www2/cgi-bin/lme.cgi
+@@ -1360,6 +1360,21 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
+             fi
+         fi
+ 
++        # Force busybox ntpd to actually pick up the new timezone now, not
++        # just "new processes" in general. ntpd is a long-lived daemon
++        # (launched once by lmehspt.sh's start_ntp() and left running for
++        # days) and never re-reads /etc/TZ once it's up, so without this it
++        # would keep showing/using whatever timezone was in effect when it
++        # was first launched, until the device is rebooted. Kill it here;
++        # lmehspt.sh's watchdog calls start_ntp() every ~60s and relaunches
++        # it — exporting the freshly-written /etc/TZ — as soon as it notices
++        # ntpd isn't running anymore. Same ps|grep idiom lmehspt.sh itself
++        # uses for ntpd: BusyBox pidof/killall can't reliably match it when
++        # it's invoked via the multicall binary.
++        for _tz_pid in $(busybox ps ww | busybox grep "ntpd -S" | busybox grep -v grep | busybox awk '{print $1}'); do
++            kill -9 "$_tz_pid" 2>/dev/null
++        done
++
+         # Persist across reboot (writes /etc/TZ line + optional bind-mount lines).
+         update_startup_timezone "$FORM_TZ" "$FORM_ZONEINFO"
+ 
