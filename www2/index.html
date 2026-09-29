@@ -125,6 +125,17 @@
     <script src="/js/nav.js?v=1.0.0"></script>
 
     <div class="container mt-4">
+        <!-- Shown by checkDefaultPassword() while the admin password is still the factory default -->
+        <div id="default-pw-warning" class="alert alert-danger mb-3" role="alert" style="display:none">
+            <div class="d-flex flex-wrap align-items-center justify-content-between gap-2">
+                <div>
+                    <strong>Default login password in use.</strong>
+                    The admin password is still the factory default, so anyone who can reach this device can log in.
+                    Change it immediately.
+                </div>
+                <a href="/accounts.html" class="btn btn-sm btn-danger">Change Password</a>
+            </div>
+        </div>
         <div class="row g-3" id="dash-grid">
             <!-- Cards injected by JS in layout order -->
         </div>
@@ -294,6 +305,19 @@
     }
 
     // ── Data fetchers ─────────────────────────────────────────────────────────
+    // Warn when the admin password is still the factory default (server compares
+    // SUSER_PASSWORD to DEFAULT_SUSER_PASSWORD and only returns a boolean). Runs
+    // once per page load; any failure just leaves the banner hidden.
+    function checkDefaultPassword() {
+        fetch('/cgi-bin/lme.cgi?action=account_status', {cache:'no-store'})
+            .then(function(r){ return r.json(); })
+            .then(function(d){
+                var el = document.getElementById('default-pw-warning');
+                if (el) el.style.display = (d && d.default_password === true) ? '' : 'none';
+            })
+            .catch(function(){});
+    }
+
     function fetchStatic() {
         fetch('/cgi-bin/lme.cgi?action=static')
             .then(function(r){return r.json();})
@@ -508,6 +532,7 @@
 
     // ── Boot ──────────────────────────────────────────────────────────────────
     window.addEventListener('DOMContentLoaded', function(){
+        checkDefaultPassword();
         // Fetch layout from server first; build grid only after it arrives so
         // the card order is correct from the very first paint.  Data fetchers
         // are also deferred until after the grid exists so their set() calls

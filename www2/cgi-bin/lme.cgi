@@ -450,16 +450,37 @@ if [ "$REQUEST_METHOD" = "GET" ]; then
         exit 0
     fi
 
-    # --- action=account_status: return current admin (superuser) username ---
+    # --- action=account_status: return current admin (superuser) username, plus
+    #     whether the admin password is still the factory default ---
     if echo "$QUERY_STRING" | busybox grep -q "action=account_status"; then
         SUSER=$(mib get SUSER_NAME 2>/dev/null \
             | busybox grep "^SUSER_NAME[[:space:]]*=" \
             | busybox cut -d'=' -f2- \
             | busybox tr -d '\r\n' | busybox sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
         ESC_SUSER=$(printf '%s' "$SUSER" | busybox sed 's/\\/\\\\/g; s/"/\\"/g')
+
+        # Is the login password still the factory default? Compare the live
+        # SUSER_PASSWORD against the SDK's DEFAULT_SUSER_PASSWORD. Only a boolean
+        # ever leaves this script -- never either password. Fails safe: if either
+        # value is empty/unreadable (e.g. a build without the DEFAULT_ key), report
+        # false rather than nagging on a false positive.
+        _mib_val() {
+            mib get "$1" 2>/dev/null \
+                | busybox sed -n "s/^[[:space:]]*$1[[:space:]]*=//p" \
+                | busybox tr -d '\r\n' \
+                | busybox sed 's/^[[:space:]]*//;s/[[:space:]]*$//'
+        }
+        CUR_PW=$(_mib_val SUSER_PASSWORD)
+        DEF_PW=$(_mib_val DEFAULT_SUSER_PASSWORD)
+        if [ -n "$CUR_PW" ] && [ "$CUR_PW" = "$DEF_PW" ]; then
+            IS_DEFAULT_PW=true
+        else
+            IS_DEFAULT_PW=false
+        fi
+
         printf "Status: 200 OK\r\n"
         printf "Content-Type: application/json\r\n\r\n"
-        printf '{"suser_name":"%s"}' "$ESC_SUSER"
+        printf '{"suser_name":"%s","default_password":%s}' "$ESC_SUSER" "$IS_DEFAULT_PW"
         exit 0
     fi
 
