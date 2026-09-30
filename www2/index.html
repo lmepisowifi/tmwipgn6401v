@@ -136,6 +136,18 @@
                 <a href="/accounts.html" class="btn btn-sm btn-danger">Change Password</a>
             </div>
         </div>
+        <!-- Shown by checkDefaultPassword() while the coin-slot PSK is a value published in the public source -->
+        <div id="default-psk-warning" class="alert alert-warning mb-3" role="alert" style="display:none">
+            <div class="d-flex flex-wrap align-items-center justify-content-between gap-2">
+                <div>
+                    <strong>Default coin-slot PSK in use.</strong>
+                    The shared secret that signs coin credits is still a value published in the project's public source,
+                    so it is not secret. Set your own on the NodeMCU page <em>and</em> enter the same PSK in the
+                    NodeMCU's own setup page &mdash; if the two differ, coins stop crediting.
+                </div>
+                <a href="/hotspot-nodemcus.html" class="btn btn-sm btn-warning">Change PSK</a>
+            </div>
+        </div>
         <div class="row g-3" id="dash-grid">
             <!-- Cards injected by JS in layout order -->
         </div>
@@ -306,7 +318,8 @@
 
     // ── Data fetchers ─────────────────────────────────────────────────────────
     // Warn when the admin password is still the factory default (server compares
-    // SUSER_PASSWORD to DEFAULT_SUSER_PASSWORD and only returns a boolean). Runs
+    // SUSER_PASSWORD to DEFAULT_SUSER_PASSWORD and only returns a boolean), and
+    // likewise when the coin-slot PSK is a publicly-known default. Runs
     // once per page load; any failure just leaves the banner hidden.
     function checkDefaultPassword() {
         fetch('/cgi-bin/lme.cgi?action=account_status', {cache:'no-store'})
@@ -314,6 +327,8 @@
             .then(function(d){
                 var el = document.getElementById('default-pw-warning');
                 if (el) el.style.display = (d && d.default_password === true) ? '' : 'none';
+                var ep = document.getElementById('default-psk-warning');
+                if (ep) ep.style.display = (d && d.default_coin_psk === true) ? '' : 'none';
             })
             .catch(function(){});
     }

@@ -478,9 +478,41 @@ if [ "$REQUEST_METHOD" = "GET" ]; then
             IS_DEFAULT_PW=false
         fi
 
+        # --- BEGIN default_coin_psk ---
+        # Is the coin-slot shared secret (COIN_PSK) still one of the values that
+        # ships in this project's PUBLIC source (defaults.env / lmehspt.sh /
+        # the NodeMCU setup-page placeholder)? Anyone can read those, so a box
+        # still using one has no secret protecting coin credits beyond the
+        # IP/MAC check. Only a boolean leaves this script -- never the PSK.
+        # Reads globals.env only: if COIN_PSK is absent there the box has no
+        # primary NodeMCU configured (see seed_globals in lmehspt.sh), and
+        # lmehspt.sh's own copy is rewritten in place when an admin changes the
+        # PSK, so comparing against it would false-positive. Fails safe to false.
+        _is_public_psk() {
+            case "$1" in
+                "2Au6410y1O15YV9610wHmr52"|"lmepisowifi"|"ReplaceWithSomethingLongAndRandom!") return 0 ;;
+            esac
+            return 1
+        }
+        IS_DEFAULT_PSK=false
+        _GENV="${LME_GLOBALS_ENV:-/lmepisowifi/globals.env}"
+        _XTRA="${LME_NODEMCU_EXTRA:-/lmepisowifi/hotspot_data/nodemcus_extra.txt}"
+        CUR_PSK=$(busybox grep -m1 '^COIN_PSK=' "$_GENV" 2>/dev/null \
+            | busybox sed 's/^COIN_PSK=//; s/\r$//; s/^"\(.*\)"$/\1/; s/^'"'"'\(.*\)'"'"'$/\1/')
+        if [ -n "$CUR_PSK" ] && _is_public_psk "$CUR_PSK"; then
+            IS_DEFAULT_PSK=true
+        elif [ -f "$_XTRA" ]; then
+            # extra units: ID|TITLE|IP|MAC|PORT|PSK|ENABLED -- only enabled ones matter
+            for _xp in $(busybox awk -F'|' '$7!="0" && $6!="" {print $6}' "$_XTRA" 2>/dev/null | busybox tr -d '\r' | busybox tr ' ' '\001'); do
+                _xp=$(printf '%s' "$_xp" | busybox tr '\001' ' ')
+                _is_public_psk "$_xp" && { IS_DEFAULT_PSK=true; break; }
+            done
+        fi
+        # --- END default_coin_psk ---
+
         printf "Status: 200 OK\r\n"
         printf "Content-Type: application/json\r\n\r\n"
-        printf '{"suser_name":"%s","default_password":%s}' "$ESC_SUSER" "$IS_DEFAULT_PW"
+        printf '{"suser_name":"%s","default_password":%s,"default_coin_psk":%s}' "$ESC_SUSER" "$IS_DEFAULT_PW" "$IS_DEFAULT_PSK"
         exit 0
     fi
 

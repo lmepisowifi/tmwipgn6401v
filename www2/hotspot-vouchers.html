@@ -172,7 +172,12 @@ function addVoucher(){
 function quickGen(mins){
     var chars='ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
     var code='';
-    for (var i=0;i<8;i++) code+=chars[Math.floor(Math.random()*chars.length)];
+    // crypto RNG, not Math.random(): a voucher code is a bearer credential, and
+    // Math.random() is predictable from a few observed outputs. The alphabet is
+    // exactly 32 symbols, so "& 31" maps 256 byte values evenly (no modulo bias).
+    var rnd=new Uint8Array(8);
+    (window.crypto||window.msCrypto).getRandomValues(rnd);
+    for (var i=0;i<8;i++) code+=chars[rnd[i]&31];
     document.getElementById('v-code').value=code;
     document.getElementById('v-duration').value=mins;
     addVoucher();
