@@ -64,7 +64,7 @@
 # automatically when the watchdog calls --drain (every 60s).
 #
 # No curl on this device — every Telegram/Discord call in this file goes
-# through GNU wget with --no-check-certificate (see $WGET below).
+# through GNU wget (see $WGET / $TLS_OPT below).
 # ============================================================
 
 BB="busybox"
@@ -72,6 +72,22 @@ bb() { if [ -n "$BB" ]; then "$BB" "$@"; else "$@"; fi; }
 
 # GNU wget (TLS-capable). Do NOT fall back to busybox wget.
 WGET="/bin/wget"
+
+# HTTPS verification for every Telegram/Discord call below. These used to pass
+# --no-check-certificate unconditionally, so anyone on the uplink path could
+# read the bot token (it is in the URL) or forge getUpdates replies -- and the
+# interactive bot acts on those replies (/reboot etc.). Verify against the CA
+# bundle whenever one is installed (same lookup as ota.sh); only fall back to
+# unverified when no bundle exists yet, or the operator set OTA_INSECURE_TLS=1
+# in ota.env. Failed sends are queued and retried by --drain, so a clock that
+# has not synced yet just delays alerts instead of dropping them.
+_TLS_CA="/lmepisowifi/cacert.pem"
+[ -f "$_TLS_CA" ] || _TLS_CA="/lmepisowifi/www2/sh/cacert.pem"
+if [ -f "$_TLS_CA" ] && ! $BB grep -qE '^OTA_INSECURE_TLS=.?1' /lmepisowifi/ota.env 2>/dev/null; then
+    TLS_OPT="--ca-certificate=$_TLS_CA"
+else
+    TLS_OPT="--no-check-certificate"
+fi
 
 NOTIFY_ENV="/lmepisowifi/hotspot_data/notify.env"
 QUEUE_DIR="/lmepisowifi/hotspot_data/queued_messages"
@@ -117,7 +133,7 @@ send_telegram() {
     [ -n "$TG_BOT_TOKEN" ] && [ -n "$TG_CHAT_ID" ] || return 1
     URL="https://api.telegram.org/bot${TG_BOT_TOKEN}/sendMessage"
     ENC=$(urlenc "$MSG")
-    "$WGET" -q -T "$TIMEOUT" --no-check-certificate -O /dev/null \
+    "$WGET" -q -T "$TIMEOUT" $TLS_OPT -O /dev/null \
         --post-data="chat_id=${TG_CHAT_ID}&text=${ENC}" \
         "$URL" 2>/dev/null
 }
@@ -131,7 +147,7 @@ send_discord() {
     DSCMSG=$(printf '%s' "$MSG")
     ESC=$(jsonenc "$DSCMSG")
     PAYLOAD="{\"content\":\"${ESC}\"}"
-    "$WGET" -q -T "$TIMEOUT" --no-check-certificate -O /dev/null \
+    "$WGET" -q -T "$TIMEOUT" $TLS_OPT -O /dev/null \
         --header="Content-Type: application/json" \
         --post-data="$PAYLOAD" \
         "$DISCORD_WEBHOOK" 2>/dev/null
@@ -834,7 +850,7 @@ cmd_remove_time() {
 
 # wget POST of a JSON body (setMyCommands) — replaces `curl -s -X POST ... -d`.
 _bot_post_json() {
-    "$WGET" -q -T "$TIMEOUT" --no-check-certificate -O /dev/null \
+    "$WGET" -q -T "$TIMEOUT" $TLS_OPT -O /dev/null \
         --header="Content-Type: application/json" \
         --post-data="$2" \
         "$1" 2>/dev/null
@@ -849,7 +865,7 @@ _bot_send_reply() {
     enc=$(urlenc "$text")
     body="chat_id=${chat_id}&text=${enc}"
     [ -n "$mode" ] && body="${body}&parse_mode=${mode}"
-    "$WGET" -q -T "$TIMEOUT" --no-check-certificate -O /dev/null \
+    "$WGET" -q -T "$TIMEOUT" $TLS_OPT -O /dev/null \
         --post-data="$body" \
         "$BOT_API_URL/sendMessage" 2>/dev/null
 }
@@ -956,7 +972,7 @@ EOF
         # Fetch updates (max 1 at a time, 30s long-poll timeout; local wget
         # timeout is set higher than that so wget doesn't cut the connection
         # before Telegram's own long-poll returns).
-        UPDATE=$("$WGET" -q -T 35 --no-check-certificate -O - \
+        UPDATE=$("$WGET" -q -T 35 $TLS_OPT -O - \
             "$BOT_API_URL/getUpdates?offset=$BOT_OFFSET&limit=1&timeout=30" 2>/dev/null)
 
         OK=$(json_get "$UPDATE" "ok")

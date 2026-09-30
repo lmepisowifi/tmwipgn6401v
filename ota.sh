@@ -93,10 +93,16 @@ OTA_BRANCH="main"
 OTA_MANIFEST_URL=""
 OTA_CHANGELOG_URL=""
 OTA_AUTO="0"
-OTA_CACERT="$ROOT/cacert.pem"
+OTA_CACERT="$ROOT/cacert.pem"      # operator-supplied bundle (optional override)
+OTA_INSECURE_TLS="0"               # 1 = skip HTTPS certificate verification (escape hatch, NOT recommended)
 OTA_NOTIFY="1"
 OTA_NODEMCU="1"                    # 1 = also push firmware to the coin-slot NodeMCU
 [ -f "$ENV_FILE" ] && . "$ENV_FILE"
+# Fall back to the CA bundle that ships inside www2 (refreshed by every OTA).
+# Before this, no bundle was shipped anywhere, so every device silently ran
+# wget with --no-check-certificate: an on-path attacker could serve a forged
+# manifest AND a matching tarball and get root code execution via OTA.
+[ -f "$OTA_CACERT" ] || OTA_CACERT="$ROOT/www2/sh/cacert.pem"
 
 # ---- helpers ---------------------------------------------------------------
 log() { printf '[%s] %s\n' "$(date '+%H:%M:%S')" "$*" >> "$LOG"; }
@@ -172,9 +178,14 @@ cdnify() { # cdnify <url> -> prints CDN url (or the original url unchanged)
 fetch() { # fetch <url> <outfile>
     _u=$(cdnify "$1")
     _wf="--https-only -t 3 -T 30 --retry-connrefused -U lmepisowifi-ota"
-    if [ -f "$OTA_CACERT" ]; then
+    if [ "$OTA_INSECURE_TLS" = "1" ]; then
+        _wf="$_wf --no-check-certificate"
+    elif [ -f "$OTA_CACERT" ]; then
         _wf="$_wf --ca-certificate=$OTA_CACERT"
     else
+        # One-time bootstrap only: a device that predates the shipped CA
+        # bundle has nothing to verify against until this very update lands.
+        log "WARNING: no CA bundle installed - HTTPS certificate NOT verified for $_u"
         _wf="$_wf --no-check-certificate"
     fi
     mkdir -p "$(dirname "$2")" 2>/dev/null
@@ -210,6 +221,10 @@ fetch() { # fetch <url> <outfile>
     _fw_rc=$?
     kill "$_fw_watch" 2>/dev/null
     wait "$_fw_watch" 2>/dev/null
+    # wget exit 5 = TLS certificate verification failure. Say so plainly (the
+    # most common benign cause is a device clock that has not synced yet), and
+    # never retry insecurely on our own.
+    [ "$_fw_rc" -eq 5 ] && log "fetch: TLS certificate verification FAILED for $_u (bundle: $OTA_CACERT) - refusing to continue; check the device clock"
     return $_fw_rc
 }
 

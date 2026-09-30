@@ -54,9 +54,12 @@ MODULES="hotspot tailscale"
 OTA_REPO="lmepisowifi/tmwipgn6401v"
 OTA_BRANCH="main"
 OTA_MANIFEST_URL=""
-OTA_CACERT="$ROOT/cacert.pem"
+OTA_CACERT="$ROOT/cacert.pem"  # operator-supplied bundle (optional override)
+OTA_INSECURE_TLS="0"           # ota.env: 1 = skip HTTPS certificate verification (NOT recommended)
 MOD_AUTO_UPDATE="1"            # default on; ota.env may set "0" to disable
 [ -f "$ENV_FILE" ] && . "$ENV_FILE"
+# Same shipped-bundle fallback as ota.sh (see the comment there).
+[ -f "$OTA_CACERT" ] || OTA_CACERT="$ROOT/www2/sh/cacert.pem"
 
 mkdir -p "$MODDIR" 2>/dev/null
 log() { printf '[%s] %s\n' "$(date '+%H:%M:%S')" "$*" >> "$LOG" 2>/dev/null; }
@@ -119,10 +122,22 @@ cdnify() {
         *) echo "$1" ;;
     esac
 }
+# HTTPS verification options for wget: verify against the CA bundle whenever
+# one is installed; only a device that has no bundle yet (first update that
+# ships it) or an operator who set OTA_INSECURE_TLS=1 skips verification.
+_tls_opts() {
+    if [ "$OTA_INSECURE_TLS" = "1" ]; then
+        printf '%s' "--no-check-certificate"
+    elif [ -f "$OTA_CACERT" ]; then
+        printf '%s' "--ca-certificate=$OTA_CACERT"
+    else
+        log "WARNING: no CA bundle installed - HTTPS certificate NOT verified"
+        printf '%s' "--no-check-certificate"
+    fi
+}
 fetch() {
     _u=$(cdnify "$1")
-    _wf="--https-only -t 3 -T 30 --retry-connrefused -U lmepisowifi-modctl"
-    if [ -f "$OTA_CACERT" ]; then _wf="$_wf --ca-certificate=$OTA_CACERT"; else _wf="$_wf --no-check-certificate"; fi
+    _wf="--https-only -t 3 -T 30 --retry-connrefused -U lmepisowifi-modctl $(_tls_opts)"
     wget $_wf -q -O "$2" "$_u"
 }
 # fetch_large — for module tarballs on slow connections. Uses a 5-minute
@@ -134,8 +149,7 @@ fetch() {
 # restarting it from byte 0.
 fetch_large() {
     _u=$(cdnify "$1")
-    _wf="--https-only -c -t 2 -T 300 --retry-connrefused -U lmepisowifi-modctl"
-    if [ -f "$OTA_CACERT" ]; then _wf="$_wf --ca-certificate=$OTA_CACERT"; else _wf="$_wf --no-check-certificate"; fi
+    _wf="--https-only -c -t 2 -T 300 --retry-connrefused -U lmepisowifi-modctl $(_tls_opts)"
     wget $_wf -q -O "$2" "$_u"
 }
 # fetch_large already retries transient hiccups WITHIN one connection attempt
