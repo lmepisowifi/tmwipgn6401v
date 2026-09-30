@@ -62,8 +62,23 @@ if [ -n "$FORM_USER" ] && [ "$FORM_USER" = "$REAL_USER" ] && [ "$FORM_PASS" = "$
     # from anyone starting from a stale count.
     lockout_reset
 
-    # Generate unique session ID
-    SESSION_ID=$(printf "%s%s%s" "$(date)" "$RANDOM" "$FORM_USER" | busybox sha256sum | busybox cut -d' ' -f1)
+    # Generate the session ID from 256 bits of kernel randomness. It used to be
+    # sha256(date + $RANDOM + username): $RANDOM is only 15 bits, and the date
+    # (to the second) and username are both guessable, so a hotspot customer
+    # who can reach this port could enumerate valid session IDs offline-ish
+    # via check_auth.cgi. Fail CLOSED if /dev/urandom can't deliver exactly
+    # 32 bytes -- hashing an empty read would yield one constant, publicly
+    # known "session ID" for every login.
+    SESSION_ID=$(busybox dd if=/dev/urandom bs=32 count=1 2>/dev/null \
+        | busybox od -An -v -tx1 | busybox tr -d ' \n')
+    case "$SESSION_ID" in
+        *[!0-9a-f]*|"") SESSION_ID="" ;;
+    esac
+    if [ "${#SESSION_ID}" -ne 64 ]; then
+        printf "Status: 302 Found\r\n"
+        printf "Location: /login.html?error=1\r\n\r\n"
+        exit 0
+    fi
 
     # Ensure session directory exists and write timestamp for this session
     mkdir -p /tmp/sessions

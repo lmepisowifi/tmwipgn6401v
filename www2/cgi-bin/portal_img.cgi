@@ -24,6 +24,20 @@ if [ -z "$BROWSER_SESSION" ] || [ ! -f "$SESSION_FILE" ]; then
     exit 0
 fi
 
+# SESSION_TIMEOUT was declared above but never enforced here, so a session
+# cookie kept working on this endpoint long after it had expired everywhere
+# else (expired session files are only swept at the next login). Same
+# expiry rule as hotspot.cgi/check_auth.cgi; an empty file is a concurrent
+# write in progress, not an expired session.
+_LAST=$(cat "$SESSION_FILE" 2>/dev/null | busybox tr -d '\r\n')
+_NOW=$(date +%s)
+case "$_LAST" in "") _LAST=$_NOW ;; *[!0-9]*) _LAST=0 ;; esac
+if [ $((_NOW - _LAST)) -gt $SESSION_TIMEOUT ]; then
+    rm -f "$SESSION_FILE"
+    printf "Status: 403 Forbidden\r\nContent-Type: text/plain\r\n\r\nForbidden"
+    exit 0
+fi
+
 # Sanitize: only allow alphanumeric, dot, underscore, hyphen — no path traversal
 FILE=$(echo "$QUERY_STRING" | busybox sed -n 's/.*file=\([^&]*\).*/\1/p' | busybox tr -cd 'a-zA-Z0-9._-')
 [ -z "$FILE" ] && { printf "Status: 400 Bad Request\r\nContent-Type: text/plain\r\n\r\nBad Request"; exit 0; }
