@@ -2143,7 +2143,11 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
     fi
 
     # --- action=reboot: immediate device reboot ---
-    if echo "$QUERY_STRING" | busybox grep -q "action=reboot"; then
+    # Exact match only. This used to be a bare substring test, which also caught
+    # action=reboot_sched_set (tested later in this file): saving an auto-reboot
+    # schedule was answered with "Missing confirmation" and never stored, and a
+    # schedule POST that did carry confirm=1 would have rebooted the router.
+    if echo "$QUERY_STRING" | busybox grep -qE '(^|&)action=reboot(&|$)'; then
         FORM_CONFIRM=$(echo "$POST_DATA" \
             | busybox sed -n 's/.*confirm=\([^&]*\).*/\1/p' \
             | busybox tr -d '\r\n')
@@ -2275,6 +2279,15 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
             TOD_MIN=$(echo  "$FORM_TOD" | busybox cut -d':' -f2)
             case "$TOD_HOUR" in ''|*[!0-9]*) TOD_HOUR=4 ;; esac
             case "$TOD_MIN"  in ''|*[!0-9]*) TOD_MIN=0  ;; esac
+            # Read both as DECIMAL. printf %d below (and in reboot_sched.sh)
+            # treats a leading 0 as octal, so "08"/"09" -- exactly what
+            # <input type=time> sends for 08:xx and xx:09 -- errored and were
+            # saved as 0 (08:30 became 0:30, 04:08 became 4:00). Strip leading
+            # zeros; an over-long digit run is clamped by the range checks.
+            TOD_HOUR=$(printf '%s' "$TOD_HOUR" | busybox sed 's/^0*\([0-9]\)/\1/')
+            TOD_MIN=$(printf '%s' "$TOD_MIN" | busybox sed 's/^0*\([0-9]\)/\1/')
+            [ "${#TOD_HOUR}" -gt 2 ] && TOD_HOUR=23
+            [ "${#TOD_MIN}" -gt 2 ] && TOD_MIN=59
             [ "$TOD_HOUR" -gt 23 ] && TOD_HOUR=23
             [ "$TOD_MIN"  -gt 59 ] && TOD_MIN=59
 

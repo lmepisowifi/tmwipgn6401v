@@ -111,8 +111,12 @@ while true; do
                    | busybox cut -d'=' -f2- | busybox tr -d '\r\n')
             NOW=$(get_hhmm)
             # Zero-pad the stored time so comparison works (e.g. "4:0" -> "04:00")
-            TOD_H=$(busybox echo "$TOD" | busybox cut -d':' -f1)
-            TOD_M=$(busybox echo "$TOD" | busybox cut -d':' -f2)
+            # Strip leading zeros first: the stored minutes are zero-padded
+            # ("9:09") and printf %d reads "08"/"09" as invalid octal, which
+            # made the schedule silently never match at xx:08 / xx:09.
+            TOD_H=$(busybox echo "$TOD" | busybox cut -d':' -f1 | busybox sed 's/^0*\([0-9]\)/\1/')
+            TOD_M=$(busybox echo "$TOD" | busybox cut -d':' -f2 | busybox sed 's/^0*\([0-9]\)/\1/')
+            case "$TOD_H$TOD_M" in ''|*[!0-9]*) TOD_H=4; TOD_M=0 ;; esac   # corrupt file: same default as the CGI
             TOD_NORM=$(printf '%02d:%02d' "$TOD_H" "$TOD_M")
             if time_match "$NOW" "$TOD_NORM" && dow_match "$DAYS"; then
                 # Guard: only fire once per minute even if loop is fast
