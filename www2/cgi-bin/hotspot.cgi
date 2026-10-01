@@ -51,6 +51,11 @@ case "${CONTENT_LENGTH:-0}" in *[!0-9]*|"") CONTENT_LENGTH=0 ;; esac
 _ACT_PRE=$(echo "$QUERY_STRING" | grep -o 'action=[^&]*' | sed 's/action=//')
 if [ "$_ACT_PRE" = "portal_upload" ] || [ "$_ACT_PRE" = "portal_audio_upload" ]; then
     [ "$CONTENT_LENGTH" -gt 15728640 ] && CONTENT_LENGTH=15728640
+elif [ "$_ACT_PRE" = "portal_css_save" ] || [ "$_ACT_PRE" = "portal_css_draft" ]; then
+    # base64 of a <=24 KB stylesheet is ~33 KB (a bit more once +/= are
+    # %-encoded). Anything cut short by this cap fails the css_len cross-check
+    # in _pcss_read_post instead of being saved as a truncated stylesheet.
+    [ "$CONTENT_LENGTH" -gt 61440   ] && CONTENT_LENGTH=61440
 elif [ "$_ACT_PRE" = "users_import" ]; then
     # A url-encoded users.txt (colons/spaces expand to %XX) needs more room
     # than the default cap for any deployment beyond a handful of users.
@@ -3510,6 +3515,281 @@ if echo "$QS" | $BB grep -q "action=anti_tether_set"; then
         ok_json "{\"ok\":true,\"anti_tether\":false}"
     fi
 fi
+
+# ================================================================
+# Custom portal CSS
+#
+# hotspot/index.html loads the operator's CSS from /cgi-bin/portal_css.sh as
+# its OWN stylesheet, after the built-in styles. Because it is a separate
+# stylesheet, a syntax error in it can only ever hurt the custom rules
+# themselves, never the stock look. It lives in hotspot_data/ (not hotspot/)
+# so OTA / module reinstalls, which re-lay hotspot/, leave it alone.
+#
+#   GET  ?action=portal_css_info            -> {ok,has_css,enabled,has_prev,bytes,max_bytes}
+#   GET  ?action=portal_css_get             -> the saved CSS (text/plain)
+#   POST ?action=portal_css_save    body: css_b64=<base64>&css_len=<bytes>
+#                                           validate -> back up old -> save
+#   POST ?action=portal_css_draft   body: css_b64=<base64>&css_len=<bytes>
+#                                           validate -> stage in RAM for the
+#                                           admin live preview only
+#   POST ?action=portal_css_enable  body: enabled=1|0   (keeps the file)
+#   POST ?action=portal_css_revert          swap saved <-> previous (undoable)
+#   POST ?action=portal_css_reset           stock look; old CSS kept as previous
+# ================================================================
+PCSS_FILE="$HDATA/portal_custom.css"
+PCSS_PREV="$HDATA/portal_custom.css.prev"
+PCSS_OFF="$HDATA/portal_custom.off"
+PCSS_DRAFT="/tmp/portal_css_draft.css"
+PCSS_MAX=24576
+
+# portal_css_validate FILE
+# Prints one "line N: problem" per issue (at most 6) and returns 1 when the CSS
+# must be rejected; prints nothing and returns 0 when it is fine.
+#
+# This is about accidents, not hostile admins: the portal is a walled garden,
+# so the realistic ways to wreck it are a pasted `@import url(https://fonts...)`
+# (blocks rendering until it times out), an external background image, or an
+# unclosed brace that silently swallows every rule after it. Comments and
+# string contents are skipped, so none of those can hide in (or be tripped by)
+# them.
+portal_css_validate() {
+    _pv_f="$1"
+    _pv_sz=$($BB wc -c < "$_pv_f" 2>/dev/null | $BB tr -cd '0-9')
+    [ -n "$_pv_sz" ] || { echo "could not read the CSS"; return 1; }
+    if [ "$_pv_sz" -gt "$PCSS_MAX" ]; then
+        echo "CSS is ${_pv_sz} bytes; the limit is ${PCSS_MAX}"
+        return 1
+    fi
+    # Control characters other than TAB/LF/CR (NUL, ESC...) never belong here
+    _pv_clean=$($BB tr -d '\000-\010\013\014\016-\037' < "$_pv_f" 2>/dev/null | $BB wc -c | $BB tr -cd '0-9')
+    if [ "$_pv_clean" != "$_pv_sz" ]; then
+        echo "CSS contains control characters"
+        return 1
+    fi
+    _pv_out=$($BB awk '
+    function err(n, m) {
+        if (ne < 6) { ne++; msgs[ne] = "line " n ": " m }
+    }
+    BEGIN { incom = 0; q = ""; depth = 0; ne = 0; sq = "\047" }
+    {
+        line = $0; n = length(line); code = ""; plain = ""; i = 1
+        while (i <= n) {
+            c = substr(line, i, 1)
+            if (incom) {
+                if (c == "*" && substr(line, i + 1, 1) == "/") { incom = 0; i += 2 } else i++
+                continue
+            }
+            if (q != "") {
+                plain = plain c
+                if (c == "\\") { plain = plain substr(line, i + 1, 1); i += 2; continue }
+                if (c == q) { q = ""; code = code c }
+                i++
+                continue
+            }
+            if (c == "/" && substr(line, i + 1, 1) == "*") { incom = 1; comstart = NR; i += 2; continue }
+            if (c == "\"" || c == sq) { q = c; code = code c; plain = plain c; i++; continue }
+            code = code c; plain = plain c; i++
+        }
+        q = ""    # CSS strings cannot run past the end of a line
+
+        # --- braces (on code only: comments and string contents removed)
+        for (i = 1; i <= length(code); i++) {
+            c = substr(code, i, 1)
+            if (c == "{") depth++
+            else if (c == "}") {
+                depth--
+                if (depth < 0) { err(NR, "unexpected closing brace (no matching opening brace)"); depth = 0 }
+            }
+        }
+
+        # --- things that fetch from, or script against, the outside world
+        lc = tolower(code)
+        if (index(lc, "@import"))
+            err(NR, "@import is not allowed (a blocked or slow external file stalls the whole portal); paste the rules in directly")
+        if (match(lc, /@[ \t]*\\/))
+            err(NR, "escaped at-rules are not allowed")
+        if (index(lc, "image-set("))
+            err(NR, "image-set() is not allowed; use url(/img/...)")
+        if (index(lc, "expression(") || index(lc, "javascript:") || index(lc, "vbscript:") || index(lc, "behavior:") || index(lc, "-moz-binding"))
+            err(NR, "script-capable CSS is not allowed")
+
+        # --- url(): only the portal own /img/ and /graphics/ files, or inline data: URIs
+        pl = tolower(plain); pos = 1
+        while ((k = index(substr(pl, pos), "url(")) > 0) {
+            s = pos + k + 3
+            rest = substr(plain, s)
+            sub(/^[ \t]+/, "", rest)
+            f = substr(rest, 1, 1)
+            if (f == "\"" || f == sq) {
+                rest = substr(rest, 2); e = index(rest, f)
+                arg = (e > 0) ? substr(rest, 1, e - 1) : rest
+            } else {
+                e = index(rest, ")")
+                arg = (e > 0) ? substr(rest, 1, e - 1) : rest
+                sub(/[ \t]+$/, "", arg)
+            }
+            la = tolower(arg); ok = 0
+            if (substr(la, 1, 5) == "/img/" || substr(la, 1, 10) == "/graphics/") ok = 1
+            else if (substr(la, 1, 11) == "data:image/") ok = 1
+            else if (substr(la, 1, 5) == "data:" && index(la, "font")) ok = 1
+            else if (substr(la, 1, 1) == "#") ok = 1
+            if (!ok) {
+                shown = substr(arg, 1, 40); gsub(/["\\]/, "", shown)
+                err(NR, "url(" shown ") is not allowed; use a file under /img/ or /graphics/ (e.g. /img/promo1.png) or an inline data:image URI")
+            }
+            pos = s
+        }
+    }
+    END {
+        if (incom) err(comstart, "comment is never closed (missing */)")
+        if (depth > 0) err(NR, depth " opening brace(s) never closed")
+        for (i = 1; i <= ne; i++) print msgs[i]
+    }' "$_pv_f" 2>/dev/null)
+    if [ -n "$_pv_out" ]; then
+        printf '%s\n' "$_pv_out"
+        return 1
+    fi
+    return 0
+}
+
+# Same JSON-array-body formatter for validator output lines
+_pcss_details_json() {
+    printf '%s\n' "$1" | $BB awk 'BEGIN{ORS=""} { gsub(/\\/, "\\\\"); gsub(/"/, "\\\""); printf "%s\"%s\"", (NR>1 ? "," : ""), $0 }'
+}
+
+# Decodes POST css_b64 into $1 (a RAM temp file), cross-checks the byte count
+# against the client-sent css_len (a transfer cut short by the body-size clamp
+# would otherwise decode to a *valid-looking but truncated* stylesheet), then
+# validates it. Calls err_json (and exits) on any problem.
+_pcss_read_post() {
+    _pr_out="$1"; _pr_allow_empty="$2"
+    read -n "$CONTENT_LENGTH" POST_DATA
+    _pr_b64=$(printf '%s' "$POST_DATA" \
+        | $BB tr '&' '\n' \
+        | $BB grep "^css_b64=" \
+        | $BB sed 's/^css_b64=//; s/%2B/+/g; s/%2F/\//g; s/%3D/=/g; s/%2b/+/g; s/%2f/\//g; s/%3d/=/g' \
+        | head -1)
+    _pr_len=$(printf '%s' "$POST_DATA" | $BB tr '&' '\n' | $BB grep "^css_len=" | $BB sed 's/^css_len=//' | $BB tr -cd '0-9' | head -1)
+    if [ -z "$_pr_b64" ]; then
+        if [ "$_pr_allow_empty" = "1" ] && [ "${_pr_len:-x}" = "0" ]; then
+            : > "$_pr_out"
+            return 0
+        fi
+        err_json "no_data"
+    fi
+    if ! printf '%s' "$_pr_b64" | $BB base64 -d > "$_pr_out" 2>/dev/null; then
+        printf '%s' "$_pr_b64" | openssl enc -d -base64 -A > "$_pr_out" 2>/dev/null \
+            || { rm -f "$_pr_out"; err_json "decode_failed"; }
+    fi
+    _pr_got=$($BB wc -c < "$_pr_out" 2>/dev/null | $BB tr -cd '0-9')
+    if [ -z "$_pr_len" ] || [ "$_pr_got" != "$_pr_len" ]; then
+        rm -f "$_pr_out"
+        err_json "size_mismatch"
+    fi
+    $BB tr -d '\r' < "$_pr_out" > "$_pr_out.n" 2>/dev/null && $BB mv -f "$_pr_out.n" "$_pr_out"
+    _pr_det=$(portal_css_validate "$_pr_out") || {
+        rm -f "$_pr_out"
+        ok_json "{\"ok\":false,\"error\":\"invalid_css\",\"details\":[$(_pcss_details_json "$_pr_det")]}"
+    }
+    # Whitespace-only CSS is not CSS (use reset to go back to the stock look)
+    if [ "$_pr_allow_empty" != "1" ] && [ -z "$($BB tr -d ' \t\n' < "$_pr_out" 2>/dev/null)" ]; then
+        rm -f "$_pr_out"
+        err_json "empty_css"
+    fi
+    return 0
+}
+
+case "$QS" in
+*action=portal_css_info*)
+    _pc_has=0; _pc_en=1; _pc_prev=0; _pc_bytes=0
+    [ -f "$PCSS_FILE" ] && { _pc_has=1; _pc_bytes=$($BB wc -c < "$PCSS_FILE" 2>/dev/null | $BB tr -cd '0-9'); }
+    [ -e "$PCSS_OFF" ]  && _pc_en=0
+    [ -f "$PCSS_PREV" ] && _pc_prev=1
+    ok_json "{\"ok\":true,\"has_css\":${_pc_has},\"enabled\":${_pc_en},\"has_prev\":${_pc_prev},\"bytes\":${_pc_bytes:-0},\"max_bytes\":${PCSS_MAX}}"
+    ;;
+
+*action=portal_css_get*)
+    printf "Status: 200 OK\r\nContent-Type: text/plain; charset=utf-8\r\nCache-Control: no-store\r\n\r\n"
+    [ -f "$PCSS_FILE" ] && $BB cat "$PCSS_FILE" 2>/dev/null
+    exit 0
+    ;;
+
+*action=portal_css_draft*)
+    _pc_in="/tmp/portal_css_in.$$"
+    _pcss_read_post "$_pc_in" 1
+    $BB mv -f "$_pc_in" "$PCSS_DRAFT" 2>/dev/null || { rm -f "$_pc_in"; err_json "write_failed"; }
+    ok_json "{\"ok\":true}"
+    ;;
+
+*action=portal_css_save*)
+    _pc_in="/tmp/portal_css_in.$$"
+    _pcss_read_post "$_pc_in" 0
+    _pc_sz=$($BB wc -c < "$_pc_in" 2>/dev/null | $BB tr -cd '0-9')
+
+    mkdir -p "$HDATA"
+    # Disk-space guard: same 3 MB floor as the image/audio uploads. Needs room
+    # for the new file AND the copy kept as "previous".
+    _pc_avkb=$($BB df -k /lmepisowifi 2>/dev/null | $BB awk 'NR==2 {print $4+0}')
+    _pc_avail=$(( ${_pc_avkb:-0} * 1024 ))
+    if [ $(( _pc_avail - _pc_sz * 2 )) -lt 3145728 ]; then
+        rm -f "$_pc_in"; err_json "insufficient_space"
+    fi
+
+    # Write beside the target, then verify it is complete BEFORE it can replace
+    # anything (a write that hit ENOSPC mid-way must never be promoted).
+    $BB cp -f "$_pc_in" "$PCSS_FILE.tmp" 2>/dev/null
+    _pc_wsz=$($BB wc -c < "$PCSS_FILE.tmp" 2>/dev/null | $BB tr -cd '0-9')
+    if [ "$_pc_wsz" != "$_pc_sz" ]; then
+        rm -f "$_pc_in" "$PCSS_FILE.tmp"; err_json "write_incomplete"
+    fi
+    rm -f "$_pc_in"
+
+    # Keep the version being replaced (only when it actually differs) so
+    # "Undo" has something to go back to.
+    if [ -f "$PCSS_FILE" ] && [ "$($BB cat "$PCSS_FILE" 2>/dev/null)" != "$($BB cat "$PCSS_FILE.tmp" 2>/dev/null)" ]; then
+        $BB cp -f "$PCSS_FILE" "$PCSS_PREV.tmp" 2>/dev/null
+        if [ "$($BB wc -c < "$PCSS_PREV.tmp" 2>/dev/null | $BB tr -cd '0-9')" = "$($BB wc -c < "$PCSS_FILE" 2>/dev/null | $BB tr -cd '0-9')" ]; then
+            $BB mv -f "$PCSS_PREV.tmp" "$PCSS_PREV"
+        else
+            rm -f "$PCSS_PREV.tmp"
+        fi
+    fi
+    $BB mv -f "$PCSS_FILE.tmp" "$PCSS_FILE" 2>/dev/null || { rm -f "$PCSS_FILE.tmp"; err_json "write_failed"; }
+    rm -f "$PCSS_OFF" "$PCSS_DRAFT" 2>/dev/null     # saving switches it on and retires the draft
+    ok_json "{\"ok\":true,\"bytes\":${_pc_sz}}"
+    ;;
+
+*action=portal_css_enable*)
+    read -n "${CONTENT_LENGTH:-0}" POST_DATA
+    _pc_val=$(printf '%s' "$POST_DATA" | $BB sed -n 's/.*enabled=\([^&]*\).*/\1/p')
+    if [ "$_pc_val" = "1" ]; then
+        rm -f "$PCSS_OFF" 2>/dev/null
+    else
+        mkdir -p "$HDATA"
+        : > "$PCSS_OFF" 2>/dev/null || err_json "write_failed"
+    fi
+    ok_json "{\"ok\":true,\"enabled\":$([ "$_pc_val" = "1" ] && echo 1 || echo 0)}"
+    ;;
+
+*action=portal_css_revert*)
+    [ -f "$PCSS_PREV" ] || err_json "no_previous"
+    # 3-way swap so Undo is itself undoable. If power dies mid-swap the worst
+    # case is no portal_custom.css at all (= stock look); .prev/.swap survive.
+    [ -f "$PCSS_FILE" ] && $BB mv -f "$PCSS_FILE" "$PCSS_FILE.swap"
+    $BB mv -f "$PCSS_PREV" "$PCSS_FILE" 2>/dev/null || err_json "write_failed"
+    [ -f "$PCSS_FILE.swap" ] && $BB mv -f "$PCSS_FILE.swap" "$PCSS_PREV"
+    rm -f "$PCSS_OFF" 2>/dev/null
+    ok_json "{\"ok\":true}"
+    ;;
+
+*action=portal_css_reset*)
+    # Back to the stock look. The CSS is moved to "previous", not deleted, so
+    # a misclick on Reset is one Undo away from being fixed.
+    [ -f "$PCSS_FILE" ] && $BB mv -f "$PCSS_FILE" "$PCSS_PREV" 2>/dev/null
+    rm -f "$PCSS_OFF" "$PCSS_DRAFT" 2>/dev/null
+    ok_json "{\"ok\":true}"
+    ;;
+esac
 
 # ================================================================
 # Fallback

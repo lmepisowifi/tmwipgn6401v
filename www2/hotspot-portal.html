@@ -252,6 +252,117 @@
 </div>
 
 </div><!-- /row -->
+
+<!-- ═══════════════ Custom CSS ═══════════════ -->
+<div class="row g-3 mt-1" id="css-section">
+
+<div class="col-lg-7">
+    <div class="card mb-3">
+        <div class="card-header d-flex align-items-center justify-content-between">
+            <span>Custom CSS</span>
+            <div class="form-check form-switch m-0 d-flex align-items-center gap-2">
+                <input class="form-check-input m-0" type="checkbox" role="switch" id="css-enabled" disabled>
+                <label class="form-check-label" for="css-enabled" style="font-size:12px;">Use on portal</label>
+            </div>
+        </div>
+        <div class="card-body">
+            <div class="field-hint mb-2" style="font-size:12px;">
+                Restyle the portal with your own CSS. It is added <b>after</b> the built-in styles, so it can only ever
+                affect the look &mdash; it can't touch coin, voucher or login logic. Mistakes are caught for you:
+                invalid CSS (an unclosed <code>{</code>, an <code>@import</code> or outside <code>url()</code>) is refused,
+                and if your styles ever hide the voucher box, Insert Coin or a pop-up button, customers' phones
+                automatically fall back to the stock look. This admin page is never styled by it.
+            </div>
+            <div class="d-flex flex-wrap gap-2 align-items-center mb-2">
+                <select id="css-snip" class="form-select form-select-sm" style="width:auto;max-width:100%;">
+                    <option value="">Insert an example&hellip;</option>
+                    <option value="colors">Brand colour (dark + light)</option>
+                    <option value="round">Rounded card &amp; pill buttons</option>
+                    <option value="bigger">Bigger text &amp; buttons</option>
+                    <option value="bg">Background image</option>
+                    <option value="hide">Hide footer, theme &amp; sound buttons</option>
+                </select>
+                <span id="css-status" class="field-hint" style="margin:0;"></span>
+                <span id="css-count" class="field-hint ms-auto" style="margin:0;"></span>
+            </div>
+            <textarea id="css-editor" class="form-control" rows="16" spellcheck="false" autocapitalize="off" autocomplete="off" autocorrect="off"
+                      style="height:auto !important;min-height:280px;padding:10px 12px !important;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;font-size:12.5px;line-height:1.45;tab-size:2;white-space:pre;overflow:auto;resize:vertical;"
+                      placeholder="/* Example: make the connect button pink */&#10;:root {&#10;  --btn-primary-bg: #ff0066;&#10;  --btn-primary-border: #ff0066;&#10;  --btn-primary-color: #ffffff;&#10;}"></textarea>
+            <div id="css-errors" style="display:none;margin-top:8px;border:1px solid #ef4444;background:rgba(239,68,68,.08);border-radius:8px;padding:8px 12px;font-size:12.5px;"></div>
+
+            <details class="mt-2">
+                <summary style="cursor:pointer;font-size:12.5px;color:var(--text-secondary);">Tips &amp; colour variables</summary>
+                <div class="field-hint mt-2" style="font-size:12px;line-height:1.55;">
+                    <b>If a change has no effect, add <code>!important</code>.</b> Many built-in rules (card background and
+                    radius, button shape and padding&hellip;) use it, e.g. <code>border-radius: 24px !important;</code>.
+                    Colour variables never need it.<br>
+                    <b>Colours live in variables.</b> The portal is built on them, so changing a variable recolours everything that uses it.
+                    Dark is the default: <code>:root { &hellip; }</code>. Light mode needs its own block:
+                    <code>:root[data-theme="light"] { &hellip; }</code>. Use the Dark/Light switch on the preview to check both.<br>
+                    <b>Variables:</b>
+                    <code>--bg-body</code> page &middot; <code>--bg-surface</code> card &middot; <code>--bg-surface-hover</code> header &middot;
+                    <code>--bg-input</code> inputs &middot; <code>--text-primary</code> &middot; <code>--text-secondary</code> &middot;
+                    <code>--border-color</code> &middot; <code>--accent-color</code> &middot;
+                    <code>--btn-primary-bg|border|color</code> (and <code>-hover-bg|border</code>) &middot;
+                    <code>--btn-coin-*</code> Insert Coin &middot; <code>--btn-rates-*</code> WiFi Rates &middot;
+                    <code>--btn-danger-*</code> Pause &middot; <code>--btn-done-*</code> Done &middot;
+                    <code>--coin-sym-color</code> / <code>--coin-val-color</code> coin amount.<br>
+                    <b>Images:</b> only the portal's own files work &mdash; <code>url(/img/promo1.png)</code>,
+                    <code>url(/img/portal_logo.png)</code> (upload them in the sections above) or an inline
+                    <code>data:image/...</code>. Fonts and anything on the internet are blocked on purpose: customers
+                    aren't online yet, so an external file would stall the portal.<br>
+                    <b>Locked yourself out on your phone?</b> Open the portal address with <code>?nocss=1</code> on the end
+                    to see the stock look, then fix the CSS here. A browser tab that already switched your CSS off keeps the stock look until it is closed and reopened.
+                </div>
+            </details>
+
+            <hr class="my-3" style="border-color:var(--border-color);">
+            <div class="d-flex flex-wrap gap-2">
+                <button class="btn btn-primary" id="css-save" disabled>Save CSS</button>
+                <button class="btn btn-outline-secondary" id="css-discard" disabled>Discard changes</button>
+                <button class="btn btn-outline-secondary" id="css-undo" disabled>Undo last save</button>
+                <button class="btn btn-outline-danger ms-auto" id="css-reset" disabled>Reset to stock</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<div class="col-lg-5">
+    <div class="card" style="position:sticky;top:76px;">
+        <div class="card-header d-flex align-items-center justify-content-between">
+            <span>Portal preview</span>
+            <a href="#" id="css-open-portal" target="_blank" rel="noopener" style="font-size:12px;">Open portal &#8599;</a>
+        </div>
+        <div class="card-body p-2">
+            <div class="d-flex flex-wrap gap-1 mb-2 justify-content-between">
+                <div class="btn-group btn-group-sm" role="group" id="css-states">
+                    <button type="button" class="btn btn-outline-secondary active" data-state="login">Login</button>
+                    <button type="button" class="btn btn-outline-secondary" data-state="status">Connected</button>
+                    <button type="button" class="btn btn-outline-secondary" data-state="rates">Rates</button>
+                    <button type="button" class="btn btn-outline-secondary" data-state="coin">Coin</button>
+                </div>
+                <div class="btn-group btn-group-sm" role="group" id="css-themes">
+                    <button type="button" class="btn btn-outline-secondary active" data-theme="dark">Dark</button>
+                    <button type="button" class="btn btn-outline-secondary" data-theme="light">Light</button>
+                </div>
+            </div>
+            <div style="position:relative;border:1px solid var(--border-color);border-radius:10px;overflow:hidden;background:#0f0f11;">
+                <iframe id="css-frame" title="Portal preview" style="display:block;width:100%;height:640px;border:0;" sandbox="allow-scripts allow-same-origin"></iframe>
+                <div id="css-frame-msg" style="position:absolute;inset:0;display:flex;align-items:center;justify-content:center;text-align:center;padding:24px;font-size:12.5px;color:#a1a1aa;background:#0f0f11;">Loading preview&hellip;</div>
+            </div>
+            <div id="css-guard" style="display:none;margin-top:8px;border:1px solid #f59e0b;background:rgba(245,158,11,.08);border-radius:8px;padding:8px 12px;font-size:12.5px;"></div>
+            <div class="d-flex align-items-center gap-2 mt-2">
+                <button class="btn btn-outline-secondary btn-sm" id="css-audit" disabled>Check all screens</button>
+                <span id="css-audit-res" class="field-hint" style="margin:0;"></span>
+            </div>
+            <div class="field-hint mt-2">
+                This is the real portal. Clicks that would change anything (log in, pause, start a coin session) are disabled here.
+            </div>
+        </div>
+    </div>
+</div>
+
+</div><!-- /css-section -->
 </div><!-- /container -->
 
 <!-- Hidden file inputs for each promo slot -->
@@ -795,6 +906,286 @@ function previewAudio(slot) {
 
 /* ── Boot ── */
 loadConfig();
+</script>
+
+<script>
+/* ═══════════════ Custom CSS editor ═══════════════
+   - Every edit is sent (debounced) as a RAM-only DRAFT. The device validates it with
+     the same checks Save uses, so errors show up while typing, and the preview iframe
+     (the real portal, ?cssprev=1&cssdraft=1) reloads its stylesheet in place.
+   - Save re-validates, runs the all-screens check, and only then writes to flash
+     (keeping the previous version for Undo).
+   - Nothing here can change what the admin pages look like: the custom CSS is only
+     ever loaded by the portal page. */
+(function () {
+    var MAX = 24576;
+    var $ = function (id) { return document.getElementById(id); };
+    var ed = $('css-editor'), frame = $('css-frame'), frameMsg = $('css-frame-msg');
+    var saved = '', seq = 0, draftTimer = null, busy = false, loaded = false;
+    var info = { has_css: 0, enabled: 1, has_prev: 0 };
+    var pv = { ready: false, state: 'login', theme: 'dark', auditCb: null };
+
+    var SNIPS = {
+        colors:
+            '/* Brand colour \u2014 dark theme (the default) */\n' +
+            ':root {\n  --btn-primary-bg: #ff0066;\n  --btn-primary-border: #ff0066;\n  --btn-primary-color: #ffffff;\n' +
+            '  --btn-primary-hover-bg: #e6005c;\n  --btn-primary-hover-border: #e6005c;\n  --accent-color: #ff0066;\n}\n' +
+            '/* Brand colour \u2014 light theme */\n' +
+            ':root[data-theme="light"] {\n  --btn-primary-bg: #ff0066;\n  --btn-primary-border: #ff0066;\n  --btn-primary-color: #ffffff;\n' +
+            '  --btn-primary-hover-bg: #e6005c;\n  --btn-primary-hover-border: #e6005c;\n  --accent-color: #ff0066;\n}\n',
+        round:
+            '/* Rounded card and pill-shaped buttons */\n' +
+            '.portal-card { border-radius: 24px !important; }\n' +
+            '.btn { border-radius: 999px !important; }\n' +
+            '.input-group .btn { border-radius: 0 999px 999px 0 !important; }\n' +
+            '.input-group .form-control { border-radius: 999px 0 0 999px !important; }\n',
+        bigger:
+            '/* Bigger text and buttons */\n' +
+            '.view-title { font-size: 1.5rem !important; }\n' +
+            '.view-subtitle { font-size: 14px !important; }\n' +
+            '.btn { font-size: 15px !important; padding: 12px 18px !important; }\n',
+        bg:
+            '/* Background image: upload one in the Carousel section above, then use its file name\n' +
+            '   (/img/promo1.png ... /img/promo5.png; the extension must match what you uploaded) */\n' +
+            'html, body {\n  background-image: url(/img/promo1.png) !important;\n  background-size: cover !important;\n' +
+            '  background-position: center !important;\n  background-attachment: fixed !important;\n}\n',
+        hide:
+            '/* Hide the footer note, the theme switch and the sound button */\n' +
+            '.portal-footer, .theme-toggle-btn, .speaker-toggle-btn { display: none !important; }\n'
+    };
+
+    var ERR = {
+        no_data: 'Nothing to save.',
+        empty_css: 'Nothing to save. Use \u201cReset to stock\u201d to go back to the built-in look.',
+        decode_failed: 'The device could not decode the CSS. Try again.',
+        size_mismatch: 'The CSS did not arrive complete (it may be too large). Nothing was changed.',
+        insufficient_space: 'Not enough free storage on the device (3 MB must stay free). Nothing was changed.',
+        write_incomplete: 'Writing to the device storage failed part-way. Nothing was changed.',
+        write_failed: 'Writing to the device storage failed. Nothing was changed.',
+        no_previous: 'There is no earlier version to go back to.'
+    };
+    function errText(e) { return ERR[e] || ('Request failed' + (e ? ' (' + e + ')' : '') + '.'); }
+
+    function utf8len(s) { return unescape(encodeURIComponent(s)).length; }
+    function enc(s) { return 'css_b64=' + encodeURIComponent(btoa(unescape(encodeURIComponent(s)))) + '&css_len=' + utf8len(s); }
+    function api(action, data) {
+        var opt = (data === undefined) ? { cache: 'no-store' }
+            : { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body: data };
+        return fetch('/cgi-bin/hotspot.cgi?action=' + action, opt).then(function (r) { return r.json(); });
+    }
+    function dirty() { return ed.value !== saved; }
+
+    /* ── UI state ── */
+    function setStatus() {
+        var el = $('css-status'), n = utf8len(ed.value);
+        var c = $('css-count');
+        c.textContent = n + ' / ' + MAX + ' bytes';
+        c.style.color = n > MAX ? '#ef4444' : '';
+        if (!loaded) { el.textContent = ''; return; }
+        if (dirty())              { el.textContent = 'Unsaved changes'; el.style.color = '#fbbf24'; }
+        else if (!info.has_css)   { el.textContent = 'Stock look (no custom CSS)'; el.style.color = ''; }
+        else if (!info.enabled)   { el.textContent = 'Saved \u00b7 switched off'; el.style.color = ''; }
+        else                      { el.textContent = 'Saved \u00b7 live on the portal'; el.style.color = '#4ade80'; }
+    }
+    function refresh() {
+        var en = $('css-enabled');
+        en.checked = !!info.enabled; en.disabled = !loaded || busy || !info.has_css;
+        $('css-save').disabled = !loaded || busy || !dirty();
+        $('css-discard').disabled = !loaded || busy || !dirty();
+        $('css-undo').disabled = !loaded || busy || !info.has_prev;
+        $('css-reset').disabled = !loaded || busy || !info.has_css;
+        setStatus();
+    }
+    function showErrors(list) {
+        var box = $('css-errors');
+        box.textContent = '';
+        if (!list || !list.length) { box.style.display = 'none'; return; }
+        list.forEach(function (line) {
+            var row = document.createElement('div'), m = /^line (\d+): ([\s\S]*)$/.exec(line);
+            if (m) {
+                var a = document.createElement('a'); a.href = '#'; a.textContent = 'line ' + m[1];
+                a.addEventListener('click', function (ev) { ev.preventDefault(); gotoLine(+m[1]); });
+                row.appendChild(a); row.appendChild(document.createTextNode(': ' + m[2]));
+            } else { row.textContent = line; }
+            box.appendChild(row);
+        });
+        box.style.display = 'block';
+    }
+    function gotoLine(n) {
+        var lines = ed.value.split('\n'), pos = 0, i;
+        for (i = 0; i < n - 1 && i < lines.length; i++) pos += lines[i].length + 1;
+        ed.focus();
+        ed.setSelectionRange(pos, pos + (lines[n - 1] ? lines[n - 1].length : 0));
+        ed.scrollTop = Math.max(0, (n - 3) * (parseFloat(getComputedStyle(ed).lineHeight) || 18));
+    }
+
+    /* ── Draft pipeline (validate + preview) ── */
+    function pushDraft() {
+        var my = ++seq, text = ed.value, n = utf8len(text);
+        if (n > MAX) { showErrors(['CSS is ' + n + ' bytes; the limit is ' + MAX]); return Promise.resolve({ ok: false }); }
+        return api('portal_css_draft', enc(text)).then(function (d) {
+            if (my !== seq) return d;                       // a newer edit is already on its way
+            if (d.ok) { showErrors([]); if (pv.ready) post({ cmd: 'reload' }); }
+            else if (d.error === 'invalid_css') showErrors(d.details || ['Invalid CSS.']);
+            else showErrors([errText(d.error)]);
+            return d;
+        }).catch(function () {
+            if (my === seq) showErrors(['Could not reach the device (is your admin session still active?).']);
+            return { ok: false };
+        });
+    }
+    ed.addEventListener('input', function () {
+        refresh();
+        clearTimeout(draftTimer);
+        draftTimer = setTimeout(pushDraft, 700);
+    });
+
+    /* ── Preview iframe ── */
+    function post(msg) {
+        msg.lmePreview = true;
+        try { frame.contentWindow.postMessage(msg, '*'); } catch (e) {}
+    }
+    function showGuard(issues) {
+        var g = $('css-guard');
+        g.textContent = '';
+        if (!issues || !issues.length) { g.style.display = 'none'; return; }
+        var b = document.createElement('b');
+        b.textContent = 'Customers\u2019 phones would switch your CSS off here: ';
+        g.appendChild(b); g.appendChild(document.createTextNode(issues.join('; ') + '.'));
+        g.style.display = 'block';
+    }
+    var NAMES = { login: 'Login screen', status: 'Connected screen', rates: 'Rates window', coin: 'Coin window' };
+    function onAudit(results) {
+        var bad = [], k;
+        for (k in NAMES) if (results && results[k] && results[k].length) bad.push(NAMES[k] + ' \u2014 ' + results[k].join(', '));
+        $('css-audit-res').textContent = bad.length ? '' : '\u2713 All 4 screens OK';
+        $('css-audit-res').style.color = '#4ade80';
+        showGuard(bad.length ? bad.map(function (s) { return s; }) : []);
+        var cb = pv.auditCb; pv.auditCb = null;
+        if (cb) cb(bad);
+    }
+    function runAudit(cb) {
+        if (!pv.ready) { cb(null); return; }
+        pv.auditCb = cb;
+        $('css-audit-res').textContent = 'Checking\u2026'; $('css-audit-res').style.color = '';
+        post({ cmd: 'audit' });
+        setTimeout(function () { if (pv.auditCb === cb) { pv.auditCb = null; cb(null); } }, 9000);
+    }
+    window.addEventListener('message', function (e) {
+        var d = e.data;
+        if (e.source !== frame.contentWindow || !d || typeof d !== 'object') return;
+        if (d.lmeCssReady) {
+            pv.ready = true; frameMsg.style.display = 'none'; $('css-audit').disabled = false;
+            post({ cmd: 'theme', theme: pv.theme }); post({ cmd: 'state', state: pv.state });
+        } else if (d.lmeCssGuard) { if (!pv.auditCb) showGuard(d.issues); }
+        else if (d.lmeCssAudit) onAudit(d.results);
+    });
+    function pick(group, attr, val) {
+        var bs = $(group).querySelectorAll('button'), i;
+        for (i = 0; i < bs.length; i++) bs[i].classList.toggle('active', bs[i].getAttribute(attr) === val);
+    }
+    $('css-states').addEventListener('click', function (e) {
+        var b = e.target.closest ? e.target.closest('button') : null; if (!b) return;
+        pv.state = b.getAttribute('data-state'); pick('css-states', 'data-state', pv.state); post({ cmd: 'state', state: pv.state });
+    });
+    $('css-themes').addEventListener('click', function (e) {
+        var b = e.target.closest ? e.target.closest('button') : null; if (!b) return;
+        pv.theme = b.getAttribute('data-theme'); pick('css-themes', 'data-theme', pv.theme); post({ cmd: 'theme', theme: pv.theme });
+        frame.parentNode.style.background = (pv.theme === 'light') ? '#e2e8f0' : '#0f0f11';
+    });
+    $('css-audit').addEventListener('click', function () { runAudit(function () {}); });
+
+    function startPreview() {
+        api('config_get').then(function (c) {
+            var ip = c && c.portal_ip, port = c && c.portal_port;
+            if (!ip) throw new Error('no portal ip');
+            var base = 'http://' + ip + ((port && String(port) !== '80') ? ':' + port : '');
+            $('css-open-portal').href = base + '/';
+            frame.src = base + '/?cssprev=1&cssdraft=1';
+            setTimeout(function () {
+                if (!pv.ready) frameMsg.textContent = 'Preview unavailable from this connection (the portal is only reachable from the hotspot network). Your CSS is still validated here; use \u201cOpen portal\u201d from a hotspot device to see it.';
+            }, 9000);
+        }).catch(function () {
+            frameMsg.textContent = 'Could not find the portal address, so there is no preview. Your CSS is still validated here.';
+        });
+    }
+
+    /* ── Load / actions ── */
+    function loadAll() {
+        return api('portal_css_info').then(function (d) {
+            if (!d || !d.ok) throw new Error('info');
+            info = d;
+            return d.has_css ? fetch('/cgi-bin/hotspot.cgi?action=portal_css_get', { cache: 'no-store' }).then(function (r) { return r.text(); }) : '';
+        }).then(function (text) {
+            ed.value = saved = text; loaded = true; showErrors([]); refresh();
+            return pushDraft();
+        }).catch(function () {
+            toastr.error('Could not load the custom CSS settings.');
+        });
+    }
+    function save() {
+        var text = ed.value;
+        if (!text.replace(/\s+/g, '')) { toastr.warning(errText('empty_css')); return; }
+        busy = true; refresh(); clearTimeout(draftTimer);
+        var done = function () { busy = false; refresh(); };
+        pushDraft().then(function (d) {
+            if (!d || !d.ok) { done(); return null; }
+            return new Promise(function (res) {
+                setTimeout(function () { runAudit(function (bad) { res(bad || []); }); }, 500);
+            }).then(function (bad) {
+                if (bad.length && !window.confirm('Customers\u2019 phones would switch your CSS off on these screens:\n\n' + bad.join('\n') + '\n\nSave anyway?')) { done(); return; }
+                return api('portal_css_save', enc(text)).then(function (r) {
+                    if (r.ok) {
+                        saved = text; info.has_css = 1; info.enabled = 1; showErrors([]);
+                        toastr.success('Saved. The portal now uses your CSS.');
+                        return api('portal_css_info').then(function (i) { if (i && i.ok) info = i; done(); });
+                    }
+                    if (r.error === 'invalid_css') showErrors(r.details || ['Invalid CSS.']); else toastr.error(errText(r.error));
+                    done();
+                });
+            });
+        }).catch(function () { toastr.error('Network error. Nothing was changed.'); done(); });
+    }
+    $('css-save').addEventListener('click', save);
+    $('css-discard').addEventListener('click', function () { ed.value = saved; showErrors([]); refresh(); pushDraft(); });
+    $('css-undo').addEventListener('click', function () {
+        busy = true; refresh();
+        api('portal_css_revert', '').then(function (r) {
+            if (r.ok) { toastr.success('Switched to the previous version. Click Undo again to swap back.'); }
+            else toastr.error(errText(r.error));
+        }).catch(function () { toastr.error('Network error.'); }).then(function () { busy = false; return loadAll(); });
+    });
+    $('css-reset').addEventListener('click', function () {
+        if (!window.confirm('Go back to the built-in portal look? Your CSS is kept as the previous version, so you can bring it back with \u201cUndo last save\u201d.')) return;
+        busy = true; refresh();
+        api('portal_css_reset', '').then(function (r) {
+            if (r.ok) toastr.success('Portal is back to the stock look.'); else toastr.error(errText(r.error));
+        }).catch(function () { toastr.error('Network error.'); }).then(function () { busy = false; return loadAll(); });
+    });
+    $('css-enabled').addEventListener('change', function () {
+        var want = this.checked ? 1 : 0, box = this;
+        busy = true; refresh();
+        api('portal_css_enable', 'enabled=' + want).then(function (r) {
+            if (r.ok) { info.enabled = want; toastr.success(want ? 'Custom CSS is on.' : 'Custom CSS is off (kept, just not used).'); }
+            else { toastr.error(errText(r.error)); box.checked = !!info.enabled; }
+        }).catch(function () { toastr.error('Network error.'); box.checked = !!info.enabled; }).then(function () { busy = false; refresh(); });
+    });
+    $('css-snip').addEventListener('change', function () {
+        var s = SNIPS[this.value]; this.value = '';
+        if (!s) return;
+        var v = ed.value, a = ed.selectionStart || 0, pre = v.slice(0, a), post_ = v.slice(ed.selectionEnd || a);
+        if (pre && !/\n\n$/.test(pre)) pre += /\n$/.test(pre) ? '\n' : '\n\n';
+        ed.value = pre + s + (post_ && !/^\n/.test(post_) ? '\n' + post_ : post_);
+        ed.focus(); ed.setSelectionRange(pre.length, pre.length + s.length);
+        ed.dispatchEvent(new Event('input'));
+    });
+    window.addEventListener('beforeunload', function (e) {
+        if (loaded && dirty()) { e.preventDefault(); e.returnValue = ''; }
+    });
+
+    refresh();
+    loadAll().then(startPreview);
+})();
 </script>
 </body>
 </html>

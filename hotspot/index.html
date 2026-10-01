@@ -811,6 +811,56 @@
 }
 
   </style>
+
+  <!--
+    Operator custom CSS (www2 > Hotspot > Portal > Custom CSS).
+    It is added as its OWN <link>, after every built-in style, so (a) it wins
+    the cascade at equal specificity and (b) a mistake inside it can only ever
+    hurt the custom rules themselves — never the stock stylesheet above.
+
+      /?nocss=1      safe mode: skip the custom CSS entirely
+      /?cssdraft=1   (admin preview) load the unsaved draft instead
+      /?cssprev=1    (admin preview, inside the www2 iframe) block anything that
+                     would change real state and enable the preview hooks
+
+    An automatic on-device check (script at the end of <body>) drops the custom
+    CSS for a visit if it ever hides or breaks the ways to get online.
+  -->
+  <script>
+  (function () {
+    var qs      = window.location.search;
+    var safe    = /[?&]nocss=1(&|$)/.test(qs);
+    var draft   = /[?&]cssdraft=1(&|$)/.test(qs);
+    var preview = /[?&]cssprev=1(&|$)/.test(qs) && window.parent !== window;
+    window.__lmeCss = { link: null, preview: preview };
+
+    // The admin preview is the real, live portal page inside an iframe — make
+    // sure clicking around in it can never start/cancel a coin session, log a
+    // device in or pause it.
+    if (preview && window.fetch) {
+      var realFetch = window.fetch;
+      window.fetch = function (u) {
+        var url = String(u);
+        if (/\/cgi-bin\/(login|logout|coin_result)\.sh/.test(url) ||
+            /\/cgi-bin\/coin\.sh\?(?:[^#]*&)?action=(start|cancel)\b/.test(url)) {
+          return Promise.reject(new Error('disabled in preview'));
+        }
+        return realFetch.apply(this, arguments);
+      };
+    }
+
+    if (safe) return;
+    // A visit that already tripped the safety check keeps the stock look
+    try { if (!preview && window.sessionStorage.getItem('lme_css_bad') === '1') return; } catch (e) {}
+
+    var l = document.createElement('link');
+    l.rel  = 'stylesheet';
+    l.id   = 'custom-css';
+    l.href = '/cgi-bin/portal_css.sh' + (draft ? '?draft=1&_=' + new Date().getTime() : '');
+    document.head.appendChild(l);
+    window.__lmeCss.link = l;
+  })();
+  </script>
 </head>
 <body>
 
@@ -2752,6 +2802,207 @@ checkCoinEnabled();
     if(c.coin_sound)      _loadAudio(c.coin_sound, 'coin');
 
   }).catch(function(){});
+})();
+</script>
+
+<script>
+/* ────────────────────────────────────────────────────────────────────────────
+   Custom-CSS safety net  (+ hooks for the www2 "Custom CSS" live preview)
+
+   Does nothing unless an operator stylesheet (#custom-css, see <head>) is in
+   use. It protects the ways a customer gets online and back out of a window:
+     · the card and the panel being shown
+     · the voucher box + its Submit button, Insert Coin, Resume Time
+     · the enabled buttons of an open coin / rates window (Done, Cancel, ×)
+   Everything else (Pause, WiFi Rates, colours, fonts, layout…) is the
+   operator's call. If the custom CSS hides, shrinks, covers, pushes
+   off-screen or blanks one of the protected controls — on two checks in a
+   row — the stylesheet is dropped for this visit and the stock look is used.
+   Nothing is written to the server, and www2 (port 8080) never loads this
+   stylesheet, so the operator can always get back in to fix it.
+   ──────────────────────────────────────────────────────────────────────────── */
+(function () {
+  var C = window.__lmeCss;
+  if (!C || !C.link) return;
+  var preview = C.preview, hold = false, cur = 'live', strikes = 0, lastSig = '', timer = null;
+  var realShow = window.show;
+
+  function say(msg) { try { window.parent.postMessage(msg, '*'); } catch (e) {} }
+
+  /* ── colour helpers (only used to spot text that blends into its background) ── */
+  function parseColor(s) {
+    var m = /^rgba?\(\s*([\d.]+)[,\s]+([\d.]+)[,\s]+([\d.]+)(?:[,\s\/]+([\d.]+%?))?\s*\)$/.exec(s || '');
+    if (!m) return null;
+    var a = m[4] === undefined ? 1 : (m[4].slice(-1) === '%' ? parseFloat(m[4]) / 100 : parseFloat(m[4]));
+    return [+m[1], +m[2], +m[3], a];
+  }
+  function over(t, b) {
+    var a = t[3];
+    return [t[0] * a + b[0] * (1 - a), t[1] * a + b[1] * (1 - a), t[2] * a + b[2] * (1 - a), 1];
+  }
+  function lum(c) {
+    var v = [c[0], c[1], c[2]].map(function (x) { x /= 255; return x <= 0.03928 ? x / 12.92 : Math.pow((x + 0.055) / 1.055, 2.4); });
+    return 0.2126 * v[0] + 0.7152 * v[1] + 0.0722 * v[2];
+  }
+  // Opaque colour behind el, or null when an image/gradient makes it unknowable
+  function backdrop(el) {
+    var layers = [], n, s, c, i, base = [255, 255, 255, 1];
+    for (n = el; n && n.nodeType === 1; n = n.parentNode) {
+      s = getComputedStyle(n);
+      if (s.backgroundImage && s.backgroundImage !== 'none') return null;
+      c = parseColor(s.backgroundColor);
+      if (c && c[3] > 0) { layers.push(c); if (c[3] >= 0.99) break; }
+    }
+    for (i = layers.length - 1; i >= 0; i--) base = over(layers[i], base);
+    return base;
+  }
+  function contrast(el) {
+    var fg = parseColor(getComputedStyle(el).color), bg = backdrop(el);
+    if (!fg || !bg) return 21;
+    if (fg[3] < 1) fg = over(fg, bg);
+    var l1 = lum(fg), l2 = lum(bg);
+    return (Math.max(l1, l2) + 0.05) / (Math.min(l1, l2) + 0.05);
+  }
+
+  /* Should el be on screen right now going by the portal's OWN state (inline
+     display, the active view, an open window, [hidden]) — not by any stylesheet? */
+  function intended(el) {
+    for (var n = el; n && n.nodeType === 1 && n !== document.body; n = n.parentNode) {
+      if (n.hidden) return false;
+      if (n.style && n.style.display === 'none') return false;
+      if ((n.id === 'v-login' || n.id === 'v-status') && n.style.display !== 'block') return false;
+      if (/-modal-overlay$/.test(n.id) && !n.classList.contains('open')) return false;
+    }
+    return true;
+  }
+
+  // '' when el is fine, otherwise a plain-English reason
+  function problem(el, label, textual) {
+    var n, s, r, cx, cy, top;
+    for (n = el; n && n.nodeType === 1; n = n.parentNode) {
+      s = getComputedStyle(n);
+      if (s.display === 'none') return label + ' is hidden';
+      if (s.visibility === 'hidden' || s.visibility === 'collapse') return label + ' is invisible';
+      if (parseFloat(s.opacity) < 0.15) return label + ' is see-through';
+    }
+    if (getComputedStyle(el).pointerEvents === 'none') return label + ' can no longer be tapped';
+    r = el.getBoundingClientRect();
+    if (r.width < 10 || r.height < 10) return label + ' has been shrunk to almost nothing';
+    if (r.right <= 0 || r.left >= window.innerWidth) return label + ' is pushed off-screen';
+    cy = r.top + r.height / 2;
+    if (cy > 0 && cy < window.innerHeight) {
+      cx = Math.min(Math.max(r.left + r.width / 2, 1), window.innerWidth - 2);
+      top = document.elementFromPoint(cx, cy);
+      if (top && top !== el && !el.contains(top)) return label + ' is covered by another element';
+    }
+    if (textual && contrast(el) < 1.5) return label + ' text blends into its background';
+    return '';
+  }
+
+  function collect() {
+    var out = [], i, j, el, list, btns, ov, open, box, bb;
+    function add(p) { if (p && out.indexOf(p) < 0 && out.length < 6) out.push(p); }
+
+    // A pop-up window (rates / coin / NodeMCU picker / promo image) is MEANT to
+    // sit on top of the page. While one is open, only the window itself is
+    // checked; the page behind it is checked again once it closes. (A stylesheet
+    // that leaves a window covering the page when none is open is still caught,
+    // because then nothing is "open" and the page checks below see the cover.)
+    ov = document.querySelectorAll('#coin-modal-overlay, #nodemcu-modal-overlay, #rates-modal-overlay, #img-modal-overlay');
+    open = [];
+    for (i = 0; i < ov.length; i++) if (ov[i].classList.contains('open')) open.push(ov[i]);
+
+    if (open.length) {
+      for (i = 0; i < open.length; i++) {
+        box = open[i].firstElementChild;
+        if (box) add(problem(box, 'The pop-up window'));
+        bb = open[i].querySelectorAll('button');
+        for (j = 0; j < bb.length; j++) if (!bb[j].disabled && intended(bb[j])) add(problem(bb[j], 'A pop-up window button', true));
+      }
+      return out;
+    }
+
+    el = document.querySelector('.portal-card');
+    if (el) add(problem(el, 'The portal card'));
+    list = ['v-login', 'v-status'];
+    for (i = 0; i < list.length; i++) {
+      el = document.getElementById(list[i]);
+      if (el && el.style.display === 'block') add(problem(el, 'The main panel'));
+    }
+    list = [['login-code', 'The voucher box'], ['btn-coin-login', 'The Insert Coin button'], ['btn-resume', 'The Resume Time button']];
+    for (i = 0; i < list.length; i++) {
+      el = document.getElementById(list[i][0]);
+      if (el && intended(el)) add(problem(el, list[i][1], true));
+    }
+    btns = document.querySelectorAll('#v-login .input-group .btn');
+    for (i = 0; i < btns.length; i++) if (intended(btns[i])) add(problem(btns[i], 'The voucher Submit button', true));
+    return out;
+  }
+
+  /* ── customer devices: drop the stylesheet if it breaks something, twice in a row ── */
+  function trip(issues) {
+    clearInterval(timer);
+    try { C.link.disabled = true; if (C.link.parentNode) C.link.parentNode.removeChild(C.link); } catch (e) {}
+    try { window.sessionStorage.setItem('lme_css_bad', '1'); } catch (e) {}
+    try { console.warn('Custom portal CSS switched off for this visit: ' + issues.join('; ')); } catch (e) {}
+  }
+  function run() {
+    var issues = collect(), sig = issues.join('|');
+    if (preview) { say({ lmeCssGuard: true, state: cur, issues: issues }); return; }
+    if (!issues.length) { strikes = 0; lastSig = ''; return; }
+    if (sig === lastSig) strikes++; else { strikes = 1; lastSig = sig; }
+    if (strikes >= 2) trip(issues);
+  }
+  function start() {
+    if (!preview) {
+      // An empty operator stylesheet (the common case) has nothing to guard
+      try { var rules = C.link.sheet && C.link.sheet.cssRules; if (rules && rules.length === 0) return; } catch (e) {}
+    }
+    setTimeout(run, 1200);
+    timer = setInterval(run, 2000);
+  }
+  if (C.link.sheet) start(); else C.link.addEventListener('load', start);
+
+  /* ── admin live preview (only inside the www2 iframe, only obeys its parent) ── */
+  if (!preview) return;
+
+  function closeAll() {
+    var o = document.querySelectorAll('[id$="-modal-overlay"]'), i;
+    for (i = 0; i < o.length; i++) o[i].classList.remove('open');
+  }
+  // Keep the chosen state on screen: the portal's own status polling would
+  // otherwise flip the panel back within a second or two.
+  if (typeof realShow === 'function') window.show = function (id) { if (!hold) realShow(id); };
+  function setState(s) {
+    closeAll();
+    cur = s;
+    hold = (s !== 'live');
+    if (s === 'login' || s === 'rates' || s === 'coin') realShow('v-login');
+    else if (s === 'status') realShow('v-status');
+    if (s === 'rates' && typeof openRatesModal === 'function') openRatesModal();
+    if (s === 'coin' && typeof openCoinModal === 'function') openCoinModal();
+  }
+  // Walk every state once and report what the safety check finds in each
+  function audit() {
+    var states = ['login', 'status', 'rates', 'coin'], i = 0, results = {}, was = cur;
+    (function next() {
+      if (i >= states.length) { setState(was); say({ lmeCssAudit: true, results: results }); return; }
+      var st = states[i++];
+      setState(st);
+      setTimeout(function () { results[st] = collect(); next(); }, 900);
+    })();
+  }
+  window.addEventListener('message', function (e) {
+    var d = e.data;
+    if (e.source !== window.parent || !d || d.lmePreview !== true) return;
+    if (d.cmd === 'state') setState(String(d.state));
+    else if (d.cmd === 'audit') audit();
+    else if (d.cmd === 'theme') document.documentElement.setAttribute('data-theme', d.theme === 'light' ? 'light' : 'dark');
+    else if (d.cmd === 'reload') C.link.href = '/cgi-bin/portal_css.sh?draft=1&_=' + new Date().getTime();
+  });
+  // Every time the stylesheet is (re)loaded, re-check the current screen
+  C.link.addEventListener('load', function () { setTimeout(run, 400); });
+  say({ lmeCssReady: true });
 })();
 </script>
 </body>
