@@ -481,10 +481,66 @@ read_lmehspt_var() {
         | $BB sed 's/^[^=]*=\(.*\)/\1/'
 }
 
+# ---------------------------------------------------------------------------
+# Value safety for the env files below.
+#
+# set_lmehspt_var / save_coin_env_var / set_globals_var / set_tgbot_var write
+#     KEY="value"
+# into files a root shell later SOURCES or EXECUTES (lmehspt.sh,
+# coin_config.env, globals.env, telegram_bot.env) -- coin_config.env is even
+# sourced again inside the same request (load_coin_env). A value holding " $ `
+# or \ therefore either corrupts the file (hotspot fails to start at the next
+# boot: "Unterminated quoted string") or runs as root (value $(cmd)); "|" is
+# the sed delimiter two of the writers use, and control characters (CR/LF)
+# split the line. env_val_safe() refuses all of those. UTF-8 bytes are fine.
+# ---------------------------------------------------------------------------
+env_val_safe() {
+    case "$1" in *'"'*|*'$'*|*'`'*|*'\'*|*'|'*) return 1 ;; esac
+    # Map control chars to '#' and compare: any difference = a control char was
+    # present. (Deleting them and testing for empty would be defeated by
+    # $(...) stripping a trailing newline.)
+    [ "$(printf '%s' "$1" | $BB tr '\000-\037\177' '#')" = "$1" ]
+}
+
+# Cosmetic free text (device title): drop the unsafe characters instead of
+# rejecting, the same convention notify_set's san() already uses.
+env_text_san() { printf '%s' "$1" | $BB tr -d '|"\\$\140\000-\037\177'; }
+
+# Per-key format check for config_set. $1 = KEY, $2 = non-empty value.
+cfg_val_ok() {
+    env_val_safe "$2" || return 1      # first, so a multi-line value can't slip
+                                       # past the single-line greps below
+    case "$1" in
+        GLOBAL_RATE|PER_USER_RATE|PER_USER_BURST|UNAUTH_RATE)
+            # tc rate / size, interpolated unquoted into tc commands: 50mbit, 10k, 1.5mbit
+            printf '%s' "$2" | $BB grep -qE '^[0-9]+(\.[0-9]+)?[A-Za-z]{0,8}$' ;;
+        INACTIVITY_TIMEOUT|COIN_TIMEOUT|COIN_STRIKE_THRESHOLD|COIN_COOLDOWN|VOUCHER_STRIKE_THRESHOLD|VOUCHER_COOLDOWN)
+            printf '%s' "$2" | $BB grep -qE '^[0-9]{1,7}$' ;;
+        NODEMCU_PORT|PORTAL_PORT)
+            printf '%s' "$2" | $BB grep -qE '^[0-9]{1,5}$' && [ "$2" -ge 1 ] && [ "$2" -le 65535 ] ;;
+        AUTO_PAUSE_ENABLED|AUTO_RESUME_ENABLED|RELOAD_AFTER_TIME_ADDED_ENABLED|EQUAL_SHARING_ENABLED|NODEMCU_1_ENABLED)
+            [ "$2" = "0" ] || [ "$2" = "1" ] ;;
+        NODEMCU_IP|PORTAL_IP)
+            _valid_ipv4 "$2" ;;
+        NODEMCU_MAC)
+            printf '%s' "$2" | $BB grep -qE '^[0-9A-Fa-f]{12}$' ;;
+        COIN_RATES)
+            # "PESO:MINUTES" or "PESO:MINUTES:VALIDITY", space separated. Also
+            # echoed raw into JSON that the unauthenticated portal reads.
+            printf '%s' "$2" | $BB grep -qE '^[0-9.]+(:[0-9.]+){1,2}( [0-9.]+(:[0-9.]+){1,2})*$' ;;
+        NODEMCU_1_TITLE)
+            [ "${#2}" -le 64 ] ;;
+        COIN_PSK)
+            [ "${#2}" -le 127 ] ;;       # NodeMCU firmware's psk[128] buffer
+        *)  return 1 ;;                  # unknown key: refuse
+    esac
+}
+
 # Safely rewrite a var in lmehspt.sh
 set_lmehspt_var() {
     local var="$1" val="$2"
     local esc
+    env_val_safe "$val" || return 1
     esc=$(printf '%s' "$val" | $BB sed 's/[\/&]/\\&/g')
     $BB sed -i "s|^${var}=.*|${var}=\"${esc}\"|" "$LMEHSPT"
 }
@@ -492,6 +548,7 @@ set_lmehspt_var() {
 # Write / update a key in coin_config.env (runtime hot-reload)
 save_coin_env_var() {
     local var="$1" val="$2"
+    env_val_safe "$val" || return 1
     touch "$COIN_CONFIG"
     $BB grep -v "^${var}=" "$COIN_CONFIG" > /tmp/coin_cfg_upd.tmp 2>/dev/null
     echo "${var}=\"${val}\"" >> /tmp/coin_cfg_upd.tmp
@@ -506,6 +563,7 @@ load_coin_env() { [ -f "$COIN_CONFIG" ] && . "$COIN_CONFIG"; }
 set_globals_var() {
     local var="$1" val="$2"
     local esc
+    env_val_safe "$val" || return 1
     esc=$(printf '%s' "$val" | $BB sed 's/[\\/&]/\\&/g')
     if $BB grep -q "^${var}=" "$GLOBALS_ENV" 2>/dev/null; then
         $BB sed -i "s|^${var}=.*|${var}=\"${esc}\"|" "$GLOBALS_ENV"
@@ -745,6 +803,16 @@ if echo "$QS" | $BB grep -q "action=config_set"; then
         set_lmehspt_var "$key" "$val"
         set_globals_var  "$key" "$val"
     }
+
+    # Validate EVERY submitted field before writing ANY of them: a bad value
+    # must not leave the three config files half-updated, and none of these
+    # values may reach a root-sourced file unchecked (see env_val_safe above).
+    for _m in GLOBAL_RATE:global_rate PER_USER_RATE:per_user_rate PER_USER_BURST:per_user_burst UNAUTH_RATE:unauth_rate INACTIVITY_TIMEOUT:inactivity_timeout AUTO_PAUSE_ENABLED:auto_pause_enabled AUTO_RESUME_ENABLED:auto_resume_enabled RELOAD_AFTER_TIME_ADDED_ENABLED:reload_after_time_added EQUAL_SHARING_ENABLED:equal_sharing_enabled NODEMCU_IP:nodemcu_ip NODEMCU_MAC:nodemcu_mac NODEMCU_PORT:nodemcu_port NODEMCU_1_TITLE:nodemcu_1_title NODEMCU_1_ENABLED:nodemcu_1_enabled COIN_TIMEOUT:coin_timeout COIN_RATES:coin_rates COIN_PSK:coin_psk COIN_STRIKE_THRESHOLD:coin_strike_threshold COIN_COOLDOWN:coin_cooldown VOUCHER_STRIKE_THRESHOLD:voucher_strike_threshold VOUCHER_COOLDOWN:voucher_cooldown PORTAL_IP:portal_ip PORTAL_PORT:portal_port; do
+        _k=${_m%%:*}; _f=${_m#*:}
+        _v=$(fget "$_f")
+        [ -z "$_v" ] && continue
+        cfg_val_ok "$_k" "$_v" || err_json "invalid_$_f"
+    done
 
     # Capture old NodeMCU values before overwriting so we can detect a change
     OLD_NIP=$(read_lmehspt_var NODEMCU_IP)
@@ -1600,9 +1668,13 @@ if echo "$QS" | $BB grep -q "action=nodemcu_add"; then
     NPSKV=$(printf '%s'  "$POST_DATA" | $BB sed -n 's/.*psk=\([^&]*\).*/\1/p'   | urldecode | $BB tr -d '|\r\n')
     NENV=$(printf '%s'   "$POST_DATA" | $BB sed -n 's/.*enabled=\([^&]*\).*/\1/p')
 
+    NTITLE=$(env_text_san "$NTITLE"); NTITLE=$(printf '%s' "$NTITLE" | $BB cut -c1-64)
     [ -z "$NTITLE" ] && NTITLE="Coin Slot"
     printf '%s' "$NMACV" | grep -qE '^[0-9a-f]{12}$' || err_json "invalid_mac"
     [ -z "$NPSKV" ]  && err_json "missing_psk"
+    # PSK is a shared secret: never silently alter it, refuse unsafe characters
+    # instead (they would corrupt/inject into the sourced env files).
+    env_val_safe "$NPSKV" && [ "${#NPSKV}" -le 127 ] || err_json "invalid_psk"
     [ "$NENV" = "0" ] && NENV=0 || NENV=1
     NPORTV=8080   # fixed: NodeMCU firmware always listens on 8080
     load_coin_env
@@ -1675,8 +1747,10 @@ if echo "$QS" | $BB grep -q "action=nodemcu_edit"; then
     NPSKV=$(printf '%s'  "$POST_DATA" | $BB sed -n 's/.*psk=\([^&]*\).*/\1/p'   | urldecode | $BB tr -d '|\r\n')
     NENV=$(printf '%s'   "$POST_DATA" | $BB sed -n 's/.*enabled=\([^&]*\).*/\1/p')
 
+    NTITLE=$(env_text_san "$NTITLE"); NTITLE=$(printf '%s' "$NTITLE" | $BB cut -c1-64)
     printf '%s' "$NMACV" | grep -qE '^[0-9a-f]{12}$' || err_json "invalid_mac"
     [ -z "$NPSKV" ]  && err_json "missing_psk"
+    env_val_safe "$NPSKV" && [ "${#NPSKV}" -le 127 ] || err_json "invalid_psk"
     [ "$NENV" = "0" ] && NENV=0 || NENV=1
     NPORTV=8080   # fixed: NodeMCU firmware always listens on 8080
     load_coin_env
@@ -2648,6 +2722,15 @@ if echo "$QS" | $BB grep -q "action=ifaces_set"; then
 
     [ -z "$BR" ] && err_json "missing_hotspot_br"
     [ -z "$IF" ] && err_json "missing_hotspot_interfaces"
+    # Interface names go unquoted into brctl/iptables/ip and into the sourced
+    # env files: kernel ifname charset only, <=15 chars each (IFNAMSIZ).
+    env_val_safe "$BR" && printf '%s' "$BR" | $BB grep -qE '^[A-Za-z0-9._-]{1,15}$' \
+        || err_json "invalid_hotspot_br"
+    env_val_safe "$IF" && printf '%s' "$IF" | $BB grep -qE '^[A-Za-z0-9._-]{1,15}( [A-Za-z0-9._-]{1,15})*$' \
+        || err_json "invalid_hotspot_interfaces"
+    [ -z "$PIP" ] || { env_val_safe "$PIP" && _valid_ipv4 "$PIP"; } || err_json "invalid_portal_ip"
+    [ -z "$PPT" ] || { env_val_safe "$PPT" && printf '%s' "$PPT" | $BB grep -qE '^[0-9]{1,5}$' \
+        && [ "$PPT" -ge 1 ] && [ "$PPT" -le 65535 ]; } || err_json "invalid_portal_port"
 
     # Capture current values before overwriting — needed to detect changes
     OLD_PIP=$(read_lmehspt_var PORTAL_IP)
@@ -3028,6 +3111,7 @@ TGBOT_STARTUP="/lmepisowifi/www2/sh/startup.sh"
 set_tgbot_var() {
     local var="$1" val="$2"
     local esc
+    env_val_safe "$val" || return 1
     mkdir -p "$HDATA" 2>/dev/null
     touch "$TGBOT_ENV" 2>/dev/null
     esc=$(printf '%s' "$val" | $BB sed 's/[\\/&]/\\&/g')
