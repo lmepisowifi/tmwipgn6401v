@@ -865,6 +865,11 @@ function clean(s) {
     return s
 }
 function escape_json(s) {
+    # SSID text comes from OTHER access routers (not ours): any byte is
+    # possible. Raw control characters (tab, 0x01..0x1f, DEL) are illegal inside
+    # a JSON string and made JSON.parse fail, blanking the survey for the admin
+    # -- turn them into spaces first.
+    gsub(/[\001-\037\177]/, " ", s)
     gsub(/\\/, "\\\\", s); gsub(/"/, "\\\"", s)
     return s
 }
@@ -949,6 +954,11 @@ function clean(s) {
     return s
 }
 function escape_json(s) {
+    # SSID text comes from OTHER access routers (not ours): any byte is
+    # possible. Raw control characters (tab, 0x01..0x1f, DEL) are illegal inside
+    # a JSON string and made JSON.parse fail, blanking the survey for the admin
+    # -- turn them into spaces first.
+    gsub(/[\001-\037\177]/, " ", s)
     gsub(/\\/, "\\\\", s); gsub(/"/, "\\\"", s)
     return s
 }
