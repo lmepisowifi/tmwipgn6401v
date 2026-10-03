@@ -520,6 +520,9 @@ cfg_val_ok() {
             printf '%s' "$2" | $BB grep -qE '^[0-9]{1,5}$' && [ "$2" -ge 1 ] && [ "$2" -le 65535 ] ;;
         AUTO_PAUSE_ENABLED|AUTO_RESUME_ENABLED|RELOAD_AFTER_TIME_ADDED_ENABLED|EQUAL_SHARING_ENABLED|NODEMCU_1_ENABLED)
             [ "$2" = "0" ] || [ "$2" = "1" ] ;;
+        QOS_QDISC)
+            # Strict enum: this lands in lmehspt.sh / globals.env / coin_config.env.
+            [ "$2" = "auto" ] || [ "$2" = "fq_codel" ] || [ "$2" = "sfq" ] ;;
         NODEMCU_IP|PORTAL_IP)
             _valid_ipv4 "$2" ;;
         NODEMCU_MAC)
@@ -689,6 +692,13 @@ if echo "$QS" | $BB grep -q "action=config_get"; then
     RL_BOOL="false"; [ "${RL:-0}" = "1" ] && RL_BOOL="true"
     ES="${EQUAL_SHARING_ENABLED:-$(read_lmehspt_var EQUAL_SHARING_ENABLED)}"
     ES_BOOL="false"; [ "${ES:-0}" = "1" ] && ES_BOOL="true"
+    QD="${QOS_QDISC:-$(read_lmehspt_var QOS_QDISC)}"
+    case "$QD" in auto|fq_codel|sfq) ;; *) QD="auto" ;; esac
+    # What lmehspt.sh's setup_qos() actually settled on (and why), published to
+    # a tmpfs file on every QoS rebuild; empty until the first rebuild after boot.
+    QDS="${QOS_QDISC_STATUS:-/tmp/hotspot_qdisc_status}"
+    QDA=$($BB sed -n 's/^active=//p' "$QDS" 2>/dev/null | $BB head -n 1)
+    QDN=$($BB sed -n 's/^note=//p'   "$QDS" 2>/dev/null | $BB head -n 1)
     CE="${COIN_ENABLED:-$(read_lmehspt_var COIN_ENABLED)}"
     VE="${VOUCHER_ENABLED:-$(read_lmehspt_var VOUCHER_ENABLED)}"
     NIP="${NODEMCU_IP:-$(read_lmehspt_var NODEMCU_IP)}"
@@ -744,6 +754,9 @@ if echo "$QS" | $BB grep -q "action=config_get"; then
 \"auto_resume_enabled\":$AR_BOOL,
 \"reload_after_time_added\":$RL_BOOL,
 \"equal_sharing_enabled\":$ES_BOOL,
+\"qos_qdisc\":\"$(esc_json "$QD")\",
+\"qos_qdisc_active\":\"$(esc_json "$QDA")\",
+\"qos_qdisc_note\":\"$(esc_json "$QDN")\",
 \"coin_enabled\":\"$(esc_json "$CE")\",
 \"coin_on\":$COIN_ON,
 \"voucher_on\":$VOUCHER_ON,
@@ -807,7 +820,7 @@ if echo "$QS" | $BB grep -q "action=config_set"; then
     # Validate EVERY submitted field before writing ANY of them: a bad value
     # must not leave the three config files half-updated, and none of these
     # values may reach a root-sourced file unchecked (see env_val_safe above).
-    for _m in GLOBAL_RATE:global_rate PER_USER_RATE:per_user_rate PER_USER_BURST:per_user_burst UNAUTH_RATE:unauth_rate INACTIVITY_TIMEOUT:inactivity_timeout AUTO_PAUSE_ENABLED:auto_pause_enabled AUTO_RESUME_ENABLED:auto_resume_enabled RELOAD_AFTER_TIME_ADDED_ENABLED:reload_after_time_added EQUAL_SHARING_ENABLED:equal_sharing_enabled NODEMCU_IP:nodemcu_ip NODEMCU_MAC:nodemcu_mac NODEMCU_PORT:nodemcu_port NODEMCU_1_TITLE:nodemcu_1_title NODEMCU_1_ENABLED:nodemcu_1_enabled COIN_TIMEOUT:coin_timeout COIN_RATES:coin_rates COIN_PSK:coin_psk COIN_STRIKE_THRESHOLD:coin_strike_threshold COIN_COOLDOWN:coin_cooldown VOUCHER_STRIKE_THRESHOLD:voucher_strike_threshold VOUCHER_COOLDOWN:voucher_cooldown PORTAL_IP:portal_ip PORTAL_PORT:portal_port; do
+    for _m in GLOBAL_RATE:global_rate PER_USER_RATE:per_user_rate PER_USER_BURST:per_user_burst UNAUTH_RATE:unauth_rate INACTIVITY_TIMEOUT:inactivity_timeout AUTO_PAUSE_ENABLED:auto_pause_enabled AUTO_RESUME_ENABLED:auto_resume_enabled RELOAD_AFTER_TIME_ADDED_ENABLED:reload_after_time_added EQUAL_SHARING_ENABLED:equal_sharing_enabled QOS_QDISC:qos_qdisc NODEMCU_IP:nodemcu_ip NODEMCU_MAC:nodemcu_mac NODEMCU_PORT:nodemcu_port NODEMCU_1_TITLE:nodemcu_1_title NODEMCU_1_ENABLED:nodemcu_1_enabled COIN_TIMEOUT:coin_timeout COIN_RATES:coin_rates COIN_PSK:coin_psk COIN_STRIKE_THRESHOLD:coin_strike_threshold COIN_COOLDOWN:coin_cooldown VOUCHER_STRIKE_THRESHOLD:voucher_strike_threshold VOUCHER_COOLDOWN:voucher_cooldown PORTAL_IP:portal_ip PORTAL_PORT:portal_port; do
         _k=${_m%%:*}; _f=${_m#*:}
         _v=$(fget "$_f")
         [ -z "$_v" ] && continue
@@ -828,6 +841,7 @@ if echo "$QS" | $BB grep -q "action=config_set"; then
     apply_if "AUTO_RESUME_ENABLED" "$(fget auto_resume_enabled)"
     apply_if "RELOAD_AFTER_TIME_ADDED_ENABLED" "$(fget reload_after_time_added)"
     apply_if "EQUAL_SHARING_ENABLED" "$(fget equal_sharing_enabled)"
+    apply_if "QOS_QDISC"           "$(fget qos_qdisc)"
     apply_if "NODEMCU_IP"          "$(fget nodemcu_ip)"
     apply_if "NODEMCU_MAC"         "$(fget nodemcu_mac)"
     apply_if "NODEMCU_PORT"        "$(fget nodemcu_port)"

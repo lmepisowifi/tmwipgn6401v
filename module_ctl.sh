@@ -71,6 +71,7 @@ hotspot_files() {
     cat <<'EOF'
 hotspot
 lmehspt.sh
+sch
 www2/cgi-bin/hotspot.cgi
 www2/hotspot.html
 www2/hotspot-ifaces.html

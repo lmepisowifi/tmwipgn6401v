@@ -95,6 +95,21 @@ QOS_VIP_FLOOR_PCT="20"
 # past 500ms well under 1mbit (e.g. slower LTE backhaul).
 QOS_VIP_TARGET_MS="40"
 QOS_BULK_TARGET_MS="80"
+# Queue discipline under every per-user Band 1 / Band 2 HTB class (see
+# _qos_add_leaf()). Set from www2 > Hotspot > Bandwidth & QoS.
+#   auto     - fq_codel when this kernel can use it, otherwise sfq (default)
+#   fq_codel - always fq_codel. If it cannot be used the leaves are left on the
+#              kernel's plain FIFO (NO sfq substitution) and the admin page
+#              says so - forcing means forcing.
+#   sfq      - always sfq (how it worked before this option existed)
+# fq_codel is a loadable module on this platform; qos_qdisc_resolve() insmods
+# QOS_FQ_CODEL_KO on demand. The unauthenticated-client buckets (990:, 299:)
+# deliberately stay on sfq: they rely on its tiny hard limit and the "flow
+# hash" per-IP emulation, not on AQM.
+QOS_QDISC="auto"
+QOS_FQ_CODEL_KO="/lmepisowifi/sch/sch_fq_codel.ko"
+QOS_QDISC_STATUS="/tmp/hotspot_qdisc_status"
+QOS_QDISC_EFFECTIVE=""
 # Off by default: existing deployments keep today's fixed PER_USER_RATE
 # guarantee unless the admin opts in via www2. When on, each online
 # session's guaranteed HTB "rate" is recomputed as GLOBAL_RATE divided by
@@ -1176,6 +1191,131 @@ _qos_sfq_limit() {
     echo "$n"
 }
 
+# ------------------------------------------------------------------
+# Leaf qdisc selection - QOS_QDISC = auto | fq_codel | sfq
+# ------------------------------------------------------------------
+_QOS_FQ_WHY=""
+
+# Can a fq_codel qdisc with the SAME option shape the leaves use be created
+# right now? Attach one to lo and remove it again. Using the real options
+# means a tc binary that can't parse fq_codel's parameters fails here, once,
+# instead of on every client's queue.
+_qos_fq_codel_probe() {
+    tc qdisc add dev lo root fq_codel limit 64 flows 16 target 5ms interval 100ms 2>/dev/null || return 1
+    tc qdisc del dev lo root 2>/dev/null
+    return 0
+}
+
+# 0 if fq_codel is usable (loading the module first if needed), else 1 with
+# the reason in $_QOS_FQ_WHY. Checks BEFORE insmod so a kernel with fq_codel
+# built in, or a module that is already loaded, never touches the .ko.
+_qos_fq_codel_ready() {
+    local err="" ins nofile=0
+    _QOS_FQ_WHY=""
+    _qos_fq_codel_probe && return 0
+    if [ -f "$QOS_FQ_CODEL_KO" ]; then
+        # One insmod, chosen up front: a failing insmod must not be retried
+        # through busybox (that only repeats the same error).
+        if command -v insmod >/dev/null 2>&1; then ins="insmod"; else ins="$BB insmod"; fi
+        err=$($ins "$QOS_FQ_CODEL_KO" 2>&1)
+        if _qos_fq_codel_probe; then
+            logger -t lmehspt "qos: loaded $QOS_FQ_CODEL_KO" 2>/dev/null
+            return 0
+        fi
+    else
+        nofile=1
+    fi
+    # Still no: tell "kernel can't" apart from "tc can't drive it". A bare
+    # fq_codel (no options) needs no userspace support, so if that works the
+    # kernel side is fine and it's an old iproute2.
+    if tc qdisc add dev lo root fq_codel 2>/dev/null; then
+        tc qdisc del dev lo root 2>/dev/null
+        _QOS_FQ_WHY="tc cannot set fq_codel options - iproute2 too old"
+    elif [ "$nofile" = "1" ]; then
+        _QOS_FQ_WHY="kernel has no fq_codel - $QOS_FQ_CODEL_KO not found"
+    else
+        # Keep just the reason ("Invalid module format", "No such file"...):
+        # last "...: <reason>" of insmod's first line, stripped of anything
+        # that could upset the status file or the JSON built from it.
+        err=$(printf '%s\n' "$err" | $BB head -n 1 | $BB sed 's/^.*: //' | $BB tr -d '\r"|\\$\140' | $BB cut -c1-80)
+        _QOS_FQ_WHY="kernel has no fq_codel${err:+ - insmod: $err}"
+    fi
+    return 1
+}
+
+# Decide which qdisc add_user_qos() will use and publish it for the admin page.
+# Runs at the top of setup_qos(), i.e. at boot and on every QoS rebuild, so a
+# change of the dropdown takes effect on the next Save & Apply.
+#   QOS_QDISC_EFFECTIVE = fq_codel | sfq | none (forced fq_codel, unusable)
+qos_qdisc_resolve() {
+    local want="${QOS_QDISC:-auto}" note="" tmp="${QOS_QDISC_STATUS}.tmp"
+    case "$want" in
+        auto|fq_codel|sfq) ;;
+        *) note="unknown QOS_QDISC value, treated as auto"; want=auto ;;
+    esac
+    case "$want" in
+        sfq)
+            QOS_QDISC_EFFECTIVE="sfq" ;;
+        *)
+            if _qos_fq_codel_ready; then
+                QOS_QDISC_EFFECTIVE="fq_codel"
+            elif [ "$want" = "fq_codel" ]; then
+                QOS_QDISC_EFFECTIVE="none"
+                note="fq_codel is forced but unusable ($_QOS_FQ_WHY) - client queues are plain FIFO; choose Auto or sfq"
+                logger -t lmehspt "qos: $note" 2>/dev/null
+            else
+                QOS_QDISC_EFFECTIVE="sfq"
+                note="fq_codel unavailable, using sfq ($_QOS_FQ_WHY)"
+                logger -t lmehspt "qos: $note" 2>/dev/null
+            fi ;;
+    esac
+    { printf 'requested=%s\n' "$want"
+      printf 'active=%s\n'    "$QOS_QDISC_EFFECTIVE"
+      printf 'note=%s\n'      "$note"
+    } > "$tmp" 2>/dev/null && $BB mv "$tmp" "$QOS_QDISC_STATUS" 2>/dev/null
+}
+
+# fq_codel options for a leaf class whose guaranteed rate is $1 kbit.
+# $2 = flow buckets (kept small: every instance allocates them up front and
+# each client gets four), $3 = cap for the packet limit.
+_qos_fq_codel_args() {
+    local rate=$1 flows=$2 cap=$3 lim tgt itv
+    [ "$rate" -lt 1 ] && rate=1
+    # "limit" is only a memory backstop here (~200 ms of ~1000 B packets);
+    # CoDel itself holds the standing queue near "target", which sfq's blunt
+    # fixed limit could not.
+    lim=$(( 200 * rate / 8000 ))
+    [ "$lim" -lt 32 ] && lim=32
+    [ "$lim" -gt "$cap" ] && lim=$cap
+    # CoDel's target must exceed ~1.5 MTU of serialisation time or it reads a
+    # single packet's own transmit time as a standing queue and drops needlessly:
+    # ms = 1.5 * 12112 bit / (rate in kbit/s), rounded up, never below 5 ms.
+    tgt=$(( (18168 + rate - 1) / rate ))
+    [ "$tgt" -lt 5 ]   && tgt=5
+    [ "$tgt" -gt 500 ] && tgt=500
+    itv=$(( 100 + 2 * tgt ))
+    echo "limit $lim flows $flows target ${tgt}ms interval ${itv}ms"
+}
+
+# Attach one leaf queue.  $1 dev  $2 parent  $3 handle  $4 sfq limit  $5 fq_codel options
+_qos_add_leaf() {
+    [ -n "$QOS_QDISC_EFFECTIVE" ] || qos_qdisc_resolve
+    case "$QOS_QDISC_EFFECTIVE" in
+        none) return 0 ;;
+        fq_codel)
+            # $5 is deliberately unquoted: it is several tc words.
+            tc qdisc add dev "$1" parent "$2" handle "$3" fq_codel $5 2>/dev/null && return 0
+            # Forced fq_codel never substitutes another qdisc.
+            if [ "${QOS_QDISC:-auto}" = "fq_codel" ]; then
+                logger -t lmehspt "qos: fq_codel add failed on $1 parent $2 - forced, no fallback" 2>/dev/null
+                return 1
+            fi
+            logger -t lmehspt "qos: fq_codel add failed on $1 parent $2 - using sfq for this queue" 2>/dev/null
+            ;;
+    esac
+    tc qdisc add dev "$1" parent "$2" handle "$3" sfq perturb 10 limit "$4" 2>/dev/null
+}
+
 # Each online (non-expired) session's fair-share guaranteed rate, in kbit,
 # when Equal Bandwidth Sharing is on: GLOBAL_RATE split evenly across
 # however many sessions are currently online. Callers always keep "ceil"
@@ -1274,10 +1414,17 @@ add_user_qos() {
     [ "$_vip_ceil" -lt "$_vip_rate" ] && _vip_ceil=$_vip_rate
     # OPTIMIZATION: SFQ limits sized to the rate actually assigned instead of
     # a fixed count, so worst-case self-queueing delay stays roughly constant
-    # instead of ballooning on slower (e.g. LTE) links. fq_codel would be
-    # preferable but isn't available on this kernel/tc build.
+    # instead of ballooning on slower (e.g. LTE) links. When fq_codel is the
+    # active qdisc (QOS_QDISC, resolved by qos_qdisc_resolve() in setup_qos)
+    # its options are scaled to the same rate instead - see _qos_fq_codel_args().
+    [ -n "$QOS_QDISC_EFFECTIVE" ] || qos_qdisc_resolve
+    local _vip_fq="" _bulk_fq=""
     _vip_limit=$(_qos_sfq_limit "$_rate_kbit" "${QOS_VIP_TARGET_MS:-40}" 32)
     _bulk_limit=$(_qos_sfq_limit "$_rate_kbit" "${QOS_BULK_TARGET_MS:-80}" 64)
+    if [ "$QOS_QDISC_EFFECTIVE" = "fq_codel" ]; then
+        _vip_fq=$(_qos_fq_codel_args "$_rate_kbit" 32 128)
+        _bulk_fq=$(_qos_fq_codel_args "$_rate_kbit" 128 256)
+    fi
 
     iptables -t mangle -I FORWARD 1 -i $HOTSPOT_BR -m mac --mac-source "$mac" -j MARK --set-mark $cid 2>/dev/null
     
@@ -1293,8 +1440,8 @@ add_user_qos() {
     tc class add dev $WAN_INT parent ${cid}: classid $cid:1 htb rate ${_vip_rate}kbit ceil ${_vip_ceil}kbit burst 4k quantum 1500 prio 0 2>/dev/null
     tc class add dev $WAN_INT parent ${cid}: classid $cid:2 htb rate ${_bulk_rate}kbit ceil $GLOBAL_RATE burst $PER_USER_BURST quantum 1500 prio 1 2>/dev/null
 
-    tc qdisc add dev $WAN_INT parent ${cid}:1 handle $((cid+1000)): sfq perturb 10 limit $_vip_limit 2>/dev/null
-    tc qdisc add dev $WAN_INT parent ${cid}:2 handle $((cid+2000)): sfq perturb 10 limit $_bulk_limit 2>/dev/null
+    _qos_add_leaf $WAN_INT ${cid}:1 $((cid+1000)): "$_vip_limit" "$_vip_fq"
+    _qos_add_leaf $WAN_INT ${cid}:2 $((cid+2000)): "$_bulk_limit" "$_bulk_fq"
     
     tc filter add dev $WAN_INT parent 1:0 prio $cid handle $cid fw flowid 1:$cid 2>/dev/null
     
@@ -1323,8 +1470,8 @@ add_user_qos() {
     tc class add dev $HOTSPOT_BR parent $((cid+500)): classid $((cid+500)):2 htb rate ${_bulk_rate}kbit ceil $GLOBAL_RATE burst $PER_USER_BURST quantum 1500 prio 1 2>/dev/null
     
     # OPTIMIZATION: Same rate-scaled limits for download (Bridge)
-    tc qdisc add dev $HOTSPOT_BR parent $((cid+500)):1 handle $((cid+3000)): sfq perturb 10 limit $_vip_limit 2>/dev/null
-    tc qdisc add dev $HOTSPOT_BR parent $((cid+500)):2 handle $((cid+4000)): sfq perturb 10 limit $_bulk_limit 2>/dev/null
+    _qos_add_leaf $HOTSPOT_BR $((cid+500)):1 $((cid+3000)): "$_vip_limit" "$_vip_fq"
+    _qos_add_leaf $HOTSPOT_BR $((cid+500)):2 $((cid+4000)): "$_bulk_limit" "$_bulk_fq"
 
     tc filter add dev $HOTSPOT_BR protocol ip parent 2:0 prio $cid u32 match ip dst $ip/32 flowid 2:$cid 2>/dev/null
     
@@ -1508,6 +1655,11 @@ setup_qos() {
     # Normalise rate strings (handles bare m/k/g and mbps/kbps suffixes)
     GLOBAL_RATE=$(_norm_rate "$GLOBAL_RATE")
     UNAUTH_RATE=$(_norm_rate "$UNAUTH_RATE")
+
+    # Pick the per-user leaf qdisc (fq_codel / sfq) for this rebuild. Done
+    # before the trees are torn down: it may insmod the module and probes on lo,
+    # neither of which touches the hotspot interfaces.
+    qos_qdisc_resolve
 
     tc qdisc del dev $WAN_INT  root 2>/dev/null
     tc qdisc del dev $HOTSPOT_BR root 2>/dev/null
@@ -1783,6 +1935,10 @@ write_coin_config() {
         # write_coin_config() call would silently drop the admin's Equal
         # Sharing toggle back to unset/off.
         printf 'EQUAL_SHARING_ENABLED="%s"\n' "${EQUAL_SHARING_ENABLED:-0}"
+        # Same reasoning: setup_qos() only sees QOS_QDISC through the per-tick
+        # re-source of this file, so leaving it out would reset the admin's
+        # choice to the inline default on every write_coin_config() call.
+        printf 'QOS_QDISC="%s"\n'           "${QOS_QDISC:-auto}"
         printf 'INACTIVITY_TIMEOUT="%s"\n'  "$INACTIVITY_TIMEOUT"
         printf 'AUTO_PAUSE_ENABLED="%s"\n'  "${AUTO_PAUSE_ENABLED:-1}"
         # Without this line, every write_coin_config() call (hotspot

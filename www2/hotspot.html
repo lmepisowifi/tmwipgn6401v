@@ -31,6 +31,7 @@
         .dot{ width:7px;height:7px;border-radius:50%;background:currentColor; }
         /* ── Helpers ── */
         .field-hint{ font-size:11.5px;color:var(--text-secondary);margin-top:3px; }
+        .field-hint.qdisc-warn{ color:#ffc107; }
         code{ color:#ccc;font-size:12px; }
         /* ── Rate input row (number + unit dropdown side-by-side) ── */
         .rate-row{ display:flex;gap:6px;align-items:stretch; }
@@ -200,6 +201,17 @@
                         </div>
                     </div>
                     <div class="field-hint">Splits the Global Cap evenly among online clients (e.g. 20 Mbit/s ÷ 4 users ≈ 5 Mbit/s each). A single active client can still burst up to the full Global Cap whenever the others are idle. Overrides Per-User Rate while enabled.</div>
+                </div>
+                <!-- Queue discipline -->
+                <div class="col-sm-6">
+                    <label class="form-label" for="r-qdisc">Queue Discipline</label>
+                    <select class="form-select" id="r-qdisc">
+                        <option value="auto">Auto (fq_codel, falls back to sfq)</option>
+                        <option value="fq_codel">fq_codel (forced)</option>
+                        <option value="sfq">sfq (forced)</option>
+                    </select>
+                    <div class="field-hint">Queue type inside each client's gaming and bulk lanes. Auto uses fq_codel when it can be loaded and switches to sfq if not. Forcing fq_codel never falls back: if it can't be used, client queues are left as plain FIFO. Takes effect on Save &amp; Apply.</div>
+                    <div class="field-hint" id="qdisc-status"></div>
                 </div>
             </div>
             <hr class="my-3" style="border-color:var(--border-color);">
@@ -490,6 +502,7 @@ function loadConfig(){
             setAutoResumeUI(d.auto_resume_enabled===true||d.auto_resume_enabled==='1'||d.auto_resume_enabled===1);
             setReloadAfterSuccessUI(d.reload_after_time_added===true||d.reload_after_time_added==='1'||d.reload_after_time_added===1);
             setEqualShareUI(d.equal_sharing_enabled===true||d.equal_sharing_enabled==='1'||d.equal_sharing_enabled===1);
+            setQdiscUI(d.qos_qdisc, d.qos_qdisc_active, d.qos_qdisc_note, true);
             document.getElementById('c-coin-timeout').value  = d.coin_timeout||'';
             document.getElementById('c-strike-threshold').value = d.coin_strike_threshold||'';
             document.getElementById('c-cooldown').value       = d.coin_cooldown||'';
@@ -525,12 +538,15 @@ function saveRates(){
             +'&per_user_rate='+encodeURIComponent(pur)
             +'&per_user_burst='+encodeURIComponent(pub)
             +'&unauth_rate='+encodeURIComponent(uar)
-            +'&equal_sharing_enabled='+(esOn?'1':'0');
+            +'&equal_sharing_enabled='+(esOn?'1':'0')
+            +'&qos_qdisc='+encodeURIComponent(document.getElementById('r-qdisc').value);
     postForm('config_set', body, function(d){
         hideOverlay();
         if(!d.ok){toastr.error('Save failed');return;}
         postForm('qos_apply','',function(r2){
             toastr.success(r2.ok?'Rates saved — QoS updating…':'Saved (QoS trigger failed)');
+            // The watchdog rebuilds QoS within ~1-2 s; then show which qdisc it settled on.
+            setTimeout(refreshQdiscStatus, 2500);
         });
     });
 }
@@ -545,6 +561,35 @@ function setEqualShareUI(on){
 function toggleEqualShareUI(){
     var tog=document.getElementById('es-toggle');
     setEqualShareUI(!tog.classList.contains('on'));
+}
+
+/* ── Queue discipline (qdisc) ──
+   The dropdown holds the saved choice; the status line shows what the hotspot
+   controller actually settled on at its last QoS rebuild (and why, if that
+   differs from what was asked for). textContent only: the note can contain
+   kernel/insmod output. */
+function setQdiscStatusUI(active, note){
+    var st=document.getElementById('qdisc-status');
+    if(!active){
+        st.className='field-hint';
+        st.textContent='Active: not reported yet (hotspot stopped, or no QoS rebuild since boot)';
+        return;
+    }
+    st.className='field-hint'+(note?' qdisc-warn':'');
+    st.textContent='Active: '+(active==='none'?'none (plain FIFO)':active)+(note?' — '+note:'');
+}
+function setQdiscUI(want, active, note, setSelect){
+    if(setSelect){
+        document.getElementById('r-qdisc').value=(want==='fq_codel'||want==='sfq')?want:'auto';
+    }
+    setQdiscStatusUI(active, note);
+}
+// Status line only — never touches the dropdown, so an unsaved choice isn't reverted.
+function refreshQdiscStatus(){
+    fetch('/cgi-bin/hotspot.cgi?action=config_get',{cache:'no-store'})
+        .then(function(r){return r.json();})
+        .then(function(d){ if(d.ok) setQdiscUI(d.qos_qdisc, d.qos_qdisc_active, d.qos_qdisc_note, false); })
+        .catch(function(){});
 }
 
 /* ── Save session settings ── */
