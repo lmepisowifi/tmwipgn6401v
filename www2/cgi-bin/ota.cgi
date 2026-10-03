@@ -63,8 +63,13 @@ if [ "$REQUEST_METHOD" = "GET" ]; then
 
     if qs_has "action=config"; then
         _auto=$(sh "$OTA" get_auto 2>/dev/null); [ -z "$_auto" ] && _auto="0"
+        # insecure_tls: 1 = HTTPS certificate checking is OFF (--no-check-certificate).
+        # Anything but an explicit 1 (incl. an older ota.sh that doesn't know the
+        # verb and prints its usage line instead) reads as 0 = verification on.
+        _ins=$(sh "$OTA" get_insecure_tls 2>/dev/null)
+        case "$_ins" in 1) ;; *) _ins="0" ;; esac
         json_hdr
-        printf '{"auto":"%s"}\n' "$(json_esc "$_auto")"
+        printf '{"auto":"%s","insecure_tls":"%s"}\n' "$(json_esc "$_auto")" "$_ins"
         exit 0
     fi
 
@@ -105,6 +110,19 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
         AUTO=$(echo "$POST" | busybox sed -n 's/.*auto=\([01]\).*/\1/p'); [ -z "$AUTO" ] && AUTO=0
         _v=$(sh "$OTA" set_auto "$AUTO" 2>/dev/null)
         json_hdr; printf '{"auto":"%s"}\n' "$_v"; exit 0
+    fi
+
+    if echo "$QUERY_STRING $POST" | busybox grep -q "action=setinsecure"; then
+        # insecure=1 turns HTTPS certificate checking OFF; anything else (missing,
+        # malformed) turns it ON, so a bad request can only fail toward "verify".
+        INS=$(echo "$POST" | busybox sed -n 's/.*insecure=\([01]\).*/\1/p'); [ -z "$INS" ] && INS=0
+        _v=$(sh "$OTA" set_insecure_tls "$INS" 2>/dev/null)
+        json_hdr
+        case "$_v" in
+            0|1) printf '{"insecure_tls":"%s"}\n' "$_v" ;;
+            *)   printf '{"error":"could not save the setting (ota.sh too old or ota.env not writable)"}\n' ;;
+        esac
+        exit 0
     fi
 
     text_hdr; printf 'unknown action'; exit 0

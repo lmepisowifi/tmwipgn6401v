@@ -74,6 +74,26 @@
                             </span>
                         </div>
 
+                        <div class="d-flex align-items-start gap-3 mt-3">
+                            <div class="wlan-toggle" id="tls-toggle" role="switch" aria-checked="false"
+                                 onclick="onToggleTls()" title="Skip HTTPS certificate check" style="margin-top:2px">
+                                <div class="wlan-toggle-knob"></div>
+                            </div>
+                            <span style="font-size:13px">
+                                Skip certificate check
+                                <span style="color:var(--text-secondary)">— download with <code>--no-check-certificate</code> instead of verifying HTTPS certificates</span>
+                                <div class="field-hint">
+                                    Leave this off unless updates fail with a certificate error that
+                                    can't be fixed (a wrong device clock is the usual cause). Applies to
+                                    updates, module downloads and Telegram/Discord alerts.
+                                </div>
+                                <div class="field-hint" id="tls-warn" style="color:#ffd666;display:none">
+                                    Certificate checking is OFF. Anyone between this device and GitHub
+                                    could replace an update with malicious code.
+                                </div>
+                            </span>
+                        </div>
+
                         <div class="d-grid gap-2 mt-3">
                             <button class="btn btn-secondary" id="check-btn" onclick="doCheck()">Check for updates</button>
                             <button class="btn btn-primary" id="update-btn" onclick="doUpdate()" style="display:none">Update now</button>
@@ -237,6 +257,7 @@
                 var on = (j.auto === '1');
                 t.classList.toggle('on', on);
                 t.setAttribute('aria-checked', on ? 'true' : 'false');
+                setTlsUi(j.insecure_tls === '1');
             })
             .catch(function(){});
     }
@@ -255,6 +276,41 @@
             else toastr.info('You will be notified of updates but choose when to install.', 'Automatic updates off');
         })
         .catch(function(){ toastr.error('Could not save the setting.', 'Error'); });
+    }
+
+    // Skip-certificate-check switch. ON = wget runs with --no-check-certificate.
+    function setTlsUi(skip) {
+        var t = document.getElementById('tls-toggle');
+        t.classList.toggle('on', skip);
+        t.setAttribute('aria-checked', skip ? 'true' : 'false');
+        document.getElementById('tls-warn').style.display = skip ? 'block' : 'none';
+    }
+
+    function onToggleTls() {
+        var t = document.getElementById('tls-toggle');
+        var turnOn = !t.classList.contains('on');
+        if (turnOn && !confirm('Skip HTTPS certificate checking?\n\n' +
+            'Updates, module downloads and Telegram/Discord alerts will no longer verify who they are ' +
+            'talking to. Anyone on the network path between this device and GitHub could replace an ' +
+            'update with malicious code.\n\n' +
+            'Only do this if updates fail with a certificate error you cannot fix (for example the ' +
+            'device clock cannot be set).')) return;
+        t.classList.add('disabled-ui');          // block double-clicks while saving
+        fetch('/cgi-bin/ota.cgi?action=setinsecure', {
+            method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'},
+            body:'insecure=' + (turnOn ? 1 : 0)
+        })
+        .then(function(r){ return r.json(); })
+        .then(function(j){
+            if (j.error) { toastr.error(j.error, 'Error'); loadConfig(); return; }
+            // Trust what the server says it saved, not what we asked for.
+            var on = (j.insecure_tls === '1');
+            setTlsUi(on);
+            if (on) toastr.warning('Downloads no longer verify HTTPS certificates.', 'Certificate check off');
+            else    toastr.success('Downloads verify HTTPS certificates.', 'Certificate check on');
+        })
+        .catch(function(){ toastr.error('Could not save the setting.', 'Error'); loadConfig(); })
+        .then(function(){ t.classList.remove('disabled-ui'); });
     }
 
     function loadChangelog() {

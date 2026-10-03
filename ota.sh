@@ -31,6 +31,7 @@
 #   ota.sh rollback        # restore the previous version kept from the last apply
 #   ota.sh cron            # scheduled check; notify, and apply if OTA_AUTO=1
 #   ota.sh status          # print the current status token
+#   ota.sh get_insecure_tls | set_insecure_tls 0|1   # HTTPS cert check off/on (OTA_INSECURE_TLS)
 #
 # Only uses tools present on the device: wget(GNU), sha256sum, tar, gzip,
 # sed, awk, grep, mv, cp, rm, mkdir.
@@ -1279,6 +1280,37 @@ do_set_auto() {
     echo "$_v"
 }
 
+# ---- HTTPS certificate-check toggle (persists OTA_INSECURE_TLS in ota.env) ----
+# 1 = wget runs with --no-check-certificate (verification OFF); 0 = verify
+# against the CA bundle. The same key is honoured by module_ctl.sh and
+# hotspot/notify.sh, so this one switch covers updates, module installs and
+# Telegram/Discord alerts. Driven from Admin > System > Software Update.
+do_get_insecure_tls() { [ "$OTA_INSECURE_TLS" = "1" ] && echo 1 || echo 0; }
+
+do_set_insecure_tls() {
+    case "$1" in 1) _v=1 ;; *) _v=0 ;; esac
+    if [ -f "$ENV_FILE" ] && grep -q '^OTA_INSECURE_TLS=' "$ENV_FILE"; then
+        # Temp file next to ota.env (same filesystem) so the mv is an atomic
+        # rename, never a cross-fs copy that a power cut could truncate.
+        _tmp=$(mktemp "$ENV_FILE.XXXXXX") || return 1
+        if sed "s/^OTA_INSECURE_TLS=.*/OTA_INSECURE_TLS=\"$_v\"/" "$ENV_FILE" > "$_tmp"; then
+            mv "$_tmp" "$ENV_FILE"
+        else
+            rm -f "$_tmp"; return 1
+        fi
+    else
+        # Leading newline: harmless blank line in a sourced env file, and it
+        # keeps the key off the end of a last line that has no trailing \n.
+        printf '\nOTA_INSECURE_TLS="%s"\n' "$_v" >> "$ENV_FILE"
+    fi
+    if [ "$_v" = "1" ]; then
+        log "HTTPS certificate verification DISABLED from the admin UI (OTA_INSECURE_TLS=1)"
+    else
+        log "HTTPS certificate verification ENABLED from the admin UI (OTA_INSECURE_TLS=0)"
+    fi
+    echo "$_v"
+}
+
 # ---- changelog (raw CHANGELOG.md from the repo) ----
 do_changelog() {
     [ -n "$OTA_CHANGELOG_URL" ] || { echo "No changelog configured."; return 0; }
@@ -1445,8 +1477,10 @@ case "$1" in
     changelog) do_changelog ;;
     get_auto) do_get_auto ;;
     set_auto) do_set_auto "$2" ;;
+    get_insecure_tls) do_get_insecure_tls ;;
+    set_insecure_tls) do_set_insecure_tls "$2" ;;
     nodemcu)  mkdir -p "$DL"; fetch "$OTA_MANIFEST_URL" "$DL/manifest.txt" && sync_nodemcu ;;
     status)   cat "$STATUS_FILE" 2>/dev/null || echo "idle" ;;
     log)      cat "$LOG" 2>/dev/null ;;
-    *) echo "usage: $0 {check|apply [version]|rollback|cron|changelog|get_auto|set_auto 0|1|nodemcu|status|log}" ; exit 2 ;;
+    *) echo "usage: $0 {check|apply [version]|rollback|cron|changelog|get_auto|set_auto 0|1|get_insecure_tls|set_insecure_tls 0|1|nodemcu|status|log}" ; exit 2 ;;
 esac
