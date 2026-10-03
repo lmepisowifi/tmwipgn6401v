@@ -379,8 +379,13 @@ do_check() {
         printf '{"error":"OTA_MANIFEST_URL not set","current":"%s"}\n' "$(json_esc "$_cur")"
         return 0
     fi
-    if ! fetch "$OTA_MANIFEST_URL" "$DL/manifest.txt"; then
-        if grep -Eqi 'rate.limit|Too Many Requests|terms.*service' "$DL/manifest.txt" 2>/dev/null; then
+    fetch "$OTA_MANIFEST_URL" "$DL/manifest.txt"; _frc=$?
+    if [ "$_frc" -ne 0 ]; then
+        if [ "$_frc" -eq 5 ]; then
+            # wget exit 5 = TLS certificate verification failed (see fetch()).
+            # Name it, so the admin knows about the "Skip certificate check" switch.
+            printf '{"error":"HTTPS certificate check failed - the device clock is probably wrong. Fix the time, or turn on Skip certificate check below","current":"%s"}\n' "$(json_esc "$_cur")"
+        elif grep -Eqi 'rate.limit|Too Many Requests|terms.*service' "$DL/manifest.txt" 2>/dev/null; then
             printf '{"error":"update server rate limited - wait a few minutes and try again","current":"%s"}\n' "$(json_esc "$_cur")"
         else
             printf '{"error":"could not reach update server (jsDelivr/GitHub)","current":"%s"}\n' "$(json_esc "$_cur")"
