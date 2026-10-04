@@ -83,6 +83,7 @@ setInterval(function () {
             { label: 'Timezone',         href: '/timezone.html'      },
             { label: 'Accounts',         href: '/accounts.html'      },
             { label: 'GPON Settings',    href: '/gpon.html'          },
+            { label: 'EPON Settings',    href: '/epon.html'          },
             { label: 'Dashboard Layout', href: '/dashboard-layout.html' },
             { label: 'Modules',          href: '/modules.html'       },
             { label: 'Tailscale',        href: '/tailscale.html', module: 'tailscale' },
@@ -183,7 +184,7 @@ setInterval(function () {
         ].join('\n');
     }
 
-    function renderNav(showGpon, hotspotRunning, installedMap) {
+    function renderNav(showGpon, showEpon, hotspotRunning, installedMap) {
         function modOk(m){ return !m || (installedMap && installedMap[m]); }
         var filteredNAV = NAV
             // Hide whole groups (e.g. Hotspot) whose module isn't installed.
@@ -192,14 +193,16 @@ setInterval(function () {
                 if (!item.children) return item;
                 var fc = item.children.filter(function(c) {
                     if (!modOk(c.module)) return false;   // hide pages (e.g. Tailscale) whose module isn't installed
-                    return c.href !== '/gpon.html' || showGpon;
+                    if (c.href === '/gpon.html') return showGpon;
+                    if (c.href === '/epon.html') return showEpon;
+                    return true;
                 });
                 return { label: item.label, href: item.href, module: item.module, children: fc };
             });
         _script.insertAdjacentHTML('beforebegin', buildNavHtml(filteredNAV, hotspotRunning));
     }
 
-    // Fetch system_status (for GPON visibility) and hotspot status (for Hotspot sub-items)
+    // Fetch system_status (for GPON/EPON visibility) and hotspot status (for Hotspot sub-items)
     // in parallel — render nav only after both resolve so items are correct first paint.
     Promise.all([
         fetch('/cgi-bin/lme.cgi?action=system_status', { cache: 'no-store' })
@@ -214,6 +217,7 @@ setInterval(function () {
     ]).then(function(results) {
         var sys = results[0]; var hsp = results[1]; var mod = results[2];
         var isGpon = (String(sys.pon_mode) === '1');
+        var isEpon = (String(sys.pon_mode) === '2');
         var hotspotRunning = (hsp.hotspot_running === true);
         // Safe defaults: keep an existing hotspot visible on a transient error;
         // tailscale is opt-in so it stays hidden unless the registry confirms it.
@@ -222,7 +226,7 @@ setInterval(function () {
             installedMap = {};
             mod.modules.forEach(function(m){ installedMap[m.id] = (m.installed === true); });
         }
-        renderNav(isGpon, hotspotRunning, installedMap);
-    }).catch(function() { renderNav(true, false, { hotspot: true, tailscale: false }); });
+        renderNav(isGpon, isEpon, hotspotRunning, installedMap);
+    }).catch(function() { renderNav(true, false, false, { hotspot: true, tailscale: false }); });
 }());
 

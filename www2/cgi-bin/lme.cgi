@@ -638,6 +638,69 @@ if [ "$REQUEST_METHOD" = "GET" ]; then
         exit 0
     fi
 
+    # --- action=epon_status: return EPON LOID, LOID password and the LLID/MAC table ---
+    if echo "$QUERY_STRING" | busybox grep -q "action=epon_status"; then
+        E_LOID=$(mib get LOID 2>/dev/null \
+            | busybox grep "=" \
+            | busybox cut -d'=' -f2- \
+            | busybox tr -d '\r\n' | busybox sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+        E_LOID_PW=$(mib get LOID_PASSWD 2>/dev/null \
+            | busybox grep "=" \
+            | busybox cut -d'=' -f2- \
+            | busybox tr -d '\r\n' | busybox sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+        E_PON_MODE=$(mib get PON_MODE 2>/dev/null \
+            | busybox grep "=" \
+            | busybox cut -d'=' -f2 \
+            | busybox tr -d '\r\n' | busybox sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+        E_PON_AUTO=$(mib get PON_MODE_AUTO_CHECK_ENABLE 2>/dev/null \
+            | busybox grep "=" \
+            | busybox cut -d'=' -f2 \
+            | busybox tr -d '\r\n' | busybox sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+        [ -z "$E_PON_MODE" ] && E_PON_MODE=1
+        [ -z "$E_PON_AUTO" ] && E_PON_AUTO=1
+        ESC_ELOID=$(printf '%s' "$E_LOID"    | busybox sed 's/\\/\\\\/g; s/"/\\"/g')
+        ESC_ELPWD=$(printf '%s' "$E_LOID_PW" | busybox sed 's/\\/\\\\/g; s/"/\\"/g')
+
+        # LLID table: configured MAC comes from the EPON_LLID_TBL mib chain
+        # (created at first boot, one record per LLID the chip supports);
+        # live LLID value + registration state come from the switch driver.
+        E_NUM=$(mib get EPON_LLID_TBL.NUM 2>/dev/null \
+            | busybox grep "=" | busybox cut -d'=' -f2 | busybox tr -cd '0-9')
+        [ -z "$E_NUM" ] && E_NUM=0
+        [ "$E_NUM" -gt 8 ] && E_NUM=8
+        E_DIAG=$(diag epon get llid-table 2>/dev/null)
+        E_ENTRIES=""
+        E_SEP=""
+        E_I=0
+        while [ "$E_I" -lt "$E_NUM" ]; do
+            E_LINE=$(printf '%s\n' "$E_DIAG" | busybox grep "idx:$E_I " | busybox head -n1)
+            E_LLID=$(printf '%s' "$E_LINE" | busybox sed -n 's/.*LLID:[[:space:]]*\([0-9]*\).*/\1/p')
+            E_VALID=$(printf '%s' "$E_LINE" | busybox sed -n 's/.*valid:\([0-9]*\).*/\1/p')
+            [ -z "$E_LLID" ] && E_LLID=0
+            [ -z "$E_VALID" ] && E_VALID=0
+            # BYTE6 mib members print as 12 plain hex digits -> aa:bb:cc:dd:ee:ff
+            E_MAC=$(mib get "EPON_LLID_TBL.$E_I.macAddr" 2>/dev/null \
+                | busybox grep "=" | busybox cut -d'=' -f2- \
+                | busybox tr -cd '0-9a-fA-F' | busybox tr 'A-F' 'a-f')
+            if [ "${#E_MAC}" = "12" ]; then
+                E_MAC=$(printf '%s' "$E_MAC" | busybox sed 's/\(..\)\(..\)\(..\)\(..\)\(..\)\(..\)/\1:\2:\3:\4:\5:\6/')
+            else
+                # mib unreadable -> fall back to what the driver reports
+                E_MAC=$(printf '%s' "$E_LINE" | busybox sed -n 's/.*mac-address:\([0-9A-Fa-f:]*\).*/\1/p' | busybox tr 'A-F' 'a-f')
+                [ "${#E_MAC}" = "17" ] || E_MAC=""
+            fi
+            E_ENTRIES="${E_ENTRIES}${E_SEP}{\"idx\":$E_I,\"llid\":$E_LLID,\"valid\":$E_VALID,\"mac\":\"$E_MAC\"}"
+            E_SEP=","
+            E_I=$((E_I + 1))
+        done
+
+        printf "Status: 200 OK\r\n"
+        printf "Content-Type: application/json\r\n\r\n"
+        printf '{"loid":"%s","loid_passwd":"%s","llids":[%s],"pon_mode":%s,"pon_auto":%s}' \
+            "$ESC_ELOID" "$ESC_ELPWD" "$E_ENTRIES" "$E_PON_MODE" "$E_PON_AUTO"
+        exit 0
+    fi
+
     # --- action=static: static system info (hostname, firmware, kernel, GPON, MAC, HW S/N) ---
     if echo "$QUERY_STRING" | busybox grep -q "action=static"; then
         SW_ACTIVE=$(nv getenv sw_active 2>/dev/null \
@@ -1873,6 +1936,121 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
         exit 0
     fi
 
+
+    # --- action=epon_settings: apply EPON LOID, LOID password and LLID/MAC mapping ---
+    if echo "$QUERY_STRING" | busybox grep -q "action=epon_settings"; then
+        FORM_LOID=$(echo "$POST_DATA" | busybox sed 's/&/\n/g' \
+            | busybox grep '^loid=' | busybox cut -d'=' -f2-)
+        FORM_LOID=$(busybox httpd -d "$FORM_LOID" | busybox tr -d '\r\n')
+        FORM_LOID_PW=$(echo "$POST_DATA" | busybox sed 's/&/\n/g' \
+            | busybox grep '^loid_passwd=' | busybox cut -d'=' -f2-)
+        FORM_LOID_PW=$(busybox httpd -d "$FORM_LOID_PW" | busybox tr -d '\r\n')
+
+        # Validate LOID (1-24 chars) and LOID password (0-12 chars), same limits
+        # as the vendor EPON page. Restricted charset: these values are later
+        # handed to oamcli as arguments.
+        if [ -z "$FORM_LOID" ] || [ "${#FORM_LOID}" -gt 24 ]; then
+            printf "Status: 400 Bad Request\r\n"
+            printf "Content-Type: text/plain\r\n\r\n"
+            printf "Invalid LOID: must be 1-24 characters"
+            exit 0
+        fi
+        if ! printf '%s' "$FORM_LOID" | busybox grep -qE '^[A-Za-z0-9._@:#+~=!*^%,/?-]+$'; then
+            printf "Status: 400 Bad Request\r\n"
+            printf "Content-Type: text/plain\r\n\r\n"
+            printf "Invalid LOID: contains unsupported characters"
+            exit 0
+        fi
+        if [ "${#FORM_LOID_PW}" -gt 12 ]; then
+            printf "Status: 400 Bad Request\r\n"
+            printf "Content-Type: text/plain\r\n\r\n"
+            printf "Invalid LOID password: must be at most 12 characters"
+            exit 0
+        fi
+        if [ -n "$FORM_LOID_PW" ] && ! printf '%s' "$FORM_LOID_PW" | busybox grep -qE '^[A-Za-z0-9._@:#+~=!*^%,/?-]+$'; then
+            printf "Status: 400 Bad Request\r\n"
+            printf "Content-Type: text/plain\r\n\r\n"
+            printf "Invalid LOID password: contains unsupported characters"
+            exit 0
+        fi
+
+        # Validate every submitted LLID MAC (mac0=..&mac1=..) BEFORE writing anything
+        E_NUM=$(mib get EPON_LLID_TBL.NUM 2>/dev/null \
+            | busybox grep "=" | busybox cut -d'=' -f2 | busybox tr -cd '0-9')
+        [ -z "$E_NUM" ] && E_NUM=0
+        [ "$E_NUM" -gt 8 ] && E_NUM=8
+        MAC_LIST=""     # "idx=aa:bb:cc:dd:ee:ff" entries, space separated
+        E_I=0
+        while [ "$E_I" -lt "$E_NUM" ]; do
+            E_FMAC=$(echo "$POST_DATA" | busybox sed 's/&/\n/g' \
+                | busybox grep "^mac${E_I}=" | busybox cut -d'=' -f2-)
+            E_FMAC=$(busybox httpd -d "$E_FMAC" | busybox tr -d '\r\n' | busybox tr 'A-F' 'a-f')
+            if [ -n "$E_FMAC" ]; then
+                if ! printf '%s' "$E_FMAC" | busybox grep -qE '^([0-9a-f]{2}:){5}[0-9a-f]{2}$'; then
+                    printf "Status: 400 Bad Request\r\n"
+                    printf "Content-Type: text/plain\r\n\r\n"
+                    printf "Invalid MAC for LLID index %s: must be xx:xx:xx:xx:xx:xx" "$E_I"
+                    exit 0
+                fi
+                E_FIRST=$(printf '%s' "$E_FMAC" | busybox cut -c1-2)
+                if [ "$E_FMAC" = "00:00:00:00:00:00" ] || [ $(( 0x$E_FIRST & 1 )) -eq 1 ]; then
+                    printf "Status: 400 Bad Request\r\n"
+                    printf "Content-Type: text/plain\r\n\r\n"
+                    printf "Invalid MAC for LLID index %s: must be a non-zero unicast address" "$E_I"
+                    exit 0
+                fi
+                MAC_LIST="$MAC_LIST $E_I=$E_FMAC"
+            fi
+            E_I=$((E_I + 1))
+        done
+
+        # Apply all MIB settings synchronously before responding.
+        # *_OLD copies are kept in step, as the vendor EPON page does.
+        MIB_ERR=0
+        mib set LOID "$FORM_LOID"
+        mib set LOID_OLD "$FORM_LOID"
+        mib set LOID_PASSWD "$FORM_LOID_PW"
+        mib set LOID_PASSWD_OLD "$FORM_LOID_PW"
+        for ENT in $MAC_LIST; do
+            E_IDX=${ENT%%=*}
+            E_VAL=${ENT#*=}
+            E_HEX=$(printf '%s' "$E_VAL" | busybox tr -d ':')
+            SET_OUT=$(mib set "EPON_LLID_TBL.$E_IDX.macAddr" "$E_HEX" 2>&1)
+            if printf '%s' "$SET_OUT" | busybox grep -qi "fail"; then
+                MIB_ERR=1
+            fi
+        done
+        mib commit
+
+        if [ "$MIB_ERR" = "1" ]; then
+            printf "Status: 500 Internal Server Error\r\n"
+            printf "Content-Type: text/plain\r\n\r\n"
+            printf "Failed to save one or more LLID MAC entries"
+            exit 0
+        fi
+
+        # Respond immediately, then push the new values into the running EPON
+        # OAM daemon (same oamcli calls the vendor page makes). Detached with
+        # its output discarded so the HTTP connection closes right away.
+        printf "Status: 200 OK\r\n"
+        printf "Content-Type: text/plain\r\n\r\n"
+        printf "OK"
+
+        (
+            if [ -x /bin/oamcli ]; then
+                E_J=0
+                while [ "$E_J" -lt "$E_NUM" ]; do
+                    /bin/oamcli set ctc loid "$E_J" "$FORM_LOID" "$FORM_LOID_PW"
+                    E_J=$((E_J + 1))
+                done
+                for ENT in $MAC_LIST; do
+                    /bin/oamcli set config mac "${ENT%%=*}" "${ENT#*=}"
+                done
+            fi
+        ) >/dev/null 2>&1 &
+
+        exit 0
+    fi
 
     # --- action=macfilter_mode: set WLAN1_MACAC_ENABLED with revert ---
     if echo "$QUERY_STRING" | busybox grep -q "action=macfilter_mode"; then

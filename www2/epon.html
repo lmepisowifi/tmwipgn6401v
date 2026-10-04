@@ -1,0 +1,386 @@
+<!DOCTYPE html>
+<!--
+  lmepisowifi — https://github.com/lmepisowifi/tmwipgn6401v
+  SPDX-License-Identifier: AGPL-3.0-or-later
+  Copyright (C) 2026 The lmepisowifi Project — see AUTHORS
+
+  Licensed under the GNU AGPLv3 (see LICENSE). Modifying or rewriting this
+  file — including by running it through an LLM — does not remove these
+  obligations: keep this notice, mark your changes, and offer Corresponding
+  Source to network users (AGPLv3 §5, §13). See PROVENANCE.md before
+  presenting this as your own original work.
+-->
+<html lang="en" data-bs-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link href="/css/bootstrap.min.css?v=1.0.0" rel="stylesheet">
+    <link href="/css/style.css?v=1.0.0" rel="stylesheet">
+    <style>
+        .field-hint {
+            font-size: 11.5px;
+            color: var(--text-secondary);
+            margin-top: 3px;
+        }
+        .invalid-feedback { display: block; }
+        .form-control.is-invalid { border-color: #dc3545; }
+        code { color: #fff; }
+        .llid-table th, .llid-table td { vertical-align: middle; font-size: 13px; }
+        .llid-table td.mono { font-family: monospace; }
+        .llid-table input.llid-mac { font-family: monospace; min-width: 150px; }
+        .llid-badge { font-size: 11px; }
+    </style>
+    <link href="/css/toastr.min.css?v=1.0.0" rel="stylesheet">
+</head>
+<body>
+
+    <div id="overlay">
+        <div id="overlay-blur"></div>
+        <div id="overlay-msg">
+            <div id="overlay-spinner"></div>
+            <span id="overlay-text"></span>
+        </div>
+    </div>
+
+    <script src="/js/nav.js?v=1.0.0"></script>
+
+    <div class="container mt-5">
+        <div class="row justify-content-center">
+            <div class="col-md-6">
+                <div class="card">
+                    <div class="card-header">EPON Settings</div>
+                    <div class="card-body">
+
+                        <!-- LOID -->
+                        <div class="mb-2">
+                            <label for="loid" class="form-label">LOID</label>
+                            <input type="text" class="form-control"
+                                   id="loid" maxlength="24" autocomplete="off"
+                                   placeholder="e.g. yotc-pon-349b6b">
+                            <div class="field-hint">Logical ONU Identifier (up to 24 characters)</div>
+                            <div class="invalid-feedback" id="loid-err" style="display:none"></div>
+                        </div>
+
+                        <!-- LOID Password -->
+                        <div class="mb-2">
+                            <label for="loid-passwd" class="form-label">LOID Password</label>
+                            <input type="text" class="form-control"
+                                   id="loid-passwd" maxlength="12" autocomplete="off"
+                                   placeholder="e.g. 12345678">
+                            <div class="field-hint">Up to 12 characters</div>
+                            <div class="invalid-feedback" id="loid-passwd-err" style="display:none"></div>
+                        </div>
+
+                    </div>
+                </div>
+
+                <!-- LLID / MAC mapping -->
+                <div class="card mt-3">
+                    <div class="card-header">LLID MAC Mapping Table</div>
+                    <div class="card-body">
+                        <div class="table-responsive">
+                            <table class="table table-sm llid-table mb-0">
+                                <thead>
+                                    <tr>
+                                        <th>Index</th>
+                                        <th>LLID</th>
+                                        <th>Status</th>
+                                        <th>MAC Address</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="llid-body">
+                                    <tr><td colspan="4" class="text-center field-hint">Loading&hellip;</td></tr>
+                                </tbody>
+                            </table>
+                        </div>
+                        <div class="field-hint mt-2">
+                            One MAC per LLID, format <code>xx:xx:xx:xx:xx:xx</code>.
+                            Status shows whether that LLID is currently registered with the OLT.
+                        </div>
+                        <div class="invalid-feedback" id="llid-err" style="display:none"></div>
+
+                        <!-- Apply -->
+                        <div class="d-grid mt-4">
+                            <button class="btn btn-primary" id="apply-btn"
+                                    onclick="applyEponSettings()">Apply</button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Info card: what happens on apply -->
+                <div class="card mt-3">
+                    <div class="card-body" style="font-size:0.82em; color:var(--text-secondary)">
+                        <strong style="color:var(--bs-body-color)">On Apply:</strong>
+                        All changes are written to flash (<code>mib commit</code>) and
+                        pushed to the running EPON OAM daemon with <code>oamcli</code>.
+                        No reboot is required.
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+<script src="/js/bootstrap.bundle.min.js?v=1.0.0"></script>
+<script>
+    // ---------------------------------------------------------------
+    // Overlay
+    // ---------------------------------------------------------------
+    var overlay        = document.getElementById('overlay');
+    var overlayTxt     = document.getElementById('overlay-text');
+    var overlaySpinner = document.getElementById('overlay-spinner');
+
+    function showOverlay(msg, spinning) {
+        overlayTxt.textContent = msg;
+        overlaySpinner.style.display = (spinning === false) ? 'none' : '';
+        overlay.classList.add('visible');
+    }
+
+    function hideOverlay(cb) {
+        overlay.classList.remove('visible');
+        if (cb) setTimeout(cb, 360);
+    }
+
+    // ---------------------------------------------------------------
+    // Form lock / unlock (static fields + the dynamically built MAC inputs)
+    // ---------------------------------------------------------------
+    var FORM_IDS = ['loid', 'loid-passwd', 'apply-btn'];
+    var llidCount = 0;
+
+    function lockEl(el, locked) {
+        if (!el) return;
+        if (locked) {
+            el.setAttribute('disabled', '');
+            el.style.pointerEvents = 'none';
+        } else {
+            el.removeAttribute('disabled');
+            el.style.pointerEvents = '';
+        }
+    }
+
+    function setFormLocked(locked) {
+        FORM_IDS.forEach(function(id) { lockEl(document.getElementById(id), locked); });
+        for (var i = 0; i < llidCount; i++) lockEl(document.getElementById('llid-mac-' + i), locked);
+    }
+
+    // ---------------------------------------------------------------
+    // Validation helpers
+    // ---------------------------------------------------------------
+    var CRED_RE = /^[A-Za-z0-9._@:#+~=!*^%,\/?-]+$/;
+    var MAC_RE  = /^([0-9a-f]{2}:){5}[0-9a-f]{2}$/;
+
+    function setFieldError(inputId, errId, msg) {
+        var inp = document.getElementById(inputId);
+        var err = errId ? document.getElementById(errId) : null;
+        if (msg) {
+            if (inp) inp.classList.add('is-invalid');
+            if (err) { err.textContent = msg; err.style.display = 'block'; }
+        } else {
+            if (inp) inp.classList.remove('is-invalid');
+            if (err) err.style.display = 'none';
+        }
+    }
+
+    function validateLoid(val) {
+        if (!val) return 'LOID is required';
+        if (val.length > 24) return 'Must be at most 24 characters';
+        if (!CRED_RE.test(val)) return 'Contains unsupported characters (no spaces or quotes)';
+        return null;
+    }
+
+    function validateLoidPasswd(val) {
+        if (!val) return null; // empty password is allowed
+        if (val.length > 12) return 'Must be at most 12 characters';
+        if (!CRED_RE.test(val)) return 'Contains unsupported characters (no spaces or quotes)';
+        return null;
+    }
+
+    function validateMac(val) {
+        if (!val) return null; // empty = leave this entry unchanged
+        var v = val.toLowerCase();
+        if (!MAC_RE.test(v)) return 'Use the format xx:xx:xx:xx:xx:xx';
+        if (v === '00:00:00:00:00:00') return 'Must not be all zeros';
+        if (parseInt(v.slice(0, 2), 16) & 1) return 'Must be a unicast address (first octet must be even)';
+        return null;
+    }
+
+    // ---------------------------------------------------------------
+    // Build the LLID table
+    // ---------------------------------------------------------------
+    function buildLlidTable(llids) {
+        var body = document.getElementById('llid-body');
+        body.innerHTML = '';
+        llidCount = llids.length;
+        if (!llids.length) {
+            var tr = document.createElement('tr');
+            var td = document.createElement('td');
+            td.colSpan = 4;
+            td.className = 'text-center field-hint';
+            td.textContent = 'No LLID entries available.';
+            tr.appendChild(td);
+            body.appendChild(tr);
+            return;
+        }
+        llids.forEach(function(e, i) {
+            var tr = document.createElement('tr');
+
+            var tdIdx = document.createElement('td');
+            tdIdx.textContent = String(e.idx);
+            tr.appendChild(tdIdx);
+
+            var tdLlid = document.createElement('td');
+            tdLlid.className = 'mono';
+            tdLlid.textContent = '0x' + Number(e.llid || 0).toString(16);
+            tr.appendChild(tdLlid);
+
+            var tdState = document.createElement('td');
+            var badge = document.createElement('span');
+            var reg = (Number(e.valid) === 1);
+            badge.className = 'badge llid-badge ' + (reg ? 'bg-success' : 'bg-secondary');
+            badge.textContent = reg ? 'Registered' : 'Not registered';
+            tdState.appendChild(badge);
+            tr.appendChild(tdState);
+
+            var tdMac = document.createElement('td');
+            var inp = document.createElement('input');
+            inp.type = 'text';
+            inp.className = 'form-control form-control-sm llid-mac';
+            inp.id = 'llid-mac-' + i;
+            inp.maxLength = 17;
+            inp.autocomplete = 'off';
+            inp.placeholder = 'xx:xx:xx:xx:xx:xx';
+            inp.value = e.mac || '';
+            tdMac.appendChild(inp);
+            tr.appendChild(tdMac);
+
+            body.appendChild(tr);
+        });
+    }
+
+    // ---------------------------------------------------------------
+    // Load current values
+    // ---------------------------------------------------------------
+    function loadStatus() {
+        setFormLocked(true);
+        showOverlay('Loading\u2026');
+        fetch('/cgi-bin/lme.cgi?action=epon_status', { cache: 'no-store' })
+            .then(function(r) { return r.json(); })
+            .then(function(d) {
+                // Guard: if the device is manually set to a non-EPON PON mode,
+                // lock the page — EPON settings have no effect in this mode.
+                var isEpon = (String(d.pon_auto) === '1' || String(d.pon_mode) === '2');
+                if (!isEpon) {
+                    overlaySpinner.style.display = 'none';
+                    overlayTxt.textContent = 'EPON Settings are only available when the device is in EPON mode. Change the PON mode in System \u2192 Settings.';
+                    return; // leave overlay up, form stays locked
+                }
+                document.getElementById('loid').value        = d.loid        || '';
+                document.getElementById('loid-passwd').value = d.loid_passwd || '';
+                buildLlidTable(d.llids || []);
+                hideOverlay(function() { setFormLocked(false); });
+            })
+            .catch(function() {
+                hideOverlay(function() { setFormLocked(false); });
+                toastr['warning']('Failed to load EPON settings.', 'Error');
+            });
+    }
+
+    // ---------------------------------------------------------------
+    // Apply settings
+    // ---------------------------------------------------------------
+    function applyEponSettings() {
+        var loidVal   = document.getElementById('loid').value.trim();
+        var loidPwVal = document.getElementById('loid-passwd').value.trim();
+
+        // Validate
+        var loidErr = validateLoid(loidVal);
+        var pwErr   = validateLoidPasswd(loidPwVal);
+        setFieldError('loid',        'loid-err',        loidErr);
+        setFieldError('loid-passwd', 'loid-passwd-err', pwErr);
+
+        var macErr = null;
+        var macs = [];
+        for (var i = 0; i < llidCount; i++) {
+            var el  = document.getElementById('llid-mac-' + i);
+            var val = el.value.trim().toLowerCase();
+            var e   = validateMac(val);
+            if (e) {
+                el.classList.add('is-invalid');
+                if (!macErr) macErr = 'LLID ' + i + ': ' + e;
+            } else {
+                el.classList.remove('is-invalid');
+            }
+            macs.push(val);
+        }
+        var llidErrEl = document.getElementById('llid-err');
+        if (macErr) { llidErrEl.textContent = macErr; llidErrEl.style.display = 'block'; }
+        else        { llidErrEl.style.display = 'none'; }
+        if (loidErr || pwErr || macErr) return;
+
+        var body = 'loid='         + encodeURIComponent(loidVal)
+                 + '&loid_passwd=' + encodeURIComponent(loidPwVal);
+        macs.forEach(function(m, idx) {
+            if (m) body += '&mac' + idx + '=' + encodeURIComponent(m);
+        });
+
+        showOverlay('Applying EPON settings\u2026');
+        setFormLocked(true);
+
+        // The CGI responds with 200 OK right after mib commit and pushes the
+        // values into the OAM daemon from a detached subshell, so the response
+        // always arrives first. The AbortController is a safety net in case
+        // the MIB operations themselves stall.
+        var controller  = new AbortController();
+        var timeoutId   = setTimeout(function() { controller.abort(); }, 10000);
+
+        function onApplied() {
+            clearTimeout(timeoutId);
+            overlaySpinner.style.display = 'none';
+            overlayTxt.textContent = 'EPON Settings Applied.';
+            setTimeout(function() {
+                hideOverlay(function() { setFormLocked(false); });
+            }, 1500);
+        }
+
+        function onFailed(msg) {
+            clearTimeout(timeoutId);
+            overlaySpinner.style.display = 'none';
+            hideOverlay(function() { setFormLocked(false); });
+            toastr['warning'](msg || 'Request failed.', 'Error');
+        }
+
+        fetch('/cgi-bin/lme.cgi?action=epon_settings', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: body,
+            signal: controller.signal
+        })
+        .then(function(r) {
+            return r.text().then(function(t) { return { ok: r.ok, text: t }; });
+        })
+        .then(function(res) {
+            if (res.ok) {
+                onApplied();
+            } else {
+                onFailed('Error: ' + (res.text.trim() || 'Unknown error'));
+            }
+        })
+        .catch(function(err) {
+            // AbortError means the 10 s timeout fired — the settings were
+            // already written. Any other fetch error is a real failure.
+            if (err.name === 'AbortError') {
+                onApplied();
+            } else {
+                onFailed('Request failed.');
+            }
+        });
+    }
+
+    // ---------------------------------------------------------------
+    // Init
+    // ---------------------------------------------------------------
+    loadStatus();
+</script>
+    <script src="/js/jquery-3.7.1.min.js?v=1.0.0"></script>
+    <script src="/js/toastr.min.js?v=1.0.0"></script>
+</body>
+</html>
