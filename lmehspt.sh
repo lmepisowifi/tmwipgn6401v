@@ -1436,54 +1436,65 @@ add_user_qos() {
     # Band 1 (Gaming/VIP) and Band 2 (Bulk) as real rate-limited HTB
     # children - see comment above on why this replaced the old unbounded
     # prio qdisc. Unmatched traffic defaults to Band 2 ("default 2").
-    tc qdisc add dev $WAN_INT parent 1:$cid handle ${cid}: htb default 2 r2q 1 2>/dev/null
-    tc class add dev $WAN_INT parent ${cid}: classid $cid:1 htb rate ${_vip_rate}kbit ceil ${_vip_ceil}kbit burst 4k quantum 1500 prio 0 2>/dev/null
-    tc class add dev $WAN_INT parent ${cid}: classid $cid:2 htb rate ${_bulk_rate}kbit ceil $GLOBAL_RATE burst $PER_USER_BURST quantum 1500 prio 1 2>/dev/null
+    # The two bands MUST hang off an inner root class ($cid:1), not sit
+    # directly under the qdisc: an HTB class whose parent is the qdisc itself
+    # has nobody to borrow from, so "ceil" is ignored and it is hard-capped at
+    # its "rate" (frozen at creation time from the then-current session count,
+    # never touched by qos_rebalance_equal_share). Hanging them under $cid:1
+    # (rate=ceil=GLOBAL_RATE) lets Band 2 really borrow up to GLOBAL_RATE; the
+    # outer class 1:$cid is what enforces this user's share/ceil.
+    # Minors are hex: $cid:1 inner root, $cid:10 Band 1, $cid:20 Band 2.
+    tc qdisc add dev $WAN_INT parent 1:$cid handle ${cid}: htb default 20 r2q 1 2>/dev/null
+    tc class add dev $WAN_INT parent ${cid}: classid $cid:1 htb rate $GLOBAL_RATE ceil $GLOBAL_RATE burst $PER_USER_BURST 2>/dev/null
+    tc class add dev $WAN_INT parent ${cid}:1 classid $cid:10 htb rate ${_vip_rate}kbit ceil ${_vip_ceil}kbit burst 4k quantum 1500 prio 0 2>/dev/null
+    tc class add dev $WAN_INT parent ${cid}:1 classid $cid:20 htb rate ${_bulk_rate}kbit ceil $GLOBAL_RATE burst $PER_USER_BURST quantum 1500 prio 1 2>/dev/null
 
-    _qos_add_leaf $WAN_INT ${cid}:1 $((cid+1000)): "$_vip_limit" "$_vip_fq"
-    _qos_add_leaf $WAN_INT ${cid}:2 $((cid+2000)): "$_bulk_limit" "$_bulk_fq"
+    _qos_add_leaf $WAN_INT ${cid}:10 $((cid+1000)): "$_vip_limit" "$_vip_fq"
+    _qos_add_leaf $WAN_INT ${cid}:20 $((cid+2000)): "$_bulk_limit" "$_bulk_fq"
     
     tc filter add dev $WAN_INT parent 1:0 prio $cid handle $cid fw flowid 1:$cid 2>/dev/null
     
     # Band 1 Filters: Route Games (UDP < 512B), Ping (ICMP), DNS, and small TCP ACKs (< 128B) into the VIP Lane
-    tc filter add dev $WAN_INT parent ${cid}:0 protocol ip prio 1 u32 match ip protocol 17 0xff match u16 0x0000 0xfe00 at 2 flowid ${cid}:1 2>/dev/null
-    tc filter add dev $WAN_INT parent ${cid}:0 protocol ip prio 2 u32 match ip protocol 1 0xff flowid ${cid}:1 2>/dev/null
-    tc filter add dev $WAN_INT parent ${cid}:0 protocol ip prio 3 u32 match ip protocol 6 0xff match u16 0x0000 0xff80 at 2 flowid ${cid}:1 2>/dev/null
+    tc filter add dev $WAN_INT parent ${cid}:0 protocol ip prio 1 u32 match ip protocol 17 0xff match u16 0x0000 0xfe00 at 2 flowid ${cid}:10 2>/dev/null
+    tc filter add dev $WAN_INT parent ${cid}:0 protocol ip prio 2 u32 match ip protocol 1 0xff flowid ${cid}:10 2>/dev/null
+    tc filter add dev $WAN_INT parent ${cid}:0 protocol ip prio 3 u32 match ip protocol 6 0xff match u16 0x0000 0xff80 at 2 flowid ${cid}:10 2>/dev/null
     # OPTIMIZATION: Catch outbound DNS (UDP 53) for fast domain resolution
-    tc filter add dev $WAN_INT parent ${cid}:0 protocol ip prio 4 u32 match ip protocol 17 0xff match ip dport 53 0xffff flowid ${cid}:1 2>/dev/null
+    tc filter add dev $WAN_INT parent ${cid}:0 protocol ip prio 4 u32 match ip protocol 17 0xff match ip dport 53 0xffff flowid ${cid}:10 2>/dev/null
     # DSCP EF (VoIP/video, e.g. Zoom/Meet/Messenger RTP - typically
     # ~1000-1200B, misses the <512B rule above) and AF41. DSCP is the top 6
     # bits of the TOS byte, so match the shifted byte value with the bottom
     # 2 ECN bits masked off: EF=0x2e<<2=0xb8, AF41=0x22<<2=0x88. Only catches
     # traffic actually marked - many Android/browser WebRTC stacks don't set
     # DSCP at all, so this is a partial win on top of the size-based rules.
-    tc filter add dev $WAN_INT parent ${cid}:0 protocol ip prio 5 u32 match ip tos 0xb8 0xfc flowid ${cid}:1 2>/dev/null
-    tc filter add dev $WAN_INT parent ${cid}:0 protocol ip prio 6 u32 match ip tos 0x88 0xfc flowid ${cid}:1 2>/dev/null
+    tc filter add dev $WAN_INT parent ${cid}:0 protocol ip prio 5 u32 match ip tos 0xb8 0xfc flowid ${cid}:10 2>/dev/null
+    tc filter add dev $WAN_INT parent ${cid}:0 protocol ip prio 6 u32 match ip tos 0x88 0xfc flowid ${cid}:10 2>/dev/null
 
     # ============================================================
     # DOWNLOAD (LAN Bridge) Leaf QoS - Gaming Prioritization
     # ============================================================
     tc class add dev $HOTSPOT_BR parent 2:1 classid 2:$cid htb rate $_rate ceil $GLOBAL_RATE burst $PER_USER_BURST quantum 1500 2>/dev/null
     
-    tc qdisc add dev $HOTSPOT_BR parent 2:$cid handle $((cid+500)): htb default 2 r2q 1 2>/dev/null
-    tc class add dev $HOTSPOT_BR parent $((cid+500)): classid $((cid+500)):1 htb rate ${_vip_rate}kbit ceil ${_vip_ceil}kbit burst 4k quantum 1500 prio 0 2>/dev/null
-    tc class add dev $HOTSPOT_BR parent $((cid+500)): classid $((cid+500)):2 htb rate ${_bulk_rate}kbit ceil $GLOBAL_RATE burst $PER_USER_BURST quantum 1500 prio 1 2>/dev/null
+    # Same inner-root layout as the upload side above (see comment there).
+    tc qdisc add dev $HOTSPOT_BR parent 2:$cid handle $((cid+500)): htb default 20 r2q 1 2>/dev/null
+    tc class add dev $HOTSPOT_BR parent $((cid+500)): classid $((cid+500)):1 htb rate $GLOBAL_RATE ceil $GLOBAL_RATE burst $PER_USER_BURST 2>/dev/null
+    tc class add dev $HOTSPOT_BR parent $((cid+500)):1 classid $((cid+500)):10 htb rate ${_vip_rate}kbit ceil ${_vip_ceil}kbit burst 4k quantum 1500 prio 0 2>/dev/null
+    tc class add dev $HOTSPOT_BR parent $((cid+500)):1 classid $((cid+500)):20 htb rate ${_bulk_rate}kbit ceil $GLOBAL_RATE burst $PER_USER_BURST quantum 1500 prio 1 2>/dev/null
     
     # OPTIMIZATION: Same rate-scaled limits for download (Bridge)
-    _qos_add_leaf $HOTSPOT_BR $((cid+500)):1 $((cid+3000)): "$_vip_limit" "$_vip_fq"
-    _qos_add_leaf $HOTSPOT_BR $((cid+500)):2 $((cid+4000)): "$_bulk_limit" "$_bulk_fq"
+    _qos_add_leaf $HOTSPOT_BR $((cid+500)):10 $((cid+3000)): "$_vip_limit" "$_vip_fq"
+    _qos_add_leaf $HOTSPOT_BR $((cid+500)):20 $((cid+4000)): "$_bulk_limit" "$_bulk_fq"
 
     tc filter add dev $HOTSPOT_BR protocol ip parent 2:0 prio $cid u32 match ip dst $ip/32 flowid 2:$cid 2>/dev/null
     
     # Band 1 Filters for Download
-    tc filter add dev $HOTSPOT_BR parent $((cid+500)):0 protocol ip prio 1 u32 match ip protocol 17 0xff match u16 0x0000 0xfe00 at 2 flowid $((cid+500)):1 2>/dev/null
-    tc filter add dev $HOTSPOT_BR parent $((cid+500)):0 protocol ip prio 2 u32 match ip protocol 1 0xff flowid $((cid+500)):1 2>/dev/null
-    tc filter add dev $HOTSPOT_BR parent $((cid+500)):0 protocol ip prio 3 u32 match ip protocol 6 0xff match u16 0x0000 0xff80 at 2 flowid $((cid+500)):1 2>/dev/null
+    tc filter add dev $HOTSPOT_BR parent $((cid+500)):0 protocol ip prio 1 u32 match ip protocol 17 0xff match u16 0x0000 0xfe00 at 2 flowid $((cid+500)):10 2>/dev/null
+    tc filter add dev $HOTSPOT_BR parent $((cid+500)):0 protocol ip prio 2 u32 match ip protocol 1 0xff flowid $((cid+500)):10 2>/dev/null
+    tc filter add dev $HOTSPOT_BR parent $((cid+500)):0 protocol ip prio 3 u32 match ip protocol 6 0xff match u16 0x0000 0xff80 at 2 flowid $((cid+500)):10 2>/dev/null
     # OPTIMIZATION: Catch inbound DNS replies (UDP 53)
-    tc filter add dev $HOTSPOT_BR parent $((cid+500)):0 protocol ip prio 4 u32 match ip protocol 17 0xff match ip sport 53 0xffff flowid $((cid+500)):1 2>/dev/null
+    tc filter add dev $HOTSPOT_BR parent $((cid+500)):0 protocol ip prio 4 u32 match ip protocol 17 0xff match ip sport 53 0xffff flowid $((cid+500)):10 2>/dev/null
     # DSCP: same EF/AF41 rationale as the upload side above.
-    tc filter add dev $HOTSPOT_BR parent $((cid+500)):0 protocol ip prio 5 u32 match ip tos 0xb8 0xfc flowid $((cid+500)):1 2>/dev/null
-    tc filter add dev $HOTSPOT_BR parent $((cid+500)):0 protocol ip prio 6 u32 match ip tos 0x88 0xfc flowid $((cid+500)):1 2>/dev/null
+    tc filter add dev $HOTSPOT_BR parent $((cid+500)):0 protocol ip prio 5 u32 match ip tos 0xb8 0xfc flowid $((cid+500)):10 2>/dev/null
+    tc filter add dev $HOTSPOT_BR parent $((cid+500)):0 protocol ip prio 6 u32 match ip tos 0x88 0xfc flowid $((cid+500)):10 2>/dev/null
 }
 
 
