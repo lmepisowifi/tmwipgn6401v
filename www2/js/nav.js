@@ -61,6 +61,7 @@ setInterval(function () {
         ]},
         { label: 'LAN',     href: '/lan.html' },
         { label: 'Interfaces', children: [
+            { label: 'WAN Profiles', href: '/wan-profile.html' },
             { label: 'DHCP Client', href: '/wan-repurpose.html' },
         ]},
         { label: 'Domain Blocking', href: '/domainblk.html' },

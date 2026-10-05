@@ -1,0 +1,550 @@
+<!DOCTYPE html>
+<!--
+  lmepisowifi — https://github.com/lmepisowifi/tmwipgn6401v
+  SPDX-License-Identifier: AGPL-3.0-or-later
+  Copyright (C) 2026 The lmepisowifi Project — see AUTHORS
+
+  Licensed under the GNU AGPLv3 (see LICENSE). Modifying or rewriting this
+  file — including by running it through an LLM — does not remove these
+  obligations: keep this notice, mark your changes, and offer Corresponding
+  Source to network users (AGPLv3 §5, §13). See PROVENANCE.md before
+  presenting this as your own original work.
+-->
+<html lang="en" data-bs-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WAN Profiles</title>
+    <link href="/css/bootstrap.min.css?v=1.0.0" rel="stylesheet">
+    <link href="/css/style.css?v=1.0.0" rel="stylesheet">
+    <link href="/css/toastr.min.css?v=1.0.0" rel="stylesheet">
+    <style>
+        .field-hint { font-size: 11.5px; color: var(--text-secondary); margin-top: 3px; }
+        .type-badge { display: inline-block; font-size: 10px; padding: 2px 7px; border-radius: 3px;
+                      font-weight: 700; text-transform: uppercase; letter-spacing: .06em; }
+        .badge-route  { background: rgba(13,110,253,.18); color: #6ea8fe; }
+        .badge-bridge { background: rgba(25,135,84,.18);  color: #75b798; }
+        .badge-pppoe  { background: rgba(255,193,7,.16);  color: #ffda6a; }
+        .sdot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 5px; flex-shrink: 0; }
+        .sdot-ok { background: #28a745; } .sdot-warn { background: #ffc107; }
+        .sdot-err { background: #dc3545; } .sdot-off { background: #6c757d; }
+        #wan-table { font-size: 13px; margin-bottom: 0; }
+        #wan-table th { font-size: 11px; text-transform: uppercase; letter-spacing: .05em;
+                        color: var(--text-secondary); font-weight: 600; white-space: nowrap; }
+        #wan-table td { vertical-align: middle; }
+        .cell-main { font-weight: 600; }
+        .cell-sub  { font-size: 11px; color: var(--text-secondary); }
+        .mono { font-family: var(--bs-font-monospace, monospace); font-size: 12.5px; }
+        .status-cell { display: flex; align-items: center; white-space: nowrap; }
+        .table-wrap { overflow-x: auto; }
+        .sect { font-size: 11px; text-transform: uppercase; letter-spacing: .06em; font-weight: 700;
+                color: var(--text-secondary); margin: 18px 0 8px; padding-bottom: 4px;
+                border-bottom: 1px solid var(--border-color); }
+        .ro-row { display: flex; justify-content: space-between; padding: 4px 0; font-size: 13px;
+                  border-bottom: 1px solid var(--border-color); }
+        .ro-row span:first-child { color: var(--text-secondary); }
+        .svc-box .form-check { display: inline-block; margin-right: 16px; }
+    </style>
+</head>
+<body>
+
+    <div id="overlay">
+        <div id="overlay-blur"></div>
+        <div id="overlay-msg">
+            <div id="overlay-spinner"></div>
+            <span id="overlay-text"></span>
+        </div>
+    </div>
+
+    <script src="/js/nav.js?v=1.0.0"></script>
+
+    <div class="container mt-5">
+        <div class="row justify-content-center">
+            <div class="col-md-10">
+
+                <div id="reboot-banner" class="alert alert-warning justify-content-between align-items-center" style="display:none">
+                    <span>WAN profile changes are saved. They take effect after a reboot.</span>
+                    <button type="button" class="btn btn-sm btn-warning" onclick="doReboot()">Reboot now</button>
+                </div>
+
+                <!-- ── Profile list ───────────────────────────────────── -->
+                <div class="card mb-3">
+                    <div class="card-header">WAN Profiles</div>
+                    <div class="card-body">
+                        <div class="table-wrap">
+                            <table class="table table-sm" id="wan-table">
+                                <thead>
+                                    <tr>
+                                        <th>Interface</th><th>Type</th><th>Service</th><th>VLAN</th>
+                                        <th>Address</th><th>NAT</th><th>Default</th><th>Status</th><th></th>
+                                    </tr>
+                                </thead>
+                                <tbody id="wan-body">
+                                    <tr><td colspan="9" class="text-center text-secondary py-3">Loading…</td></tr>
+                                </tbody>
+                            </table>
+                        </div>
+                        <div class="field-hint mt-2">
+                            Profiles are the vendor <code>ATM_VC_TBL</code> records, the same ones the stock
+                            “WAN Link” page edits. Existing profiles can be edited here; to add or remove a
+                            profile use the vendor page, because that also updates port mapping and routing.
+                        </div>
+                    </div>
+                </div>
+
+                <!-- ── Editor ─────────────────────────────────────────── -->
+                <div class="card mb-3" id="edit-card" style="display:none">
+                    <div class="card-header d-flex justify-content-between align-items-center">
+                        <span id="edit-title">Edit profile</span>
+                        <button type="button" class="btn-close" aria-label="Close" onclick="closeEditor()"></button>
+                    </div>
+                    <div class="card-body">
+
+                        <div id="ro-info" class="mb-2"></div>
+
+                        <div class="sect">General</div>
+                        <div class="row g-3">
+                            <div class="col-md-6" id="g-name">
+                                <label class="form-label" for="f-name">Name</label>
+                                <input type="text" class="form-control" id="f-name" maxlength="29" autocomplete="off">
+                                <div class="field-hint">Letters, digits, <code>_ . -</code>. Leave empty to keep the current name.</div>
+                            </div>
+                            <div class="col-md-6">
+                                <label class="form-label" for="f-cmode">Connection type</label>
+                                <select class="form-select" id="f-cmode" onchange="syncVisibility()"></select>
+                                <div class="field-hint" id="cmode-hint"></div>
+                            </div>
+                            <div class="col-md-12">
+                                <div class="form-check form-switch">
+                                    <input class="form-check-input" type="checkbox" id="f-enable">
+                                    <label class="form-check-label" for="f-enable">Enable this profile</label>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="sect">Service type</div>
+                        <div class="svc-box">
+                            <div class="form-check"><input class="form-check-input svc" type="checkbox" id="svc-2" value="2"><label class="form-check-label" for="svc-2">Internet</label></div>
+                            <div class="form-check"><input class="form-check-input svc" type="checkbox" id="svc-1" value="1"><label class="form-check-label" for="svc-1">TR-069</label></div>
+                            <div class="form-check"><input class="form-check-input svc" type="checkbox" id="svc-4" value="4"><label class="form-check-label" for="svc-4">Other</label></div>
+                            <div class="form-check"><input class="form-check-input svc" type="checkbox" id="svc-8" value="8"><label class="form-check-label" for="svc-8">Voice</label></div>
+                        </div>
+
+                        <div class="sect">VLAN</div>
+                        <div class="row g-3 align-items-end">
+                            <div class="col-md-3">
+                                <div class="form-check form-switch">
+                                    <input class="form-check-input" type="checkbox" id="f-vlan" onchange="syncVisibility()">
+                                    <label class="form-check-label" for="f-vlan">VLAN tag</label>
+                                </div>
+                            </div>
+                            <div class="col-md-3 vlan-on"><label class="form-label" for="f-vid">VLAN ID</label>
+                                <input type="number" class="form-control" id="f-vid" min="1" max="4095"></div>
+                            <div class="col-md-3 vlan-on"><label class="form-label" for="f-vprio">802.1p</label>
+                                <select class="form-select" id="f-vprio"></select></div>
+                            <div class="col-md-3" id="g-mvid"><label class="form-label" for="f-mvid">Multicast VLAN</label>
+                                <input type="number" class="form-control" id="f-mvid" min="0" max="4095">
+                                <div class="field-hint">0 = off</div></div>
+                        </div>
+
+                        <div class="sect">Routing</div>
+                        <div class="row g-3">
+                            <div class="col-md-3 not-bridge" id="g-napt"><div class="form-check form-switch">
+                                <input class="form-check-input" type="checkbox" id="f-napt">
+                                <label class="form-check-label" for="f-napt">NAPT</label></div></div>
+                            <div class="col-md-3 not-bridge"><div class="form-check form-switch">
+                                <input class="form-check-input" type="checkbox" id="f-dgw">
+                                <label class="form-check-label" for="f-dgw">Default route</label></div></div>
+                            <div class="col-md-3" id="g-qos"><div class="form-check form-switch">
+                                <input class="form-check-input" type="checkbox" id="f-qos">
+                                <label class="form-check-label" for="f-qos">IP QoS</label></div></div>
+                            <div class="col-md-3" id="g-igmp"><div class="form-check form-switch">
+                                <input class="form-check-input" type="checkbox" id="f-igmp">
+                                <label class="form-check-label" for="f-igmp">IGMP proxy</label></div></div>
+                            <div class="col-md-3" id="g-mld"><div class="form-check form-switch">
+                                <input class="form-check-input" type="checkbox" id="f-mld">
+                                <label class="form-check-label" for="f-mld">MLD proxy</label></div></div>
+                            <div class="col-md-3"><label class="form-label" for="f-mtu">MTU</label>
+                                <input type="number" class="form-control" id="f-mtu" min="68" max="1500"></div>
+                            <div class="col-md-3" id="g-ipproto"><label class="form-label" for="f-ipproto">IP protocol</label>
+                                <select class="form-select" id="f-ipproto">
+                                    <option value="1">IPv4</option><option value="2">IPv6</option><option value="3">IPv4 + IPv6</option>
+                                </select></div>
+                        </div>
+
+                        <!-- IPoE -->
+                        <div id="sec-ipoe">
+                            <div class="sect">IPoE addressing</div>
+                            <div class="row g-3">
+                                <div class="col-md-4"><label class="form-label" for="f-addrtype">Address</label>
+                                    <select class="form-select" id="f-addrtype" onchange="syncVisibility()">
+                                        <option value="1">DHCP</option><option value="0">Static</option></select></div>
+                                <div class="col-md-4 static-on"><label class="form-label" for="f-ip">IP address</label>
+                                    <input type="text" class="form-control" id="f-ip" autocomplete="off"></div>
+                                <div class="col-md-4 static-on"><label class="form-label" for="f-mask">Subnet mask</label>
+                                    <input type="text" class="form-control" id="f-mask" autocomplete="off"></div>
+                                <div class="col-md-4 static-on"><label class="form-label" for="f-gw">Gateway</label>
+                                    <input type="text" class="form-control" id="f-gw" autocomplete="off"></div>
+                            </div>
+                        </div>
+
+                        <!-- PPPoE -->
+                        <div id="sec-pppoe">
+                            <div class="sect">PPPoE</div>
+                            <div class="row g-3">
+                                <div class="col-md-6"><label class="form-label" for="f-pppuser">User name</label>
+                                    <input type="text" class="form-control" id="f-pppuser" maxlength="63" autocomplete="off"></div>
+                                <div class="col-md-6"><label class="form-label" for="f-ppppass">Password</label>
+                                    <input type="password" class="form-control" id="f-ppppass" maxlength="29" autocomplete="new-password">
+                                    <div class="field-hint" id="pass-hint"></div></div>
+                                <div class="col-md-4"><label class="form-label" for="f-pppauth">Authentication</label>
+                                    <select class="form-select" id="f-pppauth">
+                                        <option value="0">Auto</option><option value="1">PAP</option><option value="2">CHAP</option></select></div>
+                                <div class="col-md-4"><label class="form-label" for="f-pppac">AC name</label>
+                                    <input type="text" class="form-control" id="f-pppac" maxlength="29" autocomplete="off"></div>
+                                <div class="col-md-4"><label class="form-label" for="f-pppsvc">Service name</label>
+                                    <input type="text" class="form-control" id="f-pppsvc" maxlength="29" autocomplete="off"></div>
+                                <div class="col-md-4"><label class="form-label" for="f-pppctype">Connection</label>
+                                    <select class="form-select" id="f-pppctype" onchange="syncVisibility()">
+                                        <option value="0">Continuous</option><option value="1">On demand</option><option value="2">Manual</option></select></div>
+                                <div class="col-md-4 idle-on"><label class="form-label" for="f-pppidle">Idle time (s)</label>
+                                    <input type="number" class="form-control" id="f-pppidle" min="1" max="65535"></div>
+                            </div>
+                        </div>
+
+                        <!-- DNS (IPoE + PPPoE) -->
+                        <div id="sec-dns">
+                            <div class="sect">DNS</div>
+                            <div class="row g-3">
+                                <div class="col-md-4"><label class="form-label" for="f-dnsmode">Servers</label>
+                                    <select class="form-select" id="f-dnsmode" onchange="syncVisibility()">
+                                        <option value="1">Obtain automatically</option><option value="0">Set manually</option></select></div>
+                                <div class="col-md-4 dns-on"><label class="form-label" for="f-dns1">Primary</label>
+                                    <input type="text" class="form-control" id="f-dns1" autocomplete="off"></div>
+                                <div class="col-md-4 dns-on"><label class="form-label" for="f-dns2">Secondary</label>
+                                    <input type="text" class="form-control" id="f-dns2" autocomplete="off"></div>
+                            </div>
+                        </div>
+
+                        <div class="mt-4 d-flex gap-2">
+                            <button type="button" class="btn btn-primary" id="btn-save" onclick="doSave()">Save</button>
+                            <button type="button" class="btn btn-outline-secondary" onclick="closeEditor()">Cancel</button>
+                        </div>
+                        <div class="field-hint mt-2">
+                            Saving writes the profile, commits the MIB and applies it to the running WAN, so the
+                            connection drops for a few seconds. If the live-apply helper is unavailable the change
+                            takes effect after a reboot instead. A copy of
+                            <code>/config/config.xml</code> is kept as <code>config.xml.wanprofile.bak</code> first.
+                        </div>
+                    </div>
+                </div>
+
+            </div>
+        </div>
+    </div>
+
+<script src="/js/bootstrap.bundle.min.js?v=1.0.0"></script>
+<script>
+'use strict';
+
+var profiles = [];
+var cur = null;                 // profile being edited
+var pollTimer = null;
+
+// ── Overlay ─────────────────────────────────────────────────────────────────
+var _ov  = document.getElementById('overlay');
+var _ovT = document.getElementById('overlay-text');
+var _ovS = document.getElementById('overlay-spinner');
+function showOv(msg, spin) { _ovT.textContent = msg; _ovS.style.display = (spin === false) ? 'none' : ''; _ov.classList.add('visible'); }
+function hideOv(cb) { _ov.classList.remove('visible'); if (cb) setTimeout(cb, 360); }
+
+function esc(s) {
+    return String(s == null ? '' : s).replace(/&/g,'&amp;').replace(/</g,'&lt;')
+                                     .replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+}
+function E(id) { return document.getElementById(id); }
+function show(el, on) { if (typeof el === 'string') el = E(el); el.style.display = on ? '' : 'none'; }
+function showAll(sel, on) { document.querySelectorAll(sel).forEach(function (e) { e.style.display = on ? '' : 'none'; }); }
+
+// ── Decoding helpers (vendor value conventions) ─────────────────────────────
+var CMODE = { 0: 'Bridge', 1: 'IPoE', 2: 'PPPoE' };
+function typeBadge(p) {
+    if (p.cmode === 0) return '<span class="type-badge badge-bridge">Bridge</span>';
+    if (p.cmode === 2) return '<span class="type-badge badge-pppoe">PPPoE</span>';
+    return '<span class="type-badge badge-route">Route</span>';
+}
+function serviceText(app) {
+    var t = [];
+    if (app & 2) t.push('Internet'); if (app & 1) t.push('TR-069');
+    if (app & 4) t.push('Other');    if (app & 8) t.push('Voice');
+    return t.length ? t.join(' + ') : '—';
+}
+// Port-mapping bitmask (itfGroup): 0-3 LAN1-4, 4 wlan0, 5-8 wlan0-vap0..3, 9 wlan1, 10-13 wlan1-vap0..3
+function portMapText(mask) {
+    var n = [];
+    for (var b = 0; b < 14; b++) {
+        if (!(mask & (1 << b))) continue;
+        if (b < 4) n.push('LAN' + (b + 1));
+        else if (b === 4) n.push('wlan0');
+        else if (b <= 8) n.push('wlan0-vap' + (b - 5));
+        else if (b === 9) n.push('wlan1');
+        else n.push('wlan1-vap' + (b - 10));
+    }
+    return n.join(', ');
+}
+function macText(m) {
+    return (m && m.length === 12) ? m.match(/../g).join(':').toUpperCase() : (m || '');
+}
+function displayName(p) { return p.name ? p.name : p.ifname; }
+
+function addressCell(p) {
+    if (p.cmode === 0) return '<span class="cell-sub">' + (p.bridge ? 'in ' + esc(p.bridge) : 'bridged') + '</span>';
+    if (p.live_ip)     return '<span class="mono">' + esc(p.live_ip) + '</span>' +
+                              '<div class="cell-sub">' + (p.cmode === 2 ? 'PPPoE' : (p.addrtype === 1 ? 'DHCP' : 'static')) + '</div>';
+    if (p.cmode === 1 && p.addrtype === 0 && p.ip && p.ip !== '0.0.0.0')
+        return '<span class="mono">' + esc(p.ip) + '</span><div class="cell-sub">static (not up)</div>';
+    return '<span class="cell-sub">' + (p.cmode === 1 && p.addrtype === 1 ? 'DHCP — no lease' : '—') + '</span>';
+}
+function statusCell(p) {
+    var cls = 'sdot-err', txt = 'Down';
+    if (p.status === 'up')            { cls = 'sdot-ok';   txt = 'Up'; }
+    else if (p.status === 'connecting') { cls = 'sdot-warn'; txt = 'Connecting'; }
+    else if (p.status === 'disabled') { cls = 'sdot-off';  txt = 'Disabled'; }
+    else if (p.status === 'missing')  { cls = 'sdot-off';  txt = 'No interface'; }
+    return '<div class="status-cell"><span class="sdot ' + cls + '"></span>' + txt + '</div>';
+}
+
+// ── Table ───────────────────────────────────────────────────────────────────
+function renderTable() {
+    var body = E('wan-body');
+    if (!profiles.length) {
+        body.innerHTML = '<tr><td colspan="9" class="text-center text-secondary py-3">No WAN profiles found.</td></tr>';
+        return;
+    }
+    body.innerHTML = profiles.map(function (p) {
+        var sub = [];
+        if (p.cmode === 0 && p.itfgroup) sub.push('port-mapped: ' + esc(portMapText(p.itfgroup)));
+        if (p.name) sub.push(esc(p.ifname));
+        return '<tr>' +
+            '<td><div class="cell-main">' + esc(displayName(p)) + '</div><div class="cell-sub">' + (sub.join(' · ') || '&nbsp;') + '</div></td>' +
+            '<td>' + typeBadge(p) + '</td>' +
+            '<td>' + esc(serviceText(p.app)) + '</td>' +
+            '<td>' + (p.vlan ? esc(p.vid) + '<div class="cell-sub">802.1p ' + esc(p.vprio) + '</div>' : '<span class="cell-sub">off</span>') + '</td>' +
+            '<td>' + addressCell(p) + '</td>' +
+            '<td>' + (p.cmode === 0 ? '<span class="cell-sub">—</span>' : (p.napt ? 'On' : 'Off')) + '</td>' +
+            '<td>' + (p.cmode === 0 ? '<span class="cell-sub">—</span>' : (p.dgw ? 'Yes' : 'No')) + '</td>' +
+            '<td>' + statusCell(p) + '</td>' +
+            '<td><button type="button" class="btn btn-sm btn-outline-primary" onclick="openEditor(' + p.index + ')">Edit</button></td>' +
+            '</tr>';
+    }).join('');
+}
+
+function fetchJson(url, opts) {
+    return fetch(url, opts).then(function (r) { return r.text(); }).then(function (t) {
+        try { return JSON.parse(t); }
+        catch (e) { window.location.href = '/login.html'; throw e; }      // CGI redirected to login
+    });
+}
+
+function loadList(quiet) {
+    if (!quiet) showOv('Loading WAN profiles\u2026');
+    return fetchJson('/cgi-bin/wan-profile.cgi?action=list', { cache: 'no-store' })
+        .then(function (d) {
+            if (!quiet) hideOv();
+            if (!d.ok) { toastr.error('Could not read WAN profiles'); return; }
+            profiles = d.profiles;
+            renderTable();
+        })
+        .catch(function () { if (!quiet) hideOv(); });
+}
+
+// ── Editor ──────────────────────────────────────────────────────────────────
+function openEditor(idx) {
+    var p = profiles.filter(function (x) { return x.index === idx; })[0];
+    if (!p) return;
+    cur = p;
+    E('edit-title').textContent = 'Edit ' + displayName(p) + ' (' + CMODE[p.cmode] + ')';
+
+    var ro = [['Interface', p.ifname || '—'], ['MAC address', macText(p.mac)]];
+    if (p.itfgroup) ro.push(['Port mapping', portMapText(p.itfgroup) || ('0x' + p.itfgroup.toString(16))]);
+    if (p.bridge)   ro.push(['Bridge', p.bridge]);
+    E('ro-info').innerHTML = ro.map(function (r) {
+        return '<div class="ro-row"><span>' + esc(r[0]) + '</span><span class="mono">' + esc(r[1]) + '</span></div>';
+    }).join('');
+
+    // Connection type: PPPoE <-> non-PPPoE changes ifIndex, so only same-family choices are offered.
+    var opts = (p.cmode === 2) ? [2] : [0, 1];
+    E('f-cmode').innerHTML = opts.map(function (v) { return '<option value="' + v + '">' + CMODE[v] + '</option>'; }).join('');
+    E('f-cmode').value = p.cmode;
+    E('f-cmode').disabled = (opts.length === 1);
+    E('cmode-hint').textContent = (p.cmode === 2)
+        ? 'PPPoE profiles keep their type; switching it changes the interface index.'
+        : 'Bridge and IPoE can be switched. PPPoE needs a new profile in the vendor page.';
+
+    E('f-vprio').innerHTML = [0,1,2,3,4,5,6,7].map(function (v) { return '<option value="' + v + '">' + v + '</option>'; }).join('');
+
+    E('f-name').value = p.name || '';
+    show('g-name', p.has_name);
+    E('f-enable').checked = !!p.enable;
+    [1, 2, 4, 8].forEach(function (bit) { E('svc-' + bit).checked = !!(p.app & bit); });
+    E('f-vlan').checked = !!p.vlan;
+    E('f-vid').value = p.vid || '';
+    E('f-vprio').value = p.vprio || 0;
+    E('f-mvid').value = p.mvid || 0;
+    show('g-mvid', p.has_mvid);
+    E('f-napt').checked = !!p.napt;
+    E('f-dgw').checked = !!p.dgw;
+    E('f-qos').checked = !!p.qos;   show('g-qos',  p.has_qos);
+    E('f-igmp').checked = !!p.igmp; show('g-igmp', p.has_igmp);
+    E('f-mld').checked = !!p.mld;   show('g-mld',  p.has_mld);
+    E('f-mtu').value = p.mtu || 1500;
+    E('f-ipproto').value = p.ipproto || 1; show('g-ipproto', p.has_ipproto);
+
+    E('f-addrtype').value = p.addrtype;
+    E('f-ip').value   = (p.ip   && p.ip   !== '0.0.0.0') ? p.ip   : '';
+    E('f-mask').value = (p.mask && p.mask !== '0.0.0.0') ? p.mask : '';
+    E('f-gw').value   = (p.gw   && p.gw   !== '0.0.0.0') ? p.gw   : '';
+    E('f-dnsmode').value = p.dnsmode;
+    E('f-dns1').value = (p.dns1 && p.dns1 !== '0.0.0.0') ? p.dns1 : '';
+    E('f-dns2').value = (p.dns2 && p.dns2 !== '0.0.0.0') ? p.dns2 : '';
+
+    E('f-pppuser').value = p.pppuser || '';
+    E('f-ppppass').value = '';
+    E('pass-hint').textContent = p.pppass_set ? 'A password is stored. Leave empty to keep it.' : 'No password is stored yet.';
+    E('f-pppauth').value = p.pppauth || 0;
+    E('f-pppac').value = p.pppac || '';
+    E('f-pppsvc').value = p.pppsvc || '';
+    E('f-pppctype').value = p.pppctype || 0;
+    E('f-pppidle').value = p.pppidle || '';
+
+    syncVisibility();
+    show('edit-card', true);
+    E('edit-card').scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+function closeEditor() { cur = null; show('edit-card', false); }
+
+function syncVisibility() {
+    var cm = parseInt(E('f-cmode').value, 10);
+    showAll('.vlan-on', E('f-vlan').checked);
+    showAll('.not-bridge', cm !== 0);
+    show('g-napt', cm !== 0);
+    show('sec-ipoe', cm === 1);
+    show('sec-pppoe', cm === 2);
+    show('sec-dns', cm !== 0);
+    showAll('.static-on', cm === 1 && E('f-addrtype').value === '0');
+    showAll('.dns-on', E('f-dnsmode').value === '0');
+    showAll('.idle-on', cm === 2 && E('f-pppctype').value === '1');
+    E('f-mtu').max = (cm === 2) ? 1492 : 1500;
+}
+
+function chk(id) { return E(id).checked ? '1' : '0'; }
+
+function doSave() {
+    if (!cur) return;
+    var cm = parseInt(E('f-cmode').value, 10);
+    var app = 0;
+    document.querySelectorAll('.svc').forEach(function (e) { if (e.checked) app |= parseInt(e.value, 10); });
+    if (!app) { toastr.error('Pick at least one service type'); return; }
+
+    var f = new URLSearchParams();
+    f.set('idx', cur.index);
+    f.set('cmode', cm);
+    f.set('enable', chk('f-enable'));
+    if (cur.has_name && E('f-name').value.trim() !== '') f.set('name', E('f-name').value.trim());
+    f.set('app', app);
+    f.set('vlan', chk('f-vlan'));
+    if (E('f-vlan').checked) { f.set('vid', E('f-vid').value); f.set('vprio', E('f-vprio').value); }
+    if (cur.has_mvid) f.set('mvid', E('f-mvid').value || '0');
+    f.set('mtu', E('f-mtu').value);
+    if (cm !== 0) { f.set('napt', chk('f-napt')); f.set('dgw', chk('f-dgw')); }
+    if (cur.has_qos)  f.set('qos',  chk('f-qos'));
+    if (cur.has_igmp) f.set('igmp', chk('f-igmp'));
+    if (cur.has_mld)  f.set('mld',  chk('f-mld'));
+    if (cur.has_ipproto) f.set('ipproto', E('f-ipproto').value);
+
+    if (cm === 1) {
+        f.set('addrtype', E('f-addrtype').value);
+        if (E('f-addrtype').value === '0') {
+            f.set('ip', E('f-ip').value.trim()); f.set('mask', E('f-mask').value.trim()); f.set('gw', E('f-gw').value.trim());
+        }
+    }
+    if (cm === 2) {
+        f.set('pppuser', E('f-pppuser').value);
+        f.set('ppppass', E('f-ppppass').value);
+        f.set('pppauth', E('f-pppauth').value);
+        f.set('pppac',   E('f-pppac').value);
+        f.set('pppsvc',  E('f-pppsvc').value);
+        f.set('pppctype', E('f-pppctype').value);
+        if (E('f-pppctype').value === '1') f.set('pppidle', E('f-pppidle').value);
+    }
+    if (cm !== 0) {
+        f.set('dnsmode', E('f-dnsmode').value);
+        if (E('f-dnsmode').value === '0') { f.set('dns1', E('f-dns1').value.trim()); f.set('dns2', E('f-dns2').value.trim()); }
+    }
+
+    if (cur.cmode !== cm && !confirm('Switch ' + displayName(cur) + ' from ' + CMODE[cur.cmode] + ' to ' + CMODE[cm] + '?')) return;
+
+    showOv('Saving\u2026');
+    fetchJson('/cgi-bin/wan-profile.cgi?action=save', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: f.toString()
+    }).then(function (d) {
+        hideOv();
+        if (!d.ok) { toastr.error(d.detail || d.error || 'Save failed'); return; }
+        if (!d.changed) { toastr.info('Nothing changed'); return; }
+        var n = 'Saved ' + d.changed + ' setting' + (d.changed > 1 ? 's' : '');
+        closeEditor();
+        if (d.applied === 'live') {
+            toastr.success(n + ' \u2014 applying to the WAN');
+            waitApply();
+            return;
+        }
+        toastr.success(n + ' \u2014 reboot to apply');
+        E('reboot-banner').style.display = 'flex';
+        loadList(true);
+    }).catch(function () { hideOv(); toastr.error('Request failed'); });
+}
+
+// Live apply runs detached on the device (wanapply start + firewall re-assert);
+// poll the list until it reports applying:false.
+function waitApply() {
+    showOv('Applying to the WAN\u2026');
+    var tries = 0;
+    (function poll() {
+        tries++;
+        fetchJson('/cgi-bin/wan-profile.cgi?action=list').then(function (d) {
+            if (d && d.ok && !d.applying) { hideOv(); toastr.success('WAN profile applied'); loadList(true); return; }
+            if (tries > 80) { hideOv(); toastr.warning('Still applying \u2014 check the status column'); loadList(true); return; }
+            setTimeout(poll, 1500);
+        }).catch(function () {
+            if (tries > 80) { hideOv(); loadList(true); } else setTimeout(poll, 1500);
+        });
+    })();
+}
+
+function doReboot() {
+    if (!confirm('Reboot the device now? The WAN and hotspot will be down for about a minute.')) return;
+    showOv('Rebooting\u2026 this page will reload when the device is back.');
+    fetch('/cgi-bin/wan-profile.cgi?action=reboot', { method: 'POST' }).catch(function () {});
+    var tries = 0;
+    var t = setInterval(function () {
+        tries++;
+        fetch('/login.html', { cache: 'no-store' }).then(function (r) {
+            if (r.ok && tries > 6) { clearInterval(t); window.location.href = '/login.html'; }
+        }).catch(function () {});
+        if (tries > 120) clearInterval(t);
+    }, 3000);
+}
+
+// ── Live status refresh (list only, not while the editor is open) ───────────
+pollTimer = setInterval(function () { if (!cur) loadList(true); }, 10000);
+
+loadList();
+</script>
+
+    <script src="/js/jquery-3.7.1.min.js?v=1.0.0"></script>
+    <script src="/js/toastr.min.js?v=1.0.0"></script>
+</body>
+</html>
