@@ -18,7 +18,9 @@
 #
 # GET  ?action=list    → every ATM_VC_TBL record + live interface state (JSON)
 # POST ?action=save    → edit ONE existing profile, body: idx=<n>&<fields>
-# POST ?action=reboot  → sync + reboot (needed to apply a saved profile)
+# POST ?action=create  → add a new profile (+ nas0_N / pppN), body: cmode=&...
+# POST ?action=delete  → remove profile idx (+ tear down its interface)
+# POST ?action=reboot  → sync + reboot (fallback when live-apply is unavailable)
 #
 # Member names below are the `mib get ATM_VC_TBL.<n>` descriptor names from
 # the SDK (mibtbl.c), NOT the C struct names: ChannelMode (cmode),
@@ -28,12 +30,13 @@
 # / WanName) only exist when the firmware was built with that option, so
 # every write is skipped for a member the live dump doesn't contain.
 #
-# Scope (deliberate): edit in place only. The vendor add/delete path also
-# runs rtk_layer2bridging_update_wan_interface_mib_table(), the CWMP
-# instance-number bookkeeping, restartWAN()/deleteConnection() — all inside
-# boa, none reachable from a shell. Changing PPPoE <-> non-PPPoE is refused
-# for the same reason: it changes ifIndex, which port-forwarding, routes and
-# the bridging table reference. Bridge <-> IPoE keeps ifIndex and is allowed.
+# Create/delete use the shell `mib add` / `mib del` path (same as domainblk.cgi)
+# plus wanapply for live interface bring-up/tear-down.  ifIndex is allocated
+# here: TO_IFINDEX(MEDIA_ETH=1, ppp, vc) with DUMMY_PPP=0xff for bridge/IPoE.
+# PPPoE multi-session reuses a free PPP index (0..MAX_PPP_NUM-1).  Table-full
+# is MAX_VC_NUM (8 on this profile).  Changing PPPoE <-> non-PPPoE on an
+# *existing* row is still refused (ifIndex shape changes); create a new
+# profile instead.
 #
 # Live apply: `mib set` + `mib commit` only persist the record. The vendor page
 # then runs deleteConnection()/restartWAN() inside boa; both are exported by
@@ -57,11 +60,16 @@ CHAIN=ATM_VC_TBL
 NETSYS=/sys/class/net
 CFG=/config/config.xml
 LOCK=/tmp/wanprofile.lock
-WANAPPLY=/lmepisowifi/www2/sh/wanapply
+WANAPPLY=/lmepisowifi/www2/tool/wanapply
 APPLYING=/tmp/wanprofile.applying      # exists (holding an epoch) while a live apply runs
 APPLY_LOG=/tmp/wanprofile_apply.log
 APPLY_MAXAGE=240                       # a stale marker older than this is ignored
 TAB=$(printf '\t')
+MAX_VC_NUM=8          # mib.h MAX_VC_NUM for multi-eth-wan builds
+MAX_PPP_NUM=8         # mib.h MAX_PPP_NUM
+MEDIA_ETH=1
+DUMMY_PPP=255         # 0xff
+WAN_MAC_BASE=1        # offset added to ELAN_MAC_ADDR for first WAN (vendor default)
 
 # ── Auth ──────────────────────────────────────────────────────────────────────
 BROWSER_SESSION=$(echo "$HTTP_COOKIE" \
@@ -314,17 +322,28 @@ if echo "$QS" | $BB grep -q "action=reboot"; then
 fi
 
 # ================================================================
-# POST ?action=save
+# POST body shared by save / create / delete
 # ================================================================
-if ! echo "$QS" | $BB grep -q "action=save"; then
+ACTION=
+echo "$QS" | $BB grep -q "action=save"   && ACTION=save
+echo "$QS" | $BB grep -q "action=create" && ACTION=create
+echo "$QS" | $BB grep -q "action=delete" && ACTION=delete
+[ -z "$ACTION" ] && {
     printf 'Status: 400 Bad Request\r\nContent-Type: text/plain\r\n\r\nUnknown action'
     exit 0
-fi
+}
 
 case "${CONTENT_LENGTH:-0}" in *[!0-9]*|"") CONTENT_LENGTH=0 ;; esac
 [ "$CONTENT_LENGTH" -gt 8192 ] && err_json "too_large" "request body too large"
-[ "$CONTENT_LENGTH" -eq 0 ] && err_json "no_data" "empty request"
-read -n "$CONTENT_LENGTH" POST_DATA
+# delete only needs idx; create/save need a body
+if [ "$ACTION" != "delete" ]; then
+    [ "$CONTENT_LENGTH" -eq 0 ] && err_json "no_data" "empty request"
+fi
+if [ "$CONTENT_LENGTH" -gt 0 ]; then
+    read -n "$CONTENT_LENGTH" POST_DATA
+else
+    POST_DATA=
+fi
 
 fget() {
     printf '%s' "$POST_DATA" \
@@ -338,27 +357,24 @@ fget() {
 
 apply_running && err_json "busy" "the previous change is still being applied — wait a few seconds"
 
-# One save at a time — mib set/commit is not re-entrant across CGIs.
+# One mutation at a time — mib set/commit is not re-entrant across CGIs.
 mkdir "$LOCK" 2>/dev/null || err_json "busy" "another WAN change is in progress"
 trap 'rmdir "$LOCK" 2>/dev/null' EXIT
 
-# ── validators ────────────────────────────────────────────────────────────────
+# ── shared validators (also used by the save path below) ──────────────────────
 is_uint() { # value min max
     case "$1" in ''|*[!0-9]*) return 1 ;; esac
     [ "${#1}" -gt 9 ] && return 1
     [ "$1" -ge "$2" ] && [ "$1" -le "$3" ]
 }
 is_ipv4() {
-    [ -n "$1" ] || return 1      # awk never runs its main block on empty input
+    [ -n "$1" ] || return 1
     printf '%s' "$1" | $BB awk -F. '
         { ok = (NF == 4)
           for (i = 1; i <= NF && ok; i++) if ($i !~ /^[0-9]+$/ || length($i) > 3 || $i + 0 > 255) ok = 0
           exit ok ? 0 : 1 }'
 }
 is_mask() {
-    # Comparisons only: this BusyBox awk is built without math support (no ^, %, int()).
-    # Valid mask = octets from {255,254,252,248,240,224,192,128,0}; once an octet is
-    # below 255, every later octet must be 0.
     is_ipv4 "$1" || return 1
     [ "$1" = "0.0.0.0" ] && return 1
     printf '%s' "$1" | $BB awk -F. '
@@ -376,6 +392,330 @@ printable() { # value maxlen
     [ -z "$(printf '%s' "$1" | $BB tr -d '\040-\176')" ]
 }
 
+# start_detached_refresh — background wanapply refresh + reassert (after delete)
+start_detached_refresh() {
+    date +%s > "$APPLYING"
+    (
+        echo "=== refresh $(date +%T)" >> "$APPLY_LOG"
+        "$WANAPPLY" refresh >> "$APPLY_LOG" 2>&1
+        echo "=== refresh exit=$? $(date +%T)" >> "$APPLY_LOG"
+        reassert_rules >> "$APPLY_LOG" 2>&1
+        rm -f "$APPLYING"
+    ) >/dev/null 2>&1 &
+}
+
+# ── helpers for create/delete ─────────────────────────────────────────────────
+# Build the set of used VC and PPP indices from every ATM_VC_TBL row.
+scan_ifmap() {
+    USED_VC= ; USED_PPP=
+    _t=$(chain_total); case "$_t" in ''|*[!0-9]*) _t=0 ;; esac
+    _i=0
+    while [ "$_i" -lt "$_t" ]; do
+        _d=$(chain_dump "$_i")
+        _ix=$(fld "$_d" ifIndex)
+        case "$_ix" in ''|*[!0-9]*) _i=$((_i+1)); continue ;; esac
+        _vc=$((_ix & 255))
+        _pp=$(( (_ix >> 8) & 255 ))
+        USED_VC="$USED_VC $_vc"
+        [ "$_pp" -ne "$DUMMY_PPP" ] && USED_PPP="$USED_PPP $_pp"
+        _i=$((_i+1))
+    done
+}
+
+alloc_vc() {
+    _v=0
+    while [ "$_v" -lt "$MAX_VC_NUM" ]; do
+        _hit=0
+        for _u in $USED_VC; do [ "$_u" = "$_v" ] && _hit=1 && break; done
+        [ "$_hit" = "0" ] && { printf '%s' "$_v"; return 0; }
+        _v=$((_v+1))
+    done
+    return 1
+}
+
+alloc_ppp() {
+    _p=0
+    while [ "$_p" -lt "$MAX_PPP_NUM" ]; do
+        _hit=0
+        for _u in $USED_PPP; do [ "$_u" = "$_p" ] && _hit=1 && break; done
+        [ "$_hit" = "0" ] && { printf '%s' "$_p"; return 0; }
+        _p=$((_p+1))
+    done
+    return 1
+}
+
+# next_wan_mac <vc> — 12 hex digits (no colons), same form boa stores in MacAddr.
+# Source: ELAN_MAC_ADDR (fallback HW_NIC0_ADDR). Last 3 bytes += WAN_MAC_BASE+vc.
+next_wan_mac() {
+    _vc=$1
+    _hex=
+    for _key in ELAN_MAC_ADDR HW_NIC0_ADDR HW_ELAN_MAC_ADDR; do
+        _line=$(mib get "$_key" 2>/dev/null | $BB head -1)
+        _cand=$(printf '%s' "$_line" | $BB sed 's/^[^=]*=[[:space:]]*//' | $BB tr -d ' \t\r\n:-' | $BB tr 'a-f' 'A-F')
+        if [ "${#_cand}" -eq 12 ]; then _hex=$_cand; break; fi
+    done
+    if [ "${#_hex}" -ne 12 ]; then
+        # last resort: take MAC of br0 / eth0
+        _cand=$(cat /sys/class/net/br0/address 2>/dev/null || cat /sys/class/net/eth0/address 2>/dev/null || true)
+        _cand=$(printf '%s' "$_cand" | $BB tr -d ' \t\r\n:-' | $BB tr 'a-f' 'A-F')
+        [ "${#_cand}" -eq 12 ] && _hex=$_cand
+    fi
+    if [ "${#_hex}" -ne 12 ]; then
+        printf '000000000000'
+        return
+    fi
+    _hi=$(printf '%s' "$_hex" | $BB cut -c1-6)
+    _lo=$(printf '%s' "$_hex" | $BB cut -c7-12)
+    _n=$(printf '%d' "0x$_lo" 2>/dev/null) || _n=0
+    _n=$((_n + WAN_MAC_BASE + _vc))
+    printf '%s%06X' "$_hi" $((_n & 0xffffff))
+}
+
+# ================================================================
+# POST ?action=delete
+# ================================================================
+if [ "$ACTION" = "delete" ]; then
+    IDX=$(fget idx)
+    case "$IDX" in ''|*[!0-9]*) err_json "bad_idx" "idx must be a non-negative integer" ;; esac
+    TOTAL=$(chain_total)
+    case "$TOTAL" in ''|*[!0-9]*) TOTAL=0 ;; esac
+    [ "$IDX" -ge "$TOTAL" ] && err_json "bad_idx" "idx $IDX out of range (0..$((TOTAL-1)))"
+    [ "$TOTAL" -le 1 ] && err_json "last_profile" "refusing to delete the last remaining WAN profile"
+
+    DUMP=$(chain_dump "$IDX")
+    CUR_IFINDEX=$(fld "$DUMP" ifIndex)
+    case "$CUR_IFINDEX" in ''|*[!0-9]*) CUR_IFINDEX=0 ;; esac
+
+    # Prefer the combined wanapply delete (stop + mib_chain_delete + refresh).
+    # Fall back to shell mib del + refresh if the binary is too old / missing delete.
+    if helper_ready; then
+        if "$WANAPPLY" delete "$IDX" --expect-ifindex "$CUR_IFINDEX" >> "$APPLY_LOG" 2>&1; then
+            ok_json "{\"ok\":true,\"idx\":$IDX,\"deleted\":true,\"applied\":\"live\"}"
+        fi
+        # delete subcommand missing or failed part-way: try stop, then shell del
+        "$WANAPPLY" stop "$IDX" --expect-ifindex "$CUR_IFINDEX" >> "$APPLY_LOG" 2>&1 || true
+    fi
+    if ! mib del "$CHAIN.$IDX" >/dev/null 2>&1; then
+        err_json "del_failed" "mib del $CHAIN.$IDX failed"
+    fi
+    if ! mib commit >/dev/null 2>&1; then
+        err_json "commit_failed" "mib commit failed after delete"
+    fi
+    sync
+    if helper_ready; then
+        start_detached_refresh
+        ok_json "{\"ok\":true,\"idx\":$IDX,\"deleted\":true,\"applied\":\"live\",\"applying\":true}"
+    fi
+    ok_json "{\"ok\":true,\"idx\":$IDX,\"deleted\":true,\"applied\":\"reboot\",\"reboot_required\":true}"
+fi
+
+# ================================================================
+# POST ?action=create
+# ================================================================
+if [ "$ACTION" = "create" ]; then
+    TOTAL=$(chain_total)
+    case "$TOTAL" in ''|*[!0-9]*) TOTAL=0 ;; esac
+    [ "$TOTAL" -ge "$MAX_VC_NUM" ] && err_json "table_full" "ATM_VC_TBL is full ($TOTAL/$MAX_VC_NUM profiles)"
+
+    NEW_CMODE=$(fget cmode)
+    case "$NEW_CMODE" in
+        0|1|2) ;;  # bridge / IPoE / PPPoE
+        *) err_json "bad_cmode" "cmode must be 0 (bridge), 1 (IPoE) or 2 (PPPoE)" ;;
+    esac
+
+    scan_ifmap
+    VC=$(alloc_vc) || err_json "table_full" "no free VC slot (all $MAX_VC_NUM in use)"
+    if [ "$NEW_CMODE" = "2" ]; then
+        PPP=$(alloc_ppp) || err_json "ppp_full" "no free PPP session (all $MAX_PPP_NUM in use)"
+    else
+        PPP=$DUMMY_PPP
+    fi
+    # TO_IFINDEX(MEDIA_ETH, ppp, vc)
+    NEW_IFINDEX=$(( (MEDIA_ETH << 16) | (PPP << 8) | VC ))
+    NEW_MAC=$(next_wan_mac "$VC")
+    case "$NEW_MAC" in
+        ''|000000000000|900000000000)
+            # 90:00:00:00:00:00 style means ELAN parse failed earlier builds
+            err_json "bad_mac" "could not derive a WAN MAC from ELAN_MAC_ADDR (got '$NEW_MAC')"
+            ;;
+    esac
+
+    # Defaults
+    NEW_ENABLE=$(fget enable); [ -z "$NEW_ENABLE" ] && NEW_ENABLE=1
+    NEW_NAPT=$(fget napt);     [ -z "$NEW_NAPT" ] && NEW_NAPT=1
+    [ "$NEW_CMODE" = "0" ] && NEW_NAPT=0
+    NEW_MTU=$(fget mtu)
+    if [ -z "$NEW_MTU" ]; then
+        if [ "$NEW_CMODE" = "2" ]; then NEW_MTU=1492; else NEW_MTU=1500; fi
+    fi
+    NEW_DGW=$(fget dgw); [ -z "$NEW_DGW" ] && NEW_DGW=0
+    [ "$NEW_CMODE" = "0" ] && NEW_DGW=0
+    NEW_NAME=$(fget name); [ -z "$NEW_NAME" ] && NEW_NAME="wan$VC"
+    NEW_VLAN=$(fget vlan); [ -z "$NEW_VLAN" ] && NEW_VLAN=0
+    NEW_VID=$(fget vid); [ -z "$NEW_VID" ] && NEW_VID=0
+    NEW_VPRIO=$(fget vprio); [ -z "$NEW_VPRIO" ] && NEW_VPRIO=0
+    NEW_APP=$(fget app); [ -z "$NEW_APP" ] && NEW_APP=1
+    NEW_ADDRTYPE=$(fget addrtype); [ -z "$NEW_ADDRTYPE" ] && NEW_ADDRTYPE=1  # DHCP default for IPoE
+
+    # Validate a few
+    is_uint "$NEW_ENABLE" 0 1 || err_json "bad_enable" "enable must be 0 or 1"
+    is_uint "$NEW_NAPT" 0 1 || err_json "bad_napt" "napt must be 0 or 1"
+    is_uint "$NEW_DGW" 0 1 || err_json "bad_dgw" "dgw must be 0 or 1"
+    is_uint "$NEW_VLAN" 0 1 || err_json "bad_vlan" "vlan must be 0 or 1"
+    if [ "$NEW_CMODE" = "2" ]; then
+        is_uint "$NEW_MTU" 68 1492 || err_json "bad_mtu" "PPPoE MTU must be 68-1492"
+    else
+        is_uint "$NEW_MTU" 68 1500 || err_json "bad_mtu" "MTU must be 68-1500"
+    fi
+    printable "$NEW_NAME" 29 || err_json "bad_name" "name must be printable ASCII, up to 29 characters"
+
+    # Default-route exclusivity
+    if [ "$NEW_DGW" = "1" ]; then
+        _j=0
+        while [ "$_j" -lt "$TOTAL" ]; do
+            _od=$(chain_dump "$_j")
+            if [ "$(fld "$_od" DefaultGW)" = "1" ] && [ "$(fld "$_od" ChannelStatus)" = "1" ] \
+               && [ "$(fld "$_od" ChannelMode)" != "0" ]; then
+                _on=$(fld "$_od" WanName); [ -z "$_on" ] && _on="profile $_j"
+                err_json "dgw_conflict" "$_on already carries the default route — turn it off there first"
+            fi
+            _j=$((_j+1))
+        done
+    fi
+
+    # Backup config.xml
+    BACKUP=false
+    if [ -f "$CFG" ]; then
+        _av=$($BB df -k /config 2>/dev/null | $BB awk 'NR==2 {print $4+0}')
+        _sz=$($BB wc -c < "$CFG" 2>/dev/null | $BB tr -d ' ')
+        if [ $(( ${_av:-0} * 1024 - ${_sz:-0} )) -gt 1048576 ]; then
+            cp "$CFG" "$CFG.wanprofile.bak" 2>/dev/null && BACKUP=true
+        fi
+    fi
+
+    ADD_OUT=$(mib add "$CHAIN" 2>/dev/null)
+    NEW_NUM=$(printf '%s' "$ADD_OUT" | $BB grep "NUM=" | $BB awk -F= '{print $2}' | $BB tr -d ' \r\n')
+    case "$NEW_NUM" in
+        ''|*[!0-9]*) err_json "add_failed" "mib add $CHAIN failed (table full or configd error)" ;;
+    esac
+    NEW_IDX=$((NEW_NUM - 1))
+
+    # Required fields for a working record
+    set_or_fail() {
+        OUT=$(mib set "$CHAIN.$NEW_IDX.$1" "$2" 2>&1)
+        if [ $? -ne 0 ] || printf '%s' "$OUT" | $BB grep -qi "fail\|out of range"; then
+            mib del "$CHAIN.$NEW_IDX" >/dev/null 2>&1
+            mib commit >/dev/null 2>&1
+            err_json "set_failed" "the device rejected $1=$2 during create; entry rolled back"
+        fi
+    }
+
+    set_or_fail ifIndex        "$NEW_IFINDEX"
+    set_or_fail MacAddr        "$NEW_MAC"
+    set_or_fail ChannelMode    "$NEW_CMODE"
+    set_or_fail ChannelStatus  "$NEW_ENABLE"
+    set_or_fail NAPT           "$NEW_NAPT"
+    set_or_fail MTU            "$NEW_MTU"
+    set_or_fail DefaultGW      "$NEW_DGW"
+    set_or_fail vlan           "$NEW_VLAN"
+    [ "$NEW_VLAN" = "1" ] && set_or_fail vid "$NEW_VID"
+    [ "$NEW_VLAN" = "1" ] && set_or_fail vprio "$NEW_VPRIO"
+    set_or_fail applicationtype "$NEW_APP"
+    set_or_fail WanName        "$NEW_NAME"
+    ITFG=$(fget itfgroup)
+    case "$ITFG" in ''|*[!0-9]*) ITFG=0 ;; esac
+    ITFG=$(( ITFG & 16383 ))
+    set_or_fail itfGroup "$ITFG"
+
+
+    # Match boa multi_wan defaults that restartWAN/startConnection expect
+    # IpProtocol: 1 = IPv4 (0 leaves the stack unconfigured on some builds)
+    set_or_fail IpProtocol 1
+    # BridgeType: boa IPoE uses 2; bridge mode uses 0
+    if [ "$NEW_CMODE" = "0" ]; then
+        set_or_fail BridgeType 0
+    else
+        set_or_fail BridgeType 2
+    fi
+
+    if [ "$NEW_CMODE" = "1" ]; then
+        set_or_fail ChannelAddrType "$NEW_ADDRTYPE"
+        if [ "$NEW_ADDRTYPE" = "0" ]; then
+            # static IPoE
+            IP=$(fget ip); GW=$(fget gw); MASK=$(fget mask)
+            is_ipv4 "$IP" || { mib del "$CHAIN.$NEW_IDX" >/dev/null 2>&1; mib commit >/dev/null 2>&1; err_json "bad_ip" "static IPoE needs a valid IP"; }
+            is_ipv4 "$GW" || { mib del "$CHAIN.$NEW_IDX" >/dev/null 2>&1; mib commit >/dev/null 2>&1; err_json "bad_gw" "static IPoE needs a valid gateway"; }
+            is_mask "$MASK" || { mib del "$CHAIN.$NEW_IDX" >/dev/null 2>&1; mib commit >/dev/null 2>&1; err_json "bad_mask" "static IPoE needs a valid netmask"; }
+            set_or_fail LocalIPAddr  "$IP"
+            set_or_fail RemoteIPAddr "$GW"
+            set_or_fail SubnetMask   "$MASK"
+            DNS1=$(fget dns1); DNS2=$(fget dns2)
+            [ -n "$DNS1" ] && is_ipv4 "$DNS1" && set_or_fail DNSV4IPAddr1 "$DNS1"
+            [ -n "$DNS2" ] && is_ipv4 "$DNS2" && set_or_fail DNSV4IPAddr2 "$DNS2"
+            set_or_fail DNSMode 0
+        else
+            # DHCP IPoE — boa sets DNSMode=1 (obtain automatically)
+            set_or_fail DNSMode 1
+            set_or_fail LocalIPAddr  0.0.0.0
+            set_or_fail RemoteIPAddr 0.0.0.0
+            set_or_fail SubnetMask   0.0.0.0
+        fi
+    fi
+
+    if [ "$NEW_CMODE" = "0" ]; then
+        # pure bridge: no NAPT / dgw / DHCP client
+        set_or_fail NAPT 0
+        set_or_fail DefaultGW 0
+        set_or_fail ChannelAddrType 0
+        set_or_fail DNSMode 0
+    fi
+
+    if [ "$NEW_CMODE" = "2" ]; then
+        USER=$(fget pppuser); PASS=$(fget ppppass)
+        [ -z "$USER" ] && { mib del "$CHAIN.$NEW_IDX" >/dev/null 2>&1; mib commit >/dev/null 2>&1; err_json "bad_pppuser" "PPPoE needs a username"; }
+        set_or_fail pppUser "$USER"
+        [ -n "$PASS" ] && set_or_fail pppPasswd "$PASS"
+        AUTH=$(fget pppauth); [ -n "$AUTH" ] && set_or_fail pppAuth "$AUTH"
+        AC=$(fget pppac); [ -n "$AC" ] && set_or_fail pppACName "$AC"
+        SVC=$(fget pppsvc); [ -n "$SVC" ] && set_or_fail pppServiceName "$SVC"
+    fi
+
+    if ! mib commit >/dev/null 2>&1; then
+        mib del "$CHAIN.$NEW_IDX" >/dev/null 2>&1
+        err_json "commit_failed" "mib commit failed; create rolled back"
+    fi
+    # Exclusive port membership: clear ITFG bits from other rows
+    if [ "${ITFG:-0}" -ne 0 ]; then
+        _t=$(chain_total); case "$_t" in ''|*[!0-9]*) _t=0 ;; esac
+        _j=0
+        while [ "$_j" -lt "$_t" ]; do
+            if [ "$_j" -ne "$NEW_IDX" ]; then
+                _od=$(chain_dump "$_j")
+                _og=$(fld "$_od" itfGroup)
+                case "$_og" in ''|*[!0-9]*) _og=0 ;; esac
+                _ng=$(( _og & ~ITFG ))
+                if [ "$_ng" -ne "$_og" ]; then
+                    mib set "$CHAIN.$_j.itfGroup" "$_ng" >/dev/null 2>&1 || true
+                fi
+            fi
+            _j=$((_j+1))
+        done
+        mib commit >/dev/null 2>&1 || true
+    fi
+    sync
+
+    if helper_ready; then
+        start_detached "$NEW_IDX"
+        ok_json "{\"ok\":true,\"idx\":$NEW_IDX,\"ifindex\":$NEW_IFINDEX,\"ifname\":\"$(ifname_for $NEW_IFINDEX)\",\"mac\":\"$NEW_MAC\",\"created\":true,\"backup\":$BACKUP,\"applied\":\"live\",\"applying\":true}"
+    fi
+    ok_json "{\"ok\":true,\"idx\":$NEW_IDX,\"ifindex\":$NEW_IFINDEX,\"ifname\":\"$(ifname_for $NEW_IFINDEX)\",\"mac\":\"$NEW_MAC\",\"created\":true,\"backup\":$BACKUP,\"applied\":\"reboot\",\"reboot_required\":true}"
+fi
+
+# ================================================================
+# POST ?action=save  (existing path continues below)
+# ================================================================
+
+# ── validators ────────────────────────────────────────────────────────────────
 IDX=$(fget idx | $BB tr -cd '0-9')
 TOTAL=$(chain_total)
 case "$TOTAL" in ''|*[!0-9]*) TOTAL=0 ;; esac
@@ -456,6 +796,21 @@ V=$(fget app)
 if [ -n "$V" ]; then
     is_uint "$V" 1 15 || err_json "bad_app" "pick at least one service type"
     addp applicationtype $(( (CUR_APP & ~15) | V ))
+fi
+
+# ── port binding (itfGroup bitmask) ───────────────────────────────────────────
+# Bits: 0-3 LAN1-4, 4 wlan0, 5-8 wlan0-vap0..3, 9 wlan1, 10-13 wlan1-vap0..3
+V=$(fget itfgroup)
+if [ -n "$V" ]; then
+    case "$V" in ''|*[!0-9]*) err_json "bad_itfgroup" "itfgroup must be a non-negative integer" ;; esac
+    # clamp to 14 bits
+    V=$(( V & 16383 ))
+    addp itfGroup "$V"
+    # A physical port belongs to at most one profile: clear these bits elsewhere.
+    # Queued as direct mib sets after the main PAIRS loop so we don't require
+    # them to be in this profile's DUMP "has" check.
+    ITFGROUP_NEW=$V
+    ITFGROUP_CLEAR=1
 fi
 
 # ── NAPT / QoS / IGMP / MLD ──────────────────────────────────────────────────
@@ -620,6 +975,24 @@ if [ -n "$FAILED" ]; then
     done < "$UNDO"
     [ "$STOPPED" = "1" ] && start_detached "$IDX"   # bring the old profile back up
     err_json "set_failed" "the device rejected $FAILED; nothing was saved"
+fi
+
+# Clear bound ports from other ATM_VC_TBL rows (exclusive membership)
+if [ "${ITFGROUP_CLEAR:-0}" = "1" ] && [ -n "${ITFGROUP_NEW:-}" ]; then
+    _t=$(chain_total); case "$_t" in ''|*[!0-9]*) _t=0 ;; esac
+    _j=0
+    while [ "$_j" -lt "$_t" ]; do
+        if [ "$_j" -ne "$IDX" ]; then
+            _od=$(chain_dump "$_j")
+            _og=$(fld "$_od" itfGroup)
+            case "$_og" in ''|*[!0-9]*) _og=0 ;; esac
+            _ng=$(( _og & ~ITFGROUP_NEW ))
+            if [ "$_ng" -ne "$_og" ]; then
+                mib set "$CHAIN.$_j.itfGroup" "$_ng" >/dev/null 2>&1 || true
+            fi
+        fi
+        _j=$((_j+1))
+    done
 fi
 
 if ! mib commit >/dev/null 2>&1; then

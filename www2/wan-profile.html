@@ -69,7 +69,10 @@
 
                 <!-- ── Profile list ───────────────────────────────────── -->
                 <div class="card mb-3">
-                    <div class="card-header">WAN Profiles</div>
+                    <div class="card-header d-flex align-items-center justify-content-between">
+                        <span>WAN Profiles</span>
+                        <button type="button" class="btn btn-sm btn-primary" onclick="openCreate()">+ New profile</button>
+                    </div>
                     <div class="card-body">
                         <div class="table-wrap">
                             <table class="table table-sm" id="wan-table">
@@ -86,9 +89,7 @@
                         </div>
                         <div class="field-hint mt-2">
                             Profiles are the vendor <code>ATM_VC_TBL</code> records, the same ones the stock
-                            “WAN Link” page edits. Existing profiles can be edited here; to add or remove a
-                            profile use the vendor page, because that also updates port mapping and routing.
-                        </div>
+                            “WAN Link” page edits. Existing profiles can be edited or deleted here. Use <strong>+ New profile</strong> to create a bridge, IPoE or PPPoE connection (and its <code>nas0_*</code> / <code>ppp*</code> interface).</div>
                     </div>
                 </div>
 
@@ -146,6 +147,26 @@
                                 <input type="number" class="form-control" id="f-mvid" min="0" max="4095">
                                 <div class="field-hint">0 = off</div></div>
                         </div>
+
+
+                        <div class="sect">Port binding <span class="field-hint" style="display:inline;text-transform:none;letter-spacing:0;font-weight:400">(itfGroup — LAN/WLAN ports attached to this profile)</span></div>
+                        <div class="svc-box" id="portmap-box">
+                            <div class="form-check"><input class="form-check-input pm" type="checkbox" id="pm-0" value="0"><label class="form-check-label" for="pm-0">LAN1</label></div>
+                            <div class="form-check"><input class="form-check-input pm" type="checkbox" id="pm-1" value="1"><label class="form-check-label" for="pm-1">LAN2</label></div>
+                            <div class="form-check"><input class="form-check-input pm" type="checkbox" id="pm-2" value="2"><label class="form-check-label" for="pm-2">LAN3</label></div>
+                            <div class="form-check"><input class="form-check-input pm" type="checkbox" id="pm-3" value="3"><label class="form-check-label" for="pm-3">LAN4</label></div>
+                            <div class="form-check"><input class="form-check-input pm" type="checkbox" id="pm-4" value="4"><label class="form-check-label" for="pm-4">wlan0</label></div>
+                            <div class="form-check"><input class="form-check-input pm" type="checkbox" id="pm-5" value="5"><label class="form-check-label" for="pm-5">wlan0-vap0</label></div>
+                            <div class="form-check"><input class="form-check-input pm" type="checkbox" id="pm-6" value="6"><label class="form-check-label" for="pm-6">wlan0-vap1</label></div>
+                            <div class="form-check"><input class="form-check-input pm" type="checkbox" id="pm-7" value="7"><label class="form-check-label" for="pm-7">wlan0-vap2</label></div>
+                            <div class="form-check"><input class="form-check-input pm" type="checkbox" id="pm-8" value="8"><label class="form-check-label" for="pm-8">wlan0-vap3</label></div>
+                            <div class="form-check"><input class="form-check-input pm" type="checkbox" id="pm-9" value="9"><label class="form-check-label" for="pm-9">wlan1</label></div>
+                            <div class="form-check"><input class="form-check-input pm" type="checkbox" id="pm-10" value="10"><label class="form-check-label" for="pm-10">wlan1-vap0</label></div>
+                            <div class="form-check"><input class="form-check-input pm" type="checkbox" id="pm-11" value="11"><label class="form-check-label" for="pm-11">wlan1-vap1</label></div>
+                            <div class="form-check"><input class="form-check-input pm" type="checkbox" id="pm-12" value="12"><label class="form-check-label" for="pm-12">wlan1-vap2</label></div>
+                            <div class="form-check"><input class="form-check-input pm" type="checkbox" id="pm-13" value="13"><label class="form-check-label" for="pm-13">wlan1-vap3</label></div>
+                        </div>
+                        <div class="field-hint mb-2">A port should only be bound to one profile. Saving clears these bits from other profiles, then live-applies.</div>
 
                         <div class="sect">Routing</div>
                         <div class="row g-3">
@@ -334,7 +355,9 @@ function renderTable() {
             '<td>' + (p.cmode === 0 ? '<span class="cell-sub">—</span>' : (p.napt ? 'On' : 'Off')) + '</td>' +
             '<td>' + (p.cmode === 0 ? '<span class="cell-sub">—</span>' : (p.dgw ? 'Yes' : 'No')) + '</td>' +
             '<td>' + statusCell(p) + '</td>' +
-            '<td><button type="button" class="btn btn-sm btn-outline-primary" onclick="openEditor(' + p.index + ')">Edit</button></td>' +
+            '<td class="text-nowrap">' +
+            '<button type="button" class="btn btn-sm btn-outline-primary me-1" onclick="openEditor(' + p.index + ')">Edit</button>' +
+            '<button type="button" class="btn btn-sm btn-outline-danger" onclick="doDelete(' + p.index + ')">Delete</button></td>' +
             '</tr>';
     }).join('');
 }
@@ -359,14 +382,101 @@ function loadList(quiet) {
 }
 
 // ── Editor ──────────────────────────────────────────────────────────────────
+var createMode = false;
+
+function openCreate() {
+    createMode = true;
+    cur = {
+        index: -1, cmode: 1, enable: 1, addrtype: 1, napt: 1, dgw: 0,
+        mtu: 1500, vlan: 0, vid: 0, vprio: 0, app: 1, name: '',
+        ip: '', gw: '', mask: '255.255.255.0', dns1: '', dns2: '',
+        pppuser: '', pppauth: 0, pppac: '', pppsvc: '',
+        has_name: true, has_qos: false, has_igmp: false, has_mld: false, has_ipproto: false
+    };
+    E('edit-title').textContent = 'New WAN profile';
+    E('btn-save').textContent = 'Create';
+
+    // Connection type: create may choose Bridge / IPoE / PPPoE freely
+    E('f-cmode').disabled = false;
+    E('f-cmode').innerHTML = [0, 1, 2].map(function (v) {
+        return '<option value="' + v + '">' + CMODE[v] + '</option>';
+    }).join('');
+    E('f-cmode').value = '1';
+    E('cmode-hint').textContent = 'Bridge, IPoE or PPPoE. The matching nas0_* / ppp* interface is created on save.';
+
+    // 802.1p priority 0–7 (only shown when VLAN tag is on)
+    E('f-vprio').innerHTML = [0,1,2,3,4,5,6,7].map(function (v) {
+        return '<option value="' + v + '">' + v + '</option>';
+    }).join('');
+    E('f-vprio').value = '0';
+
+    if (E('f-name')) E('f-name').value = '';
+    show('g-name', true);
+    E('f-enable').checked = true;
+    [1, 2, 4, 8].forEach(function (bit) {
+        var el = E('svc-' + bit);
+        if (el) el.checked = (bit === 2);  // default Internet
+    });
+    E('f-vlan').checked = false;
+    if (E('f-vid')) E('f-vid').value = '';
+    if (E('f-mvid')) E('f-mvid').value = '0';
+    E('f-napt').checked = true;
+    E('f-dgw').checked = false;
+    if (E('f-mtu')) E('f-mtu').value = '1500';
+    if (E('f-addrtype')) E('f-addrtype').value = '1';
+    if (E('f-ip')) E('f-ip').value = '';
+    if (E('f-gw')) E('f-gw').value = '';
+    if (E('f-mask')) E('f-mask').value = '255.255.255.0';
+    if (E('f-dns1')) E('f-dns1').value = '';
+    if (E('f-dns2')) E('f-dns2').value = '';
+    if (E('f-pppuser')) E('f-pppuser').value = '';
+    if (E('f-ppppass')) E('f-ppppass').value = '';
+    if (E('f-pppauth')) E('f-pppauth').value = '0';
+    if (E('f-pppac')) E('f-pppac').value = '';
+    if (E('f-pppsvc')) E('f-pppsvc').value = '';
+    if (E('f-pppctype')) E('f-pppctype').value = '0';
+    if (E('f-dnsmode')) E('f-dnsmode').value = '1';
+    setPortMapMask(0);
+
+    syncVisibility();
+    show('edit-card', true);
+    try { E('edit-card').scrollIntoView({ behavior: 'smooth', block: 'nearest' }); } catch (e) {}
+}
+
+function doDelete(idx) {
+    var p = (profiles || []).filter(function (x) { return x.index === idx; })[0];
+    var label = p ? displayName(p) : ('profile ' + idx);
+    if (!confirm('Delete ' + label + ' and tear down its interface? This cannot be undone.')) return;
+    showOv('Deleting\u2026');
+    fetchJson('/cgi-bin/wan-profile.cgi?action=delete', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: 'idx=' + encodeURIComponent(idx)
+    }).then(function (d) {
+        hideOv();
+        if (!d || !d.ok) { toastr.error((d && (d.detail || d.error)) || 'Delete failed'); return; }
+        if (d.applied === 'live') {
+            toastr.success('Deleted — applying');
+            waitApply();
+        } else {
+            toastr.success('Deleted — reboot to fully apply');
+            E('reboot-banner').style.display = 'flex';
+            loadList(true);
+        }
+    }).catch(function () { hideOv(); toastr.error('Request failed'); });
+}
+
 function openEditor(idx) {
+    createMode = false;
+    E('btn-save').textContent = 'Save';
+
     var p = profiles.filter(function (x) { return x.index === idx; })[0];
     if (!p) return;
     cur = p;
     E('edit-title').textContent = 'Edit ' + displayName(p) + ' (' + CMODE[p.cmode] + ')';
 
     var ro = [['Interface', p.ifname || '—'], ['MAC address', macText(p.mac)]];
-    if (p.itfgroup) ro.push(['Port mapping', portMapText(p.itfgroup) || ('0x' + p.itfgroup.toString(16))]);
+    // Port mapping is editable via #portmap-box checkboxes
     if (p.bridge)   ro.push(['Bridge', p.bridge]);
     E('ro-info').innerHTML = ro.map(function (r) {
         return '<div class="ro-row"><span>' + esc(r[0]) + '</span><span class="mono">' + esc(r[1]) + '</span></div>';
@@ -416,13 +526,14 @@ function openEditor(idx) {
     E('f-pppsvc').value = p.pppsvc || '';
     E('f-pppctype').value = p.pppctype || 0;
     E('f-pppidle').value = p.pppidle || '';
+    setPortMapMask(p.itfgroup || 0);
 
     syncVisibility();
     show('edit-card', true);
     E('edit-card').scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
 
-function closeEditor() { cur = null; show('edit-card', false); }
+function closeEditor() { cur = null; createMode = false; if (E('btn-save')) E('btn-save').textContent = 'Save'; show('edit-card', false); }
 
 function syncVisibility() {
     var cm = parseInt(E('f-cmode').value, 10);
@@ -440,7 +551,25 @@ function syncVisibility() {
 
 function chk(id) { return E(id).checked ? '1' : '0'; }
 
+function portMapMask() {
+    var m = 0;
+    document.querySelectorAll('.pm').forEach(function (el) {
+        if (el.checked) m |= (1 << parseInt(el.value, 10));
+    });
+    return m;
+}
+
+function setPortMapMask(mask) {
+    mask = mask || 0;
+    document.querySelectorAll('.pm').forEach(function (el) {
+        var bit = parseInt(el.value, 10);
+        el.checked = !!(mask & (1 << bit));
+    });
+}
+
 function doSave() {
+    if (createMode) { doCreate(); return; }
+
     if (!cur) return;
     var cm = parseInt(E('f-cmode').value, 10);
     var app = 0;
@@ -462,6 +591,7 @@ function doSave() {
     if (cur.has_igmp) f.set('igmp', chk('f-igmp'));
     if (cur.has_mld)  f.set('mld',  chk('f-mld'));
     if (cur.has_ipproto) f.set('ipproto', E('f-ipproto').value);
+    f.set('itfgroup', String(portMapMask()));
 
     if (cm === 1) {
         f.set('addrtype', E('f-addrtype').value);
@@ -504,6 +634,72 @@ function doSave() {
         toastr.success(n + ' \u2014 reboot to apply');
         E('reboot-banner').style.display = 'flex';
         loadList(true);
+    }).catch(function () { hideOv(); toastr.error('Request failed'); });
+}
+
+function doCreate() {
+    var cm = parseInt(E('f-cmode').value, 10);
+    var f = new URLSearchParams();
+    f.set('cmode', String(cm));
+    f.set('enable', chk('f-enable'));
+    if (E('f-name')) f.set('name', E('f-name').value.trim());
+    if (cm !== 0) {
+        f.set('napt', chk('f-napt'));
+        f.set('dgw', chk('f-dgw'));
+    } else {
+        f.set('napt', '0');
+        f.set('dgw', '0');
+    }
+    if (E('f-mtu')) f.set('mtu', E('f-mtu').value);
+    f.set('vlan', chk('f-vlan'));
+    if (E('f-vlan').checked) {
+        if (E('f-vid')) f.set('vid', E('f-vid').value);
+        if (E('f-vprio')) f.set('vprio', E('f-vprio').value);
+    }
+    // service type bitmask
+    var app = 0;
+    [1, 2, 4, 8].forEach(function (bit) {
+        var el = E('svc-' + bit);
+        if (el && el.checked) app |= bit;
+    });
+    f.set('app', String(app || 1));
+    f.set('itfgroup', String(portMapMask()));
+    if (cm === 1) {
+        f.set('addrtype', E('f-addrtype').value);
+        if (E('f-addrtype').value === '0') {
+            f.set('ip', E('f-ip').value.trim());
+            f.set('gw', E('f-gw').value.trim());
+            f.set('mask', E('f-mask').value.trim());
+            f.set('dns1', E('f-dns1').value.trim());
+            f.set('dns2', E('f-dns2').value.trim());
+        }
+    }
+    if (cm === 2) {
+        f.set('pppuser', E('f-pppuser').value.trim());
+        if (E('f-ppppass').value) f.set('ppppass', E('f-ppppass').value);
+        if (E('f-pppauth')) f.set('pppauth', E('f-pppauth').value);
+        if (E('f-pppac')) f.set('pppac', E('f-pppac').value.trim());
+        if (E('f-pppsvc')) f.set('pppsvc', E('f-pppsvc').value.trim());
+    }
+    showOv('Creating\u2026');
+    fetchJson('/cgi-bin/wan-profile.cgi?action=create', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: f.toString()
+    }).then(function (d) {
+        hideOv();
+        if (!d || !d.ok) { toastr.error((d && (d.detail || d.error)) || 'Create failed'); return; }
+        createMode = false;
+        closeEditor();
+        var msg = 'Created ' + (d.ifname || ('profile ' + d.idx));
+        if (d.applied === 'live') {
+            toastr.success(msg + ' \u2014 applying');
+            waitApply();
+        } else {
+            toastr.success(msg + ' \u2014 reboot to apply');
+            E('reboot-banner').style.display = 'flex';
+            loadList(true);
+        }
     }).catch(function () { hideOv(); toastr.error('Request failed'); });
 }
 
