@@ -2644,6 +2644,25 @@ if echo "$QS" | $BB grep -q "action=nodemcu_setfreq"; then
     ok_json "{\"ok\":true,\"id\":$NID,\"freq\":$FREQ,\"msg\":\"NodeMCU rebooting at ${FREQ}MHz\"}"
 fi
 
+# ── WAN port safety check ─────────────────────────────────────────────────────
+# PON_MODE=0 (RJ45 Ethernet WAN) puts the vendor WAN on the RJ45 LAN port picked
+# by WAN_PHY_PORT: 0=ge1/eth0.2.0  1=ge2/eth0.3.0  2=ge3/eth0.4.0  3=ge4/eth0.5.0.
+# lmehspt.sh skips that port at runtime; the Interfaces page must not offer it.
+# Keep in sync with wan_claimed_lan_iface() in lmehspt.sh.
+_wan_mib_val() {
+    mib get "$1" 2>/dev/null | $BB grep '=' | $BB head -1 | $BB cut -d= -f2- | $BB tr -d ' \t\r\n'
+}
+wan_claimed_lan_iface() {
+    local _pm _pp
+    _pm=$(_wan_mib_val PON_MODE)
+    [ "$_pm" = "0" ] || return 0
+    _pp=$(_wan_mib_val WAN_PHY_PORT)
+    case "$_pp" in
+        0|1|2|3) echo "eth0.$((_pp + 2)).0" ;;
+    esac
+    return 0
+}
+
 # ================================================================
 # GET ?action=ifaces_get
 # Returns available network interfaces + current config + live bridge members
@@ -2657,6 +2676,9 @@ if echo "$QS" | $BB grep -q "action=ifaces_get"; then
     PPT="${PORTAL_PORT:-$(read_lmehspt_var PORTAL_PORT)}"
 
     HSP_RUNNING="false"; hotspot_running && HSP_RUNNING="true"
+
+    # Port the vendor WAN has claimed (PON_MODE=0 + WAN_PHY_PORT), if any
+    WAN_PORT_IF=$(wan_claimed_lan_iface)
 
     # --- Bridge members (live kernel state) ---
     BRIDGE_MEMBERS="["
@@ -2700,7 +2722,9 @@ if echo "$QS" | $BB grep -q "action=ifaces_get"; then
         # Check if it's in the bridge right now
         in_bridge="false"
         [ -e "/sys/class/net/$HBR/brif/$iface" ] && in_bridge="true"
-        IFACE_LIST="${IFACE_LIST}${IF_SEP}{\"name\":\"$iface\",\"mac\":\"${mac:-}\",\"type\":\"$iface_type\",\"up\":$is_up,\"in_bridge\":$in_bridge}"
+        is_wan="false"
+        [ -n "$WAN_PORT_IF" ] && [ "$iface" = "$WAN_PORT_IF" ] && is_wan="true"
+        IFACE_LIST="${IFACE_LIST}${IF_SEP}{\"name\":\"$iface\",\"mac\":\"${mac:-}\",\"type\":\"$iface_type\",\"up\":$is_up,\"in_bridge\":$in_bridge,\"wan_port\":$is_wan}"
         IF_SEP=","
     done
     IFACE_LIST="${IFACE_LIST}]"
@@ -2711,6 +2735,7 @@ if echo "$QS" | $BB grep -q "action=ifaces_get"; then
 \"portal_ip\":\"$(esc_json "$PIP")\",
 \"portal_port\":\"$(esc_json "$PPT")\",
 \"hotspot_running\":$HSP_RUNNING,
+\"wan_port_iface\":\"$(esc_json "$WAN_PORT_IF")\",
 \"bridge_members\":$BRIDGE_MEMBERS,
 \"interfaces\":$IFACE_LIST}"
 fi
@@ -2742,6 +2767,22 @@ if echo "$QS" | $BB grep -q "action=ifaces_set"; then
         || err_json "invalid_hotspot_br"
     env_val_safe "$IF" && printf '%s' "$IF" | $BB grep -qE '^[A-Za-z0-9._-]{1,15}( [A-Za-z0-9._-]{1,15})*$' \
         || err_json "invalid_hotspot_interfaces"
+    # Refuse to newly bind the RJ45 port the vendor WAN is running on — the
+    # hotspot and the system would fight over it. A port that was already
+    # configured before it became the WAN is allowed through unchanged: the
+    # runtime guard in lmehspt.sh skips it, and keeping it listed lets it
+    # rejoin the hotspot automatically if the WAN moves back to fiber.
+    _wan_if=$(wan_claimed_lan_iface)
+    if [ -n "$_wan_if" ]; then
+        case " $IF " in
+            *" $_wan_if "*)
+                case " $(read_lmehspt_var HOTSPOT_INTERFACES) " in
+                    *" $_wan_if "*) ;;
+                    *) err_json "wan_port_in_use" ;;
+                esac
+                ;;
+        esac
+    fi
     [ -z "$PIP" ] || { env_val_safe "$PIP" && _valid_ipv4 "$PIP"; } || err_json "invalid_portal_ip"
     [ -z "$PPT" ] || { env_val_safe "$PPT" && printf '%s' "$PPT" | $BB grep -qE '^[0-9]{1,5}$' \
         && [ "$PPT" -ge 1 ] && [ "$PPT" -le 65535 ]; } || err_json "invalid_portal_port"

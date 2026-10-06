@@ -618,11 +618,100 @@ EOF
 
 
 
+# ── WAN port safety check ────────────────────────────────────────────────────
+# PON_MODE=0 (RJ45 Ethernet WAN) puts the vendor WAN on one of the RJ45 LAN
+# ports, picked by WAN_PHY_PORT:
+#     WAN_PHY_PORT 0 = ge1 (LAN1, eth0.2.0)    1 = ge2 (LAN2, eth0.3.0)
+#                  2 = ge3 (LAN3, eth0.4.0)    3 = ge4 (LAN4, eth0.5.0)
+# GPON / EPON / Fiber-Ethernet (PON_MODE 1/2/3) use WAN_PHY_PORT=5 (the PON
+# port), so no LAN port is claimed there.
+#
+# A claimed port belongs to the vendor WAN stack. Binding it into the hotspot
+# bridge, "releasing" it back to br0, or counting it as "missing from the
+# bridge" in the watchdog makes this script and the system fight over it
+# forever. Everything that binds / releases / waits on HOTSPOT_INTERFACES goes
+# through hotspot_ifaces() so the claimed port is skipped. The configured
+# HOTSPOT_INTERFACES list itself is never rewritten: the port rejoins the
+# hotspot by itself if the WAN is moved back to fiber.
+#
+# Assumes the vendor's default identity PORT_REMAPPING (phy port N == LAN(N+1)).
+# Keep wan_claimed_lan_iface() in sync with the copy in www2/cgi-bin/hotspot.cgi.
+WAN_CLAIM_IF=""
+WAN_CLAIM_TS=-1000
+
+_wan_mib_val() {
+    # `mib get X` prints "X=v" on some builds and a padded "X      = v" on
+    # others — keep what follows the first '=' and drop all whitespace.
+    mib get "$1" 2>/dev/null | $BB grep '=' | $BB head -1 | $BB cut -d= -f2- | $BB tr -d ' \t\r\n'
+}
+
+# Prints the LAN-port netdev (eth0.N.0) the vendor WAN has claimed, or nothing.
+wan_claimed_lan_iface() {
+    local _pm _pp
+    _pm=$(_wan_mib_val PON_MODE)
+    [ "$_pm" = "0" ] || return 0
+    _pp=$(_wan_mib_val WAN_PHY_PORT)
+    case "$_pp" in
+        0|1|2|3) echo "eth0.$((_pp + 2)).0" ;;
+    esac
+    return 0
+}
+
+# Re-evaluates WAN_CLAIM_IF. `mib get` forks, so this is throttled to once per
+# 15s unless called with "force". Must run in the calling shell (NOT inside a
+# $(...)) for the cached value to stick.
+refresh_wan_claim() {
+    local _up _now _new
+    read -r _up _ < /proc/uptime 2>/dev/null
+    _now=${_up%%.*}
+    case "$_now" in ''|*[!0-9]*) _now=0 ;; esac
+    if [ "$1" != "force" ] && [ $((_now - WAN_CLAIM_TS)) -ge 0 ] && [ $((_now - WAN_CLAIM_TS)) -lt 15 ]; then
+        return 0
+    fi
+    WAN_CLAIM_TS=$_now
+    _new=$(wan_claimed_lan_iface)
+    if [ "$_new" != "$WAN_CLAIM_IF" ]; then
+        if [ -n "$_new" ]; then
+            logger -t lmehspt "WAN runs on RJ45 port $_new (PON_MODE=0) - leaving it out of the hotspot bridge" 2>/dev/null
+        elif [ -n "$WAN_CLAIM_IF" ]; then
+            logger -t lmehspt "$WAN_CLAIM_IF is no longer the WAN port - hotspot may bind it again" 2>/dev/null
+        fi
+        WAN_CLAIM_IF="$_new"
+    fi
+}
+
+# HOTSPOT_INTERFACES minus the port the vendor WAN has claimed (pure; reads the
+# cached WAN_CLAIM_IF only).
+hotspot_ifaces() {
+    local _i _out=""
+    for _i in $HOTSPOT_INTERFACES; do
+        [ -n "$WAN_CLAIM_IF" ] && [ "$_i" = "$WAN_CLAIM_IF" ] && continue
+        _out="$_out $_i"
+    done
+    echo $_out
+}
+
+# ── WAN-profile default route ────────────────────────────────────────────────
+# Prints the vendor WAN-profile netdev (nas0_N / pppN — what ATM_VC_TBL brings
+# up) that currently carries a default route, or nothing. While one does, it
+# owns the default route and the br0 fallback below must not touch it.
+wanprofile_default_iface() {
+    local _dev
+    _dev=$(ip route show default 2>/dev/null \
+        | $BB awk '{ for (i = 1; i < NF; i++) if ($i == "dev") print $(i + 1) }' \
+        | $BB grep -E '^(nas|ppp)[0-9]' | $BB head -1)
+    [ -n "$_dev" ] && echo "$_dev"
+    return 0
+}
+
 wait_for_wlan_ready() {
     local max_wait=90 waited=0
 
-    # No interfaces configured — nothing to wait for.
-    [ -z "$HOTSPOT_INTERFACES" ] && return
+    refresh_wan_claim force
+
+    # No interfaces configured (or every one is the vendor's RJ45 WAN port) —
+    # nothing to wait for.
+    [ -z "$(hotspot_ifaces)" ] && return
 
     # Wait for every interface in HOTSPOT_INTERFACES to be added to br0
     # by the vendor init — not just wlan*. eth0.2.0 (and any other eth
@@ -644,7 +733,7 @@ wait_for_wlan_ready() {
         local all_ready=1 uptime_now _if
         uptime_now="$(cut -d. -f1 /proc/uptime 2>/dev/null)"
 
-        for _if in $HOTSPOT_INTERFACES; do
+        for _if in $(hotspot_ifaces); do
             [ -d "/sys/class/net/br0/brif/$_if" ] && continue
 
             # System has been up over 60s and this interface still isn't
@@ -668,7 +757,12 @@ wait_for_wlan_ready() {
     # after the radios join br0 (~1-2s on both firmwares).
     sleep 2
 
-    ip route add default via "$(resolve_br0_gateway)" dev br0 2>/dev/null
+    # Only seed the br0 fallback default route when no vendor WAN profile
+    # (nas0_N / pppN) already carries one — otherwise this steals the default
+    # route from the real uplink.
+    if [ -z "$(wanprofile_default_iface)" ]; then
+        ip route add default via "$(resolve_br0_gateway)" dev br0 2>/dev/null
+    fi
 }
 
 
@@ -761,8 +855,9 @@ apply_hotspot_isolate() {
 }
 
 cleanup_old_hotspot() {
+    refresh_wan_claim
     tc qdisc del dev $WAN_INT root 2>/dev/null
-    for iface in $HOTSPOT_INTERFACES; do
+    for iface in $(hotspot_ifaces); do
         tc qdisc del dev "$iface" root 2>/dev/null
     done
     teardown_anti_tether 2>/dev/null
@@ -812,15 +907,18 @@ cleanup_old_hotspot() {
     # down the hotspot bridge. Without this, disabling the hotspot leaves the
     # wlan/eth ports orphaned in the (now removed) bridge and offline. We walk
     # the live bridge members so it works even if HOTSPOT_INTERFACES changed.
+    refresh_wan_claim
     for ifpath in /sys/class/net/"$HOTSPOT_BR"/brif/*; do
         [ -e "$ifpath" ] || continue
         bm=$($BB basename "$ifpath")
         $BB brctl delif "$HOTSPOT_BR" "$bm" 2>/dev/null
+        # The vendor's RJ45 WAN port must not be handed to br0 either.
+        [ -n "$WAN_CLAIM_IF" ] && [ "$bm" = "$WAN_CLAIM_IF" ] && continue
         $BB brctl addif br0 "$bm" 2>/dev/null
         ifconfig "$bm" 0.0.0.0 up 2>/dev/null
     done
     # Belt-and-suspenders: also rebind anything still listed in the config.
-    for iface in $HOTSPOT_INTERFACES; do
+    for iface in $(hotspot_ifaces); do
         $BB brctl delif "$HOTSPOT_BR" "$iface" 2>/dev/null
         $BB brctl addif br0 "$iface" 2>/dev/null
         ifconfig "$iface" 0.0.0.0 up 2>/dev/null
@@ -923,6 +1021,7 @@ kick_sta_mac() {
 }
 
 setup_network() {
+    refresh_wan_claim
     $BB brctl addbr $HOTSPOT_BR 2>/dev/null
     # Release any interface still enslaved in HOTSPOT_BR that is no longer
     # listed in HOTSPOT_INTERFACES (the admin unbound it) back to br0 first.
@@ -931,6 +1030,8 @@ setup_network() {
     for ifpath in /sys/class/net/"$HOTSPOT_BR"/brif/*; do
         [ -e "$ifpath" ] || continue
         bm=$($BB basename "$ifpath")
+        # Hands off the port the vendor WAN has claimed (PON_MODE=0).
+        [ -n "$WAN_CLAIM_IF" ] && [ "$bm" = "$WAN_CLAIM_IF" ] && continue
         case " $HOTSPOT_INTERFACES " in
             *" $bm "*) ;;  # still wanted — leave enslaved
             *)
@@ -940,7 +1041,7 @@ setup_network() {
                 ;;
         esac
     done
-    for iface in $HOTSPOT_INTERFACES; do
+    for iface in $(hotspot_ifaces); do
         $BB brctl delif br0 $iface 2>/dev/null
         $BB brctl addif $HOTSPOT_BR $iface 2>/dev/null
         ifconfig $iface 0.0.0.0 up
@@ -953,7 +1054,7 @@ setup_network() {
     # portal; kicking forces a reconnect and a fresh DHCP lease on br1. This
     # runs on the first boot-time setup_network AND whenever the watchdog
     # re-binds after an Interfaces-tab change, covering both requested cases.
-    for iface in $HOTSPOT_INTERFACES; do
+    for iface in $(hotspot_ifaces); do
         kick_iface_stas "$iface"
     done
 }
@@ -2464,7 +2565,10 @@ fi
         UNAUTH_RATE=$(_norm_rate "$UNAUTH_RATE")
 
         need_setup=0
-        for iface in $HOTSPOT_INTERFACES; do
+        # Re-check which RJ45 port (if any) the vendor WAN has claimed — the
+        # claimed port is never expected in the bridge (see hotspot_ifaces()).
+        refresh_wan_claim
+        for iface in $(hotspot_ifaces); do
             iface_in_bridge "$iface" || need_setup=1
         done
         # Reverse check: an interface still enslaved in HOTSPOT_BR that was
@@ -2474,6 +2578,7 @@ fi
         for ifpath in /sys/class/net/"$HOTSPOT_BR"/brif/*; do
             [ -e "$ifpath" ] || continue
             bm=$($BB basename "$ifpath")
+            [ -n "$WAN_CLAIM_IF" ] && [ "$bm" = "$WAN_CLAIM_IF" ] && continue
             case " $HOTSPOT_INTERFACES " in
                 *" $bm "*) ;;
                 *) need_setup=1 ;;
@@ -2618,14 +2723,21 @@ fi
             LAST_PORT80_SCAN=$NOW
         fi
 
-        # Default route watchdog: if vendor firmware (nas*, etc.) steals the
-        # default route, restore it so hotspot clients keep internet access.
+        # Default route watchdog: if something steals the default route from
+        # the hotspot's upstream, restore it so hotspot clients keep internet
+        # access. A vendor WAN profile (nas0_N / pppN from ATM_VC_TBL) that
+        # carries the default route IS the upstream when nothing is repurposed
+        # as WAN — in that case the route is left alone instead of being
+        # forced back onto br0.
         _ww=$(resolve_wan_int)
+        _ww_gw=""
         if [ "$_ww" != "$WAN_INT_DEFAULT" ]; then
             # Repurpose mode: use the gateway learned by udhcpc
             _ww_gw_f="/tmp/repurpose_gw_${_ww}"
             [ -f "$_ww_gw_f" ] && _ww_gw=$($BB tr -d '\r\n' < "$_ww_gw_f" 2>/dev/null)
-        else
+        elif [ -z "$(wanprofile_default_iface)" ]; then
+            # No repurposed WAN and no WAN profile owning the default route:
+            # br0's upstream router is the fallback gateway.
             _ww_gw="$(resolve_br0_gateway)"
         fi
         if [ -n "$_ww_gw" ]; then

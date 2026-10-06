@@ -426,15 +426,20 @@ if [ "$REQUEST_METHOD" = "GET" ]; then
             | busybox grep "=" \
             | busybox cut -d'=' -f2 \
             | busybox tr -d '\r\n' | busybox sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+        WAN_PHY_PORT=$(mib get WAN_PHY_PORT 2>/dev/null \
+            | busybox grep "=" \
+            | busybox cut -d'=' -f2 \
+            | busybox tr -d '\r\n' | busybox sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
         MAC=$(echo "$MAC_RAW" \
             | busybox sed 's/\(..\)\(..\)\(..\)\(..\)\(..\)\(..\)/\1:\2:\3:\4:\5:\6/' \
             | busybox tr 'a-z' 'A-Z')
         [ -z "$PON_MODE" ] && PON_MODE=1
         [ -z "$PON_AUTO" ] && PON_AUTO=1
+        [ -z "$WAN_PHY_PORT" ] && WAN_PHY_PORT=5
         printf "Status: 200 OK\r\n"
         printf "Content-Type: application/json\r\n\r\n"
-        printf '{"hw_serial_no":"%s","mac":"%s","pon_mode":%s,"pon_auto":%s}' \
-            "$HW_SERIAL" "$MAC" "$PON_MODE" "$PON_AUTO"
+        printf '{"hw_serial_no":"%s","mac":"%s","pon_mode":%s,"pon_auto":%s,"wan_phy_port":%s}' \
+            "$HW_SERIAL" "$MAC" "$PON_MODE" "$PON_AUTO" "$WAN_PHY_PORT"
         exit 0
     fi
 
@@ -1354,6 +1359,9 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
         FORM_PON_AUTO=$(echo "$POST_DATA" \
             | busybox sed -n 's/.*pon_auto=\([^&]*\).*/\1/p' \
             | busybox tr -d '\r\n')
+        FORM_WAN_PHY_PORT=$(echo "$POST_DATA" \
+            | busybox sed -n 's/.*wan_phy_port=\([^&]*\).*/\1/p' \
+            | busybox tr -d '\r\n')
 
         # Validate HW Serial: 4-32 uppercase alphanumeric chars (hyphens allowed)
         HW_SN_LEN=$(echo -n "$FORM_HW_SERIAL" | busybox wc -c | busybox tr -d ' ')
@@ -1387,10 +1395,16 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
             exit 0
         fi
 
-        # Validate PON mode: 1, 2, or 3
+        # Validate PON mode: 0 = RJ45 Ethernet, 1 = GPON, 2 = EPON, 3 = Fiber Ethernet
         case "$FORM_PON_MODE" in
-            1|2|3) ;;
+            0|1|2|3) ;;
             *) FORM_PON_MODE=1 ;;
+        esac
+
+        # Validate Ethernet WAN port (RJ45 mode only): 0, 1, 2, 3 = ge1..ge4
+        case "$FORM_WAN_PHY_PORT" in
+            0|1|2|3) ;;
+            *) FORM_WAN_PHY_PORT=0 ;;
         esac
 
         # Validate PON auto: 0 or 1
@@ -1406,22 +1420,50 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
         CUR_PON_MODE=$(mib get PON_MODE 2>/dev/null \
             | busybox grep "=" | busybox cut -d'=' -f2 \
             | busybox tr -d '\r\n' | busybox sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+        CUR_WAN_PHY_PORT=$(mib get WAN_PHY_PORT 2>/dev/null \
+            | busybox grep "=" | busybox cut -d'=' -f2 \
+            | busybox tr -d '\r\n' | busybox sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
         [ -z "$CUR_PON_AUTO" ] && CUR_PON_AUTO=1
         [ -z "$CUR_PON_MODE" ] && CUR_PON_MODE=1
+        [ -z "$CUR_WAN_PHY_PORT" ] && CUR_WAN_PHY_PORT=5
+
+        # Target WAN PHY port:
+        #   manual RJ45 Ethernet   -> selected ge port (0..3)
+        #   manual GPON/EPON/Fiber -> 5 (PON port)
+        #   auto-detect            -> 5 if leaving RJ45 mode, else leave untouched
+        if [ "$FORM_PON_AUTO" = "0" ]; then
+            if [ "$FORM_PON_MODE" = "0" ]; then
+                NEW_WAN_PHY_PORT="$FORM_WAN_PHY_PORT"
+            else
+                NEW_WAN_PHY_PORT=5
+            fi
+        elif [ "$CUR_PON_MODE" = "0" ]; then
+            NEW_WAN_PHY_PORT=5
+        else
+            NEW_WAN_PHY_PORT="$CUR_WAN_PHY_PORT"
+        fi
 
         [ -n "$FORM_HW_SERIAL" ] && mib set HW_SERIAL_NO "$FORM_HW_SERIAL"
         mib set ELAN_MAC_ADDR "$FORM_MAC"
         mib set PON_MODE_AUTO_CHECK_ENABLE "$FORM_PON_AUTO"
         if [ "$FORM_PON_AUTO" = "0" ]; then
             mib set PON_MODE "$FORM_PON_MODE"
+        elif [ "$CUR_PON_MODE" = "0" ]; then
+            # Auto-detect on, but stored mode is RJ45 Ethernet: fall back to GPON
+            mib set PON_MODE 1
         fi
+        [ "$NEW_WAN_PHY_PORT" != "$CUR_WAN_PHY_PORT" ] && mib set WAN_PHY_PORT "$NEW_WAN_PHY_PORT"
         mib commit
 
-        # Determine whether a reboot is needed (PON mode or auto-detect changed)
+        # Determine whether a reboot is needed (PON mode, auto-detect or WAN port changed)
         PON_CHANGED=0
         if [ "$FORM_PON_AUTO" != "$CUR_PON_AUTO" ]; then
             PON_CHANGED=1
         elif [ "$FORM_PON_AUTO" = "0" ] && [ "$FORM_PON_MODE" != "$CUR_PON_MODE" ]; then
+            PON_CHANGED=1
+        elif [ "$FORM_PON_AUTO" = "1" ] && [ "$CUR_PON_MODE" = "0" ]; then
+            PON_CHANGED=1
+        elif [ "$NEW_WAN_PHY_PORT" != "$CUR_WAN_PHY_PORT" ]; then
             PON_CHANGED=1
         fi
 

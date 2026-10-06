@@ -109,11 +109,24 @@
                         <!-- Manual PON Mode (visible only when auto is OFF) -->
                         <div class="mb-2" id="pon-mode-group" style="display:none">
                             <label for="pon-mode" class="form-label">PON Mode</label>
-                            <select class="form-select" id="pon-mode">
+                            <select class="form-select" id="pon-mode" onchange="updateEthPortUI()">
+                                <option value="0">RJ45 Ethernet</option>
                                 <option value="1">GPON</option>
                                 <option value="2">EPON</option>
-                                <option value="3">Ethernet / SFP</option>
+                                <option value="3">Fiber Ethernet (SFP)</option>
                             </select>
+                        </div>
+
+                        <!-- Ethernet WAN port (visible only when PON Mode = RJ45 Ethernet) -->
+                        <div class="mb-2" id="eth-port-group" style="display:none">
+                            <label for="eth-port" class="form-label">Ethernet WAN Port</label>
+                            <select class="form-select" id="eth-port">
+                                <option value="0">ge1 (LAN 1)</option>
+                                <option value="1">ge2 (LAN 2)</option>
+                                <option value="2">ge3 (LAN 3)</option>
+                                <option value="3">ge4 (LAN 4)</option>
+                            </select>
+                            <div class="field-hint">This port becomes the WAN uplink and no longer works as a LAN port</div>
                         </div>
 
                         <!-- Apply button -->
@@ -148,6 +161,14 @@
             tog.classList.remove('on');
             grp.style.display = '';
         }
+        updateEthPortUI();
+    }
+
+    // Port dropdown only matters in manual RJ45 Ethernet mode (PON_MODE 0)
+    function updateEthPortUI() {
+        var grp  = document.getElementById('eth-port-group');
+        var rj45 = !ponAutoEnabled && document.getElementById('pon-mode').value === '0';
+        grp.style.display = rj45 ? '' : 'none';
     }
 
     function togglePonAuto() { setPonAutoUI(!ponAutoEnabled); }
@@ -174,7 +195,7 @@
     // Form lock / unlock
     // ---------------------------------------------------------------
     function setFormLocked(locked) {
-        var ids = ['hw-serial', 'sys-mac', 'pon-mode', 'apply-btn', 'pon-auto-toggle'];
+        var ids = ['hw-serial', 'sys-mac', 'pon-mode', 'eth-port', 'apply-btn', 'pon-auto-toggle'];
         ids.forEach(function(id) {
             var el = document.getElementById(id);
             if (!el) return;
@@ -262,9 +283,15 @@
                 document.getElementById('hw-serial').value = d.hw_serial_no || '';
                 document.getElementById('sys-mac').value   = d.mac || '';
                 var sel  = document.getElementById('pon-mode');
-                var mode = String(d.pon_mode || '1');
+                // pon_mode 0 (RJ45 Ethernet) is falsy — don't use || here
+                var mode = String((d.pon_mode === undefined || d.pon_mode === null || d.pon_mode === '') ? 1 : d.pon_mode);
                 for (var i = 0; i < sel.options.length; i++) {
                     if (sel.options[i].value === mode) { sel.selectedIndex = i; break; }
+                }
+                var psel = document.getElementById('eth-port');
+                var port = String((d.wan_phy_port === undefined || d.wan_phy_port === null) ? 0 : d.wan_phy_port);
+                for (var j = 0; j < psel.options.length; j++) {
+                    if (psel.options[j].value === port) { psel.selectedIndex = j; break; }
                 }
                 setPonAutoUI(d.pon_auto === 1 || d.pon_auto === '1' || d.pon_auto === true);
                 hideOverlay(function() { setFormLocked(false); });
@@ -292,11 +319,13 @@
         var macRaw  = macVal.replace(/:/g, '').toLowerCase();
         var ponAuto = ponAutoEnabled ? '1' : '0';
         var ponMode = document.getElementById('pon-mode').value;
+        var ethPort = document.getElementById('eth-port').value;
 
         var body = 'hw_serial=' + encodeURIComponent(snVal)
                  + '&mac='      + encodeURIComponent(macRaw)
                  + '&pon_auto=' + ponAuto
-                 + '&pon_mode=' + ponMode;
+                 + '&pon_mode=' + ponMode
+                 + '&wan_phy_port=' + ethPort;
 
         showOverlay('Applying settings\u2026');
         setFormLocked(true);

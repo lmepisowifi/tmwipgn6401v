@@ -480,7 +480,9 @@ if [ "$ACTION" = "delete" ]; then
     TOTAL=$(chain_total)
     case "$TOTAL" in ''|*[!0-9]*) TOTAL=0 ;; esac
     [ "$IDX" -ge "$TOTAL" ] && err_json "bad_idx" "idx $IDX out of range (0..$((TOTAL-1)))"
-    [ "$TOTAL" -le 1 ] && err_json "last_profile" "refusing to delete the last remaining WAN profile"
+    # Deleting the last remaining profile is allowed on purpose: the vendor boa
+    # page (checkAction in fmwan.c) allows it and wanapply's delete mirrors that
+    # flow, so an empty ATM_VC_TBL is a valid state ("+ New profile" recreates).
 
     DUMP=$(chain_dump "$IDX")
     CUR_IFINDEX=$(fld "$DUMP" ifIndex)

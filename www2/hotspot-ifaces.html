@@ -39,6 +39,8 @@
             position: relative;
         }
         .iface-card:hover { border-color: #555; background: var(--bg-surface-hover); }
+        /* RJ45 port the vendor WAN is running on (PON_MODE=0): not selectable */
+        .iface-card.wan-locked, .iface-card.wan-locked:hover { opacity: .6; cursor: not-allowed; border-color: #e67e22; background: var(--bg-surface); }
         .iface-card.selected {
             border-color: var(--accent-color);
             background: rgba(255,255,255,.06);
@@ -253,6 +255,10 @@ function renderBridgeMembers(members){
     }).join('');
 }
 
+function wanTag(){
+    return '&nbsp;<span style="font-size:10px;color:#e67e22;">WAN port &ndash; hotspot skips it</span>';
+}
+
 function bridgeTag(inBridge, inSel){
     if (inBridge && inSel)  return '&nbsp;<span style="font-size:10px;color:#81c784;">in bridge</span>';
     if (inBridge && !inSel) return '&nbsp;<span style="font-size:10px;color:#e67e22;">⚠ will remove</span>';
@@ -269,23 +275,29 @@ function renderIfaceGrid(ifaces){
     grid.innerHTML = ifaces.map(function(ifc){
         var inBridge  = ifc.in_bridge;
         var inSel     = _selected.indexOf(ifc.name) !== -1;
-        var cls = 'iface-card' + (inSel?' selected':'') + (inBridge?' in-bridge':'');
+        var wan       = ifc.wan_port === true;   // RJ45 port the vendor WAN runs on
+        var cls = 'iface-card' + (inSel?' selected':'') + (inBridge?' in-bridge':'') + (wan?' wan-locked':'');
         // ✓ only when explicitly selected; × = in bridge but deselected from config
         var checkIcon = inSel ? '✓' : (inBridge ? '×' : '');
-        return '<div class="'+cls+'" id="ifc-'+ifc.name+'" onclick="toggleIface(\''+escAttr(ifc.name)+'\')" data-iface="'+escAttr(ifc.name)+'">'+
+        return '<div class="'+cls+'" id="ifc-'+ifc.name+'" onclick="toggleIface(\''+escAttr(ifc.name)+'\')" data-iface="'+escAttr(ifc.name)+'" data-wan="'+(wan?'1':'0')+'">'+
                '<div class="iface-check">'+checkIcon+'</div>'+
                '<div class="iface-name">'+escHtml(ifc.name)+'</div>'+
                '<div class="iface-meta">'+escHtml(ifc.mac||'—')+'</div>'+
                (ifc.type?'<div class="iface-meta">'+escHtml(ifc.type)+'</div>':'')+
                '<div>'+
                '<span class="iface-state '+(ifc.up?'up':'down')+'">'+(ifc.up?'up':'down')+'</span>'+
-               '<span class="iface-br-tag">'+bridgeTag(inBridge,inSel)+'</span>'+
+               '<span class="iface-br-tag">'+(wan ? wanTag() : bridgeTag(inBridge,inSel))+'</span>'+
                '</div>'+
                '</div>';
     }).join('');
 }
 
 function toggleIface(name){
+    var wanCard = document.getElementById('ifc-'+name);
+    if (wanCard && wanCard.getAttribute('data-wan') === '1'){
+        toastr.warning(name + ' is the RJ45 port the WAN is running on (PON mode: RJ45 Ethernet). The hotspot cannot use it.');
+        return;
+    }
     var idx = _selected.indexOf(name);
     if (idx !== -1){
         _selected.splice(idx,1);
@@ -322,6 +334,7 @@ function saveIfaces(){
     .then(function(d){
         hideOverlay();
         if (d.ok) toastr.success('Interface config saved to lmehspt.sh');
+        else if (d.error === 'wan_port_in_use') toastr.error('Save failed: that port is in use as the WAN (PON mode: RJ45 Ethernet).');
         else      toastr.error('Save failed: '+(d.error||''));
     })
     .catch(function(){ hideOverlay(); toastr.error('Network error'); });

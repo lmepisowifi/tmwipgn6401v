@@ -339,7 +339,7 @@ function statusCell(p) {
 function renderTable() {
     var body = E('wan-body');
     if (!profiles.length) {
-        body.innerHTML = '<tr><td colspan="9" class="text-center text-secondary py-3">No WAN profiles found.</td></tr>';
+        body.innerHTML = '<tr><td colspan="9" class="text-center text-secondary py-3">No WAN profiles. Use + New profile to create one.</td></tr>';
         return;
     }
     body.innerHTML = profiles.map(function (p) {
@@ -446,7 +446,11 @@ function openCreate() {
 function doDelete(idx) {
     var p = (profiles || []).filter(function (x) { return x.index === idx; })[0];
     var label = p ? displayName(p) : ('profile ' + idx);
-    if (!confirm('Delete ' + label + ' and tear down its interface? This cannot be undone.')) return;
+    var msg = 'Delete ' + label + ' and tear down its interface? This cannot be undone.';
+    if ((profiles || []).length <= 1) {
+        msg += '\n\nThis is the last WAN profile \u2014 the device will have no WAN connection until you create a new one with + New profile.';
+    }
+    if (!confirm(msg)) return;
     showOv('Deleting\u2026');
     fetchJson('/cgi-bin/wan-profile.cgi?action=delete', {
         method: 'POST',
