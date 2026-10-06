@@ -56,10 +56,15 @@ BB="busybox"
 # replaced on every update. globals.env (user settings) is NOT a component, so
 # it is preserved; lmehspt.sh's seed_globals() merges any new default keys into
 # it on boot after the swap.
-# sch = kernel modules insmod'ed by lmehspt.sh (sch_fq_codel.ko). Swapped like
-# any other component; a bundle that predates it simply logs "skip sch (not in
-# bundle)", and rollback only restores components that have a .ota_old backup.
-COMPONENTS="hotspot www2 lmehspt.sh ota.sh defaults.env startup.sh module_ctl.sh sch"
+# sch, iptables = kernel modules insmod'ed by lmehspt.sh (sch/sch_fq_codel.ko
+# for the QoS qdisc, iptables/xt_hl.ko for anti-tether's `-m ttl` match).
+# Swapped like any other component; a bundle that predates one simply logs
+# "skip <name> (not in bundle)", and rollback only restores components that
+# have a .ota_old backup. A device whose OLD ota.sh doesn't list "iptables"
+# yet won't get it from the base swap that delivers this ota.sh - it arrives
+# moments later via module_ctl.sh auto_update (the hotspot module bundle ships
+# it too), and lmehspt.sh just uses its original fallbacks until then.
+COMPONENTS="hotspot www2 lmehspt.sh ota.sh defaults.env startup.sh module_ctl.sh sch iptables"
 # NOTE: portal images (hotspot/img/promo1..5.* and portal_logo.*) are NOT
 # listed here as fixed paths, because hotspot.cgi lets the admin upload any
 # of jpg/jpeg/png/ico/gif/webp per slot — a fixed "promo1.jpg" entry would

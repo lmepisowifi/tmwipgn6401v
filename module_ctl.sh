@@ -72,6 +72,7 @@ hotspot_files() {
 hotspot
 lmehspt.sh
 sch
+iptables
 www2/cgi-bin/hotspot.cgi
 www2/hotspot.html
 www2/hotspot-ifaces.html

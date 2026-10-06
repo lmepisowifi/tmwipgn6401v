@@ -108,6 +108,13 @@ QOS_BULK_TARGET_MS="80"
 # hash" per-IP emulation, not on AQM.
 QOS_QDISC="auto"
 QOS_FQ_CODEL_KO="/lmepisowifi/sch/sch_fq_codel.ko"
+# Anti-tether's TTL pieces are loadable modules here too. setup_anti_tether()
+# insmods them on demand (see _at_ko_ready) and, if that fails for ANY reason,
+# drops to the next tier - the original mark+choke / tc / TOS chain.
+#   xt_HL.ko - the `-j TTL` TARGET: tier 0, MikroTik-style TTL clamp
+#   xt_hl.ko - the `-m ttl` MATCH:  tier 1, mark tethered TTLs + 1kbit choke
+ANTITETHER_HL_KO="/lmepisowifi/iptables/xt_HL.ko"
+ANTITETHER_TTL_KO="/lmepisowifi/iptables/xt_hl.ko"
 QOS_QDISC_STATUS="/tmp/hotspot_qdisc_status"
 QOS_QDISC_EFFECTIVE=""
 # Off by default: existing deployments keep today's fixed PER_USER_RATE
@@ -1677,20 +1684,117 @@ EOF
 # hotspot bridge (-i $HOTSPOT_BR) so br0 LAN devices are never affected.
 # The netfilter mark (0x666) survives NAT and is read by a fw classifier on
 # WAN egress — the same mark+fw mechanism already used by per-user QoS.
-# Falls back to bare tc u32 TTL match at WAN egress if xt_ttl is unavailable;
-# in that mode the choke still works but cannot distinguish br0 LAN devices
+# Two layers, BOTH active whenever they can be set up:
+#
+# Layer 1 - TTL clamp (downstream), MikroTik-style. Every packet leaving toward
+# the hotspot bridge gets TTL=1 (iptables -t mangle -A POSTROUTING -o
+# $HOTSPOT_BR -j TTL --ttl-set 1, the same as RouterOS "change-ttl
+# new-ttl=set:1 out-interface=br1"). A client that is the packet's final
+# destination accepts TTL=1 fine; a phone/router that tries to forward it onward
+# to a tethered device decrements it to 0 and drops it, so tethering gets no
+# replies. xt_HL.ko is sideloaded from $ANTITETHER_HL_KO when the kernel/iptables
+# can't already do `-j TTL`.
+#
+# Layer 2 - TTL detection (upstream), the mark+choke described above. It is kept
+# alongside the clamp, not replaced by it: a client that defeats the clamp by
+# rewriting inbound TTLs on its own phone still sends its tethered device's
+# packets one hop lower, and this layer catches them - so both ends have to be
+# defeated. xt_hl.ko is sideloaded from $ANTITETHER_TTL_KO for the `-m ttl`
+# match. If that (or the rules) fail, the original fallbacks apply: bare tc u32
+# TTL match on the hotspot bridge ingress, then TOS+u32 at WAN egress. In those
+# modes the choke still works but cannot distinguish br0 LAN devices
 # that happen to arrive with TTL=62/126 (secondary-router scenario).
+#
+# The layers are independent: either can be unavailable without affecting the
+# other, and with neither the hotspot just runs without anti-tether.
 # ============================================================
 #supported iptables modules:
 # string state physdev mac limit conntrack conntrack
 # conntrack connlabel comment set connmark2 connmark mark2 mark icmp weburl tcpmss
 # iprange tos dscp dns set set set set set udplite udp tcp
+# Capability probes. Each adds a rule that can never match real traffic (a
+# never-existing interface / lo) and removes it again. A probe fails if the
+# kernel lacks the match/target OR the userspace iptables lacks the matching
+# extension - either way the real rules would fail too. iptables' complaint is
+# left in $_AT_ERR.
+_at_probe_ttl_target() {    # is `-j TTL` usable?
+    _AT_ERR=$(iptables -t mangle -A POSTROUTING -o lmeprobe0 -j TTL --ttl-set 1 2>&1) || return 1
+    iptables -t mangle -D POSTROUTING -o lmeprobe0 -j TTL --ttl-set 1 2>/dev/null
+    return 0
+}
+_at_probe_ttl_match() {     # is `-m ttl` usable?
+    _AT_ERR=$(iptables -t mangle -A FORWARD -i lo -m ttl --ttl-eq 62 -j RETURN 2>&1) || return 1
+    iptables -t mangle -D FORWARD -i lo -m ttl --ttl-eq 62 -j RETURN 2>/dev/null
+    return 0
+}
+
+# Log why a tier's sideload didn't pan out - once per tier per process,
+# setup_anti_tether() runs on every hotspot (re)start and shouldn't spam syslog.
+_at_note() {
+    case "$_AT_NOTED" in *" $1 "*) return 0 ;; esac
+    _AT_NOTED="$_AT_NOTED $1 "
+    logger -t lmehspt "anti-tether: $2" 2>/dev/null
+}
+
+# _at_ko_ready <tier> <ko> <module> <probe-fn>
+# 0 if <probe-fn> passes, insmod'ing <ko> first when it doesn't. Checks BEFORE
+# insmod, so a kernel with the feature built in (or the module already loaded)
+# never touches the .ko. Never fatal by itself: the caller decides what to do
+# without it, so a missing, incompatible or unusable .ko just means that layer
+# is skipped (or, for the match, the original fallbacks are used).
+_at_ko_ready() {
+    local tier="$1" ko="$2" mod="$3" probe="$4" ins err
+    $probe && return 0
+    if [ ! -f "$ko" ]; then
+        _at_note "$tier" "$ko not found"
+        return 1
+    fi
+    # Already resident yet iptables still can't use it: re-insmod can't help
+    # (typically the userspace iptables has no matching extension).
+    if grep -q "^$mod " /proc/modules 2>/dev/null; then
+        err=$(printf '%s\n' "$_AT_ERR" | $BB head -n 1 | $BB cut -c1-100)
+        _at_note "$tier" "$mod loaded but iptables can't use it${err:+ ($err)}"
+        return 1
+    fi
+    if command -v insmod >/dev/null 2>&1; then ins="insmod"; else ins="$BB insmod"; fi
+    err=$($ins "$ko" 2>&1)
+    if $probe; then
+        logger -t lmehspt "anti-tether: loaded $ko" 2>/dev/null
+        return 0
+    fi
+    # Prefer insmod's own reason ("Invalid module format"...); else iptables'.
+    [ -n "$err" ] || err="$_AT_ERR"
+    err=$(printf '%s\n' "$err" | $BB head -n 1 | $BB sed 's/^.*: //' | $BB cut -c1-100)
+    _at_note "$tier" "could not sideload $mod${err:+ ($err)}"
+    return 1
+}
+
 setup_anti_tether() {
     local wan_if
     wan_if=$(resolve_wan_int)
 
+    # Layer 1: clamp TTL to 1 on everything leaving toward the hotspot
+    # (MikroTik-style, see header). Delete-then-add keeps it to exactly one
+    # rule however often setup runs. If the target can't be sideloaded or the
+    # rule is refused this layer is simply skipped - it does NOT end setup, so
+    # layer 2 below always gets its turn.
+    if _at_ko_ready "ttl-target" "$ANTITETHER_HL_KO" xt_HL _at_probe_ttl_target; then
+        iptables -t mangle -D POSTROUTING -o "$HOTSPOT_BR" -j TTL --ttl-set 1 2>/dev/null
+        if iptables -t mangle -A POSTROUTING -o "$HOTSPOT_BR" -j TTL --ttl-set 1 2>/dev/null; then
+            logger -t lmehspt "anti-tether: TTL clamp active on $HOTSPOT_BR (-j TTL --ttl-set 1)" 2>/dev/null
+        else
+            _at_note "ttl-rule" "TTL target loaded but the POSTROUTING rule was refused - no TTL clamp"
+        fi
+    fi
+
+    # Layer 2: upstream TTL detection.
     # 1. Add the Choke Class to the active WAN interface (1kbit ≈ 0 speed)
     tc class add dev "$wan_if" parent 1:1 classid 1:666 htb rate 1kbit ceil 1kbit burst 1k 2>/dev/null
+
+    # 1b. Sideload xt_hl.ko if `-m ttl` isn't usable yet. Result deliberately
+    # ignored: if it didn't work, step 2 fails exactly as it always did and the
+    # original fallbacks below take over.
+    _at_ko_ready "ttl-match" "$ANTITETHER_TTL_KO" xt_hl _at_probe_ttl_match
 
     # 2. Preferred path: mark tethered packets at FORWARD stage using xt_ttl
     # Note: Linux routes the packet (decrementing TTL by 1) BEFORE traversing the FORWARD chain.
@@ -1742,6 +1846,9 @@ setup_anti_tether() {
 teardown_anti_tether() {
     local wan_if
     wan_if=$(resolve_wan_int)
+
+    # Tier 0 TTL clamp (see setup_anti_tether)
+    iptables -t mangle -D POSTROUTING -o "$HOTSPOT_BR" -j TTL --ttl-set 1 2>/dev/null
 
     # Remove direct ingress filters (this also removes all tc filters under ffff:)
     tc qdisc del dev "$HOTSPOT_BR" ingress 2>/dev/null

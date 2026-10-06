@@ -65,21 +65,22 @@ jobs:
           # ship only inside the tailscale module asset, not the base (tailscale
           # is opt-in and never auto-installed). hotspot pages stay in the base
           # because the hotspot module auto-installs on existing devices.
-          # sch/ holds the kernel modules lmehspt.sh insmods on demand
-          # (sch_fq_codel.ko for the hotspot QoS qdisc). It ships in BOTH the
-          # base bundle and the hotspot module so a device gets it whichever
-          # path updates it first.
+          # sch/ and iptables/ hold the kernel modules lmehspt.sh insmods on
+          # demand (sch_fq_codel.ko for the hotspot QoS qdisc; xt_hl.ko for
+          # anti-tether's `-m ttl` match, xt_HL.ko the TTL target). They ship
+          # in BOTH the base bundle and the hotspot module so a device gets
+          # them whichever path updates it first.
           tar -czf "$TAR" \
             --exclude='www2/tailscale.html' \
             --exclude='www2/cgi-bin/tailscale.cgi' \
-            startup.sh hotspot www2 lmehspt.sh ota.sh defaults.env module_ctl.sh sch
+            startup.sh hotspot www2 lmehspt.sh ota.sh defaults.env module_ctl.sh sch iptables
           MD5=$(md5sum hotspot/firmware/coin_nodemcu.bin | awk '{print $1}')
 
           # Hotspot MODULE bundle: exactly the files the Modules page installs
           # from GitHub / removes on uninstall. hotspot_data/ and globals.env are
           # intentionally excluded (operator data + settings, preserved on-device).
           MODTAR="dist/lmepisowifi-hotspot-$VER.tar.gz"
-          tar -czf "$MODTAR" hotspot lmehspt.sh sch www2/hotspot*.html www2/cgi-bin/hotspot.cgi
+          tar -czf "$MODTAR" hotspot lmehspt.sh sch iptables www2/hotspot*.html www2/cgi-bin/hotspot.cgi
 
           # Tailscale MODULE bundle: daemon+CLI binaries, its control script and
           # its www2 page + cgi. /config state is device-local (never shipped).
