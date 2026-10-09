@@ -89,6 +89,8 @@ setInterval(function () {
             { label: 'Modules',          href: '/modules.html'       },
             { label: 'Tailscale',        href: '/tailscale.html', module: 'tailscale' },
             { label: 'Software Update',  href: '/ota.html'           },
+            { label: 'Boot Partitions',  href: '/bootpart.html'      },
+            { label: 'Firmware Upload',  href: '/fwupload.html'      },
             { label: 'MIB Configuration', href: '/mibconfig.html'    },
             { label: 'Reboot',           href: '/reboot.html'        },
         ]},

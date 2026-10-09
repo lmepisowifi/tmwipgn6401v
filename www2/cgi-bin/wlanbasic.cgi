@@ -197,6 +197,138 @@ pd_int() {
     printf '%s' "$V"
 }
 
+# ── Live apply: iwpriv first, then a single-radio / single-SSID restart ──────
+# `mib set` + `mib commit` only persist a change. To make it take effect without
+# `wlan_apply restart` (which stops and starts BOTH radios and every SSID):
+#   1. iwpriv <if> set_mib key=value on the running driver - no restart at all.
+#      set_mib is a raw write into the driver's per-interface mib struct, so it
+#      is only used for what the driver re-reads at runtime (SSID, beamforming,
+#      mc2u, short GI) or when the interface is re-opened (channel, width,
+#      sideband - see wl_bounce).
+#   2. wlanapply (src/wlanapply) - the vendor config_WLAN(ACT_RESTART_xG, idx):
+#      restarts ONE radio, or ONE SSID, for everything iwpriv can't take
+#      (radio on/off, AP/client mode, TX power, Auto width, security, PMF ...).
+#   3. the stock `wlan_apply restart`, only if that helper is missing or fails.
+WLANAPPLY=/lmepisowifi/www2/tool/wlanapply
+WL_HELPER_OK=""
+
+# wl_set IF KEY VALUE -> iwpriv IF set_mib KEY=VALUE (skipped if IF is absent)
+wl_set() {
+    if [ ! -d "${WL_NETSYS:-/sys/class/net}/$1" ]; then
+        dbg "wl_set: $1 not present, skipped $2=$3"
+        return 1
+    fi
+    iwpriv "$1" set_mib "$2=$3" >/dev/null 2>&1
+    _wl_rc=$?
+    dbg "wl_set: iwpriv $1 set_mib $2=$3 -> rc=$_wl_rc"
+    return $_wl_rc
+}
+
+# wl_helper_ok -> 0 when wlanapply is usable (same preflight as wan-profile.cgi)
+wl_helper_ok() {
+    if [ -z "$WL_HELPER_OK" ]; then
+        WL_HELPER_OK=1
+        if [ -f "$WLANAPPLY" ]; then
+            [ -x "$WLANAPPLY" ] || chmod +x "$WLANAPPLY" 2>/dev/null
+            if [ -x "$WLANAPPLY" ] && "$WLANAPPLY" check >/dev/null 2>&1; then
+                WL_HELPER_OK=0
+            fi
+        fi
+    fi
+    return "$WL_HELPER_OK"
+}
+
+# wl_restart_scoped BAND IDX -> restart one radio (IDX 0 = whole band: the VAPs
+# hang off the root, so a root/radio change restarts that band's SSIDs, as the
+# vendor does) or a single SSID (IDX 1-4 = vap0-3, 5 = vxd). BAND: 5 | 24.
+wl_restart_scoped() {
+    if [ "$1" = "5" ]; then _wl_bn=5g; else _wl_bn=2g; fi
+    _wl_ix="$2"; [ "$_wl_ix" = "0" ] && _wl_ix=all
+    if wl_helper_ok; then
+        "$WLANAPPLY" restart "$_wl_bn" "$_wl_ix" >> "$DBG_LOG" 2>&1
+        _wl_rc=$?
+        if [ "$_wl_rc" = "0" ]; then
+            dbg "wl_restart_scoped: wlanapply restart $_wl_bn $_wl_ix ok"
+            return 0
+        fi
+        dbg "wl_restart_scoped: wlanapply restart $_wl_bn $_wl_ix failed (rc=$_wl_rc), falling back to wlan_apply restart"
+    else
+        dbg "wl_restart_scoped: wlanapply unavailable, falling back to wlan_apply restart"
+    fi
+    wlan_apply restart
+}
+
+# wl_ssid_if BAND IDX -> netdev name (BAND 5 = wlan0, otherwise wlan1)
+wl_ssid_if() {
+    case "$1" in 5) _wl_b="wlan0" ;; *) _wl_b="wlan1" ;; esac
+    case "$2" in
+        0) printf '%s' "$_wl_b" ;;
+        5) printf '%s-vxd' "$_wl_b" ;;
+        *) printf '%s-vap%s' "$_wl_b" "$(($2 - 1))" ;;
+    esac
+}
+
+# wl_2ndch WIDTH CTRLBAND CHANNEL -> driver 2ndchoffset, derived exactly as the
+# vendor does (subr_wlan.c): 20 MHz -> 0; otherwise upper = 1 / lower = 2, except
+# on a fixed 5 GHz channel where 36/44/52/60 always take 2 and the rest take 1.
+wl_2ndch() {
+    if [ "$1" = "0" ]; then printf '0'; return; fi
+    if [ "$3" -gt 14 ] 2>/dev/null; then
+        case "$3" in 36|44|52|60) printf '2' ;; *) printf '1' ;; esac
+        return
+    fi
+    if [ "$2" = "0" ]; then printf '1'; else printf '2'; fi
+}
+
+# wl_bounce IF -> re-open a root interface so the driver re-reads its mib
+# (channel / width / sideband). VAP/VXD netdevs that were up are re-upped.
+wl_bounce() {
+    _wl_ups=""
+    for _wl_n in "$1-vap0" "$1-vap1" "$1-vap2" "$1-vap3" "$1-vxd"; do
+        [ -d "${WL_NETSYS:-/sys/class/net}/$_wl_n" ] || continue
+        ifconfig "$_wl_n" 2>/dev/null | busybox grep -q "UP " && _wl_ups="$_wl_ups $_wl_n"
+    done
+    ifconfig "$1" down
+    ifconfig "$1" up
+    for _wl_n in $_wl_ups; do ifconfig "$_wl_n" up; done
+    dbg "wl_bounce: $1 re-opened (re-upped:${_wl_ups:- none})"
+}
+
+# live_apply_ap SSID AUTO CHANNEL WIDTH CTRLBAND WBD PARTNER_SSID
+# iwpriv-only apply of the fields the caller flagged (LV_SSID / LV_CH / LV_CW /
+# LV_WBD = 1; LV_OWN = 0 when this radio is off; LV_PART_IF = merged partner's
+# netdev, or empty). Also used to roll a live change back (old values, same
+# flags). Order: mode and radio values first, ONE re-open if channel/width
+# changed, SSID last (after the re-open) - the order the old single-field fast
+# paths already used.
+live_apply_ap() {
+    _la_s="$1"; _la_a="$2"; _la_c="$3"; _la_w="$4"; _la_b="$5"; _la_m="$6"; _la_ps="$7"
+    if [ "$LV_OWN" = "1" ]; then
+        if [ "$LV_WBD" = "1" ] && [ -n "$_la_m" ]; then
+            if [ "$WLAN_IF" = "wlan0" ]; then _la_max=76; else _la_max=11; fi
+            wl_set "$WLAN_IF" band "$_la_m"
+            wl_set "$WLAN_IF" deny_legacy "$((_la_max - _la_m))"
+        fi
+        if [ "$LV_CW" = "1" ] || { [ "$LV_CH" = "1" ] && [ "$_la_a" != "1" ]; }; then
+            # width/sideband change or a manual channel move: write, re-open once
+            if [ "$_la_a" = "1" ]; then _la_ch=0; else _la_ch="$_la_c"; fi
+            [ -n "$_la_ch" ] && wl_set "$WLAN_IF" channel "$_la_ch"
+            if [ -n "$_la_w" ] && [ -n "$_la_ch" ]; then
+                wl_set "$WLAN_IF" use40M "$_la_w"
+                wl_set "$WLAN_IF" 2ndchoffset "$(wl_2ndch "$_la_w" "$_la_b" "$_la_ch")"
+            fi
+            wl_bounce "$WLAN_IF"
+        elif [ "$LV_CH" = "1" ]; then
+            # switching to auto channel: the proven no-re-open path
+            wl_set "$WLAN_IF" channel 0
+            iwpriv "$WLAN_IF" autoch >/dev/null 2>&1
+        fi
+        [ "$LV_SSID" = "1" ] && wl_set "$WLAN_IF" ssid "$_la_s"
+    fi
+    [ -n "$LV_PART_IF" ] && wl_set "$LV_PART_IF" ssid "$_la_ps"
+    return 0
+}
+
 # ── Merged SSID (band-steering) helpers ──────────────────────────────
 # Config persisted as flat-integer JSON: {"enabled":0,"iface24":0,"iface5":0}
 MERGE_FILE="/lmepisowifi/www2/data/merged_ssid.json"
@@ -831,6 +963,8 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
         FORM_CW=$(pd_int   channelwidth 0)
         FORM_CB=$(pd_int   controlband  0)
         FORM_TP=$(pd_int   txpower      0)
+        FORM_LIVE=$(pd_int live         0)
+        case "$FORM_LIVE" in 1) ;; *) FORM_LIVE=0 ;; esac
 
         # Validate numeric ranges
         case "$FORM_DIS"     in 0|1)       ;; *) FORM_DIS=0     ;; esac
@@ -984,9 +1118,57 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
 
         dbg "save_ap: applied ssid=$FORM_SSID dis=$FORM_DIS ch=$FORM_CH autoCh=$FORM_AUTO_CH cw=$FORM_CW"
 
+        # ── Live apply ("Apply live" button, live=1): choose how to apply ──
+        #    iwpriv  - SSID / 802.11 mode / channel / width / sideband only:
+        #              pushed straight into the running driver, no restart.
+        #    restart - anything else that changed (radio on/off, AP/client
+        #              mode, TX power, Auto width): restart THIS radio only,
+        #              via wlanapply - never both radios like wlan_apply restart.
+        LV_MODE=""; LV_SSID=0; LV_CH=0; LV_CW=0; LV_WBD=0; LV_OWN=1; LV_PART_IF=""
+        if [ "$FORM_LIVE" = "1" ]; then
+            FORCE_RESTART=0   # the paired SSID is renamed live below, not by a both-radio restart
+            [ "$FORM_DIS" = "1" ] && [ "${RV_DIS:-1}" = "1" ] && LV_OWN=0
+            [ "$FORM_SSID" != "$RV_SSID" ] && LV_SSID=1
+            [ "$WBD_CHANGED" = "1" ] && LV_WBD=1
+            if [ "$FORM_AUTO_CH" != "$RV_AC" ] \
+                || { [ "$FORM_AUTO_CH" = "0" ] && [ "$FORM_CH" != "0" ] && [ "$FORM_CH" != "$RV_CH" ]; }; then
+                LV_CH=1
+            fi
+            if [ "$FORM_CW" != "$RV_CW" ] \
+                || { [ "$FORM_CW" != "0" ] && [ "$FORM_CB" != "$RV_CB" ]; }; then
+                LV_CW=1
+            fi
+            if [ "$LV_SSID" = "1" ] && [ -n "$RV_P_PFX" ] && [ "${PART_DIS:-1}" = "0" ]; then
+                LV_PART_IF=$(wl_ssid_if "$PART_BAND" "$PART_IDX")
+            fi
+            LV_RESTART=0
+            [ "$FORM_DIS"  != "$RV_DIS"  ] && LV_RESTART=1
+            [ "$FORM_MODE" != "$RV_MODE" ] && LV_RESTART=1
+            [ "$FORM_TP"   != "$RV_TP"   ] && LV_RESTART=1
+            if [ "$FORM_CW" != "$RV_CW" ] && { [ "$FORM_CW" = "3" ] || [ "$RV_CW" = "3" ]; }; then
+                LV_RESTART=1   # Auto width is resolved by the vendor's full setup, not a raw set_mib
+            fi
+            if [ "$LV_OWN" = "1" ] && [ "$LV_RESTART" = "1" ]; then
+                LV_MODE=restart
+            elif { [ "$LV_OWN" = "1" ] && [ "$LV_SSID$LV_CH$LV_CW$LV_WBD" != "0000" ]; } \
+                || [ -n "$LV_PART_IF" ]; then
+                LV_MODE=iwpriv
+            else
+                LV_MODE=none
+            fi
+            dbg "save_ap: live apply mode=$LV_MODE (ssid=$LV_SSID ch=$LV_CH cw=$LV_CW wbd=$LV_WBD own=$LV_OWN partner_if=${LV_PART_IF:-none})"
+            if [ "$LV_MODE" = "none" ]; then
+                printf "Status: 200 OK\r\n"
+                printf "Content-Type: text/plain\r\n\r\n"
+                printf "OK"
+                exit 0
+            fi
+        fi
+
         # Skip wlan_apply if WLAN was off and stays off (unless a merged
         # partner on the other band is live and needs the mirrored change)
-        if [ "$FORM_DIS" = "1" ] && [ "${CUR_DIS:-1}" = "1" ] && [ "$FORCE_RESTART" != "1" ]; then
+        if [ "$FORM_DIS" = "1" ] && [ "${CUR_DIS:-1}" = "1" ] && [ "$FORCE_RESTART" != "1" ] \
+            && [ "$LV_MODE" != "iwpriv" ]; then
             dbg "save_ap: both disabled, skipping wlan_apply"
             printf "Status: 200 OK\r\n"
             printf "Content-Type: text/plain\r\n\r\n"
@@ -1004,6 +1186,7 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
         printf '%s' "$RV_CW"    > "${RV_PFX}_cw"
         printf '%s' "$RV_CB"    > "${RV_PFX}_cb"
         printf '%s' "$RV_TP"    > "${RV_PFX}_tp"
+        [ "$FORM_LIVE" = "1" ] && printf '%s' "$LV_MODE" > "${RV_PFX}_live"
         # Merged partner rollback (only present when a mirror happened)
         if [ -n "$RV_P_PFX" ]; then
             printf '%s' "$RV_P_SSID" > "${RV_PFX}_p_ssid"
@@ -1050,12 +1233,30 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
                     mib set "${_RB_P_PFX}.${_RB_P_IDX}.ssid" "$_RB_P_SSID"
                 fi
                 mib commit
-                wlan_apply restart
+                case "$(cat "${RV_PFX}_live" 2>/dev/null)" in
+                    restart)
+                        wl_restart_scoped "$BAND" 0
+                        [ -n "$LV_PART_IF" ] && wl_set "$LV_PART_IF" ssid "$RV_P_SSID"
+                        ;;
+                    iwpriv)
+                        live_apply_ap "$RV_SSID" "$RV_AC" "$RV_CH" "$RV_CW" "$RV_CB" "$RV_WBD" "$RV_P_SSID"
+                        ;;
+                    *)
+                        wlan_apply restart
+                        ;;
+                esac
                 rm -f "${RV_PFX}_"*
             fi
         ) &
 
-        if [ "$FORCE_RESTART" = "1" ]; then
+        if [ "$LV_MODE" = "restart" ]; then
+            dbg "save_ap: live apply - restarting only this radio ($BAND) via wlanapply"
+            wl_restart_scoped "$BAND" 0
+            [ -n "$LV_PART_IF" ] && wl_set "$LV_PART_IF" ssid "$FORM_SSID"
+        elif [ "$LV_MODE" = "iwpriv" ]; then
+            dbg "save_ap: live apply - iwpriv only, no restart"
+            live_apply_ap "$FORM_SSID" "$FORM_AUTO_CH" "$FORM_CH" "$FORM_CW" "$FORM_CB" "$FORM_WBD" "$FORM_SSID"
+        elif [ "$FORCE_RESTART" = "1" ]; then
             # Merged SSID mirror touched the other radio — the targeted
             # iwpriv fast-paths only poke a single interface, so fall back
             # to a full wlan_apply restart to reload both bands.
@@ -1129,6 +1330,8 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
 
         FORM_SSID=$(pd_str ssid)
         FORM_DIS=$(pd_int  disabled 1)
+        FORM_LIVE=$(pd_int live     0)
+        case "$FORM_LIVE" in 1) ;; *) FORM_LIVE=0 ;; esac
 
         case "$FORM_DIS" in 0|1) ;; *) FORM_DIS=1 ;; esac
 
@@ -1194,6 +1397,34 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
         # partner on the other band is live and needs the mirrored change)
         if [ "$FORM_DIS" = "1" ] && [ "${CUR_DIS:-1}" = "1" ] && [ "$FORCE_RESTART" != "1" ]; then
             dbg "save_iface idx=$IDX: both disabled, skipping wlan_apply"
+            printf "Status: 200 OK\r\n"
+            printf "Content-Type: text/plain\r\n\r\n"
+            printf "OK"
+            exit 0
+        fi
+
+        # ── Live apply: rename an enabled SSID with iwpriv; anything else
+        #    (enable/disable, VXD) restarts only this one SSID, and the merged
+        #    partner on the other band gets the same treatment - never a
+        #    both-radio restart.
+        if [ "$FORM_LIVE" = "1" ]; then
+            if [ "$FORM_DIS" = "1" ] && [ "${CUR_DIS:-1}" = "1" ]; then
+                :   # this SSID stays off; only the merged partner can need work
+            elif [ "$IDX" = "5" ] || [ "$FORM_DIS" != "${CUR_DIS:-1}" ]; then
+                dbg "save_iface idx=$IDX: live apply - restarting only this SSID via wlanapply"
+                wl_restart_scoped "$BAND" "$IDX"
+                [ "$IDX" = "5" ] && sysconf multi_ap_agent_restart
+            elif [ -n "$FORM_SSID" ] && [ "$FORM_SSID" != "$CUR_SSID" ]; then
+                dbg "save_iface idx=$IDX: live apply - SSID rename via iwpriv, no restart"
+                wl_set "$(wl_ssid_if "$BAND" "$IDX")" ssid "$FORM_SSID"
+            fi
+            if [ -n "$PART_PFX" ]; then
+                if [ "$FORM_DIS" != "${PART_DIS:-1}" ]; then
+                    wl_restart_scoped "$PART_BAND" "$PART_IDX"
+                elif [ "$FORM_DIS" = "0" ] && [ -n "$FORM_SSID" ] && [ "$FORM_SSID" != "$CUR_SSID" ]; then
+                    wl_set "$(wl_ssid_if "$PART_BAND" "$PART_IDX")" ssid "$FORM_SSID"
+                fi
+            fi
             printf "Status: 200 OK\r\n"
             printf "Content-Type: text/plain\r\n\r\n"
             printf "OK"

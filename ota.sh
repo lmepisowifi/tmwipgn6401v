@@ -175,6 +175,25 @@ cdnify() { # cdnify <url> -> prints CDN url (or the original url unchanged)
     esac
 }
 
+# ── DNS guard ───────────────────────────────────────────────────────────────
+# Every download needs name resolution, but the public-DNS fallback (1.1.1.1 /
+# 8.8.8.8 in /etc/resolv.conf) used to exist only inside the hotspot module's
+# watchdog. With hotspot uninstalled, a reboot left the vendor resolver alone
+# and updates / module installs could no longer download anything.
+# www2/sh/ensure_dns.sh adds the fallback only if the host being fetched really
+# does not resolve. Checked once per host per run, never changes the download's
+# return code, and a missing helper is simply skipped.
+DNS_HELPER="$ROOT/www2/sh/ensure_dns.sh"
+_DNS_SEEN=""
+dns_guard() { # dns_guard <url>
+    [ -f "$DNS_HELPER" ] || return 0
+    _dgh=${1#https://}; _dgh=${_dgh%%/*}; _dgh=${_dgh%%:*}
+    case " $_DNS_SEEN " in *" $_dgh "*) return 0 ;; esac
+    _DNS_SEEN="$_DNS_SEEN $_dgh"
+    sh "$DNS_HELPER" "$_dgh" || log "dns_guard: $_dgh does not resolve (no internet, or DNS is broken beyond the public-resolver fallback)"
+    return 0
+}
+
 # wget wrapper: HTTPS-only, retries, timeouts, writable -O target, cert handling.
 # Backgrounded + progress-polled: some ISPs black-hole (rather than refuse)
 # traffic to specific GitHub-adjacent hosts — e.g. release-assets.
@@ -186,6 +205,7 @@ cdnify() { # cdnify <url> -> prints CDN url (or the original url unchanged)
 # no new tool dependency.
 fetch() { # fetch <url> <outfile>
     _u=$(cdnify "$1")
+    dns_guard "$_u"
     _wf="--https-only -t 3 -T 30 --retry-connrefused -U lmepisowifi-ota"
     if [ "$OTA_INSECURE_TLS" = "1" ]; then
         _wf="$_wf --no-check-certificate"

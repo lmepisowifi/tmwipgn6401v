@@ -281,9 +281,20 @@
             <div class="merge-note" id="ap-merge-note" style="display:none;">
                 🔗 Merged &mdash; the SSID &amp; security you save here also apply to the paired interface on the other band.
             </div>
-            <button type="button" class="btn btn-primary w-100 mt-3" id="save-ap-btn" onclick="saveAp()">
-                Save
-            </button>
+            <div style="display:flex; gap:8px;" class="mt-3">
+                <button type="button" class="btn btn-primary" style="flex:1;" id="save-ap-btn" onclick="saveAp()">
+                    Save
+                </button>
+                <button type="button" class="btn btn-outline-primary" style="flex:1;" id="save-ap-live-btn" onclick="saveAp(true)"
+                        title="Apply without restarting the WLAN">
+                    Apply live
+                </button>
+            </div>
+            <div style="font-size:11px; color:#888; margin-top:6px;">
+                <b>Apply live</b> pushes SSID, 802.11 mode, channel and width straight into the radio with
+                <code>iwpriv</code> &mdash; no restart (a channel or width change briefly re-opens this radio).
+                Anything else (radio on/off, TX power, Auto width) restarts only this radio, not both.
+            </div>
         </div>
     </div>
 
@@ -683,8 +694,17 @@ function buildIfaceCards(ifaces) {
                 <div class="merge-note" id="${id}-merge-note" style="display:none;">
                     🔗 Merged &mdash; this SSID also applies to the paired interface on the other band.
                 </div>
-                <button type="button" class="btn btn-primary w-100 mt-3"
-                        id="save-${id}-btn" onclick="saveIface(${iface.idx})">Save</button>
+                <div style="display:flex; gap:8px;" class="mt-3">
+                    <button type="button" class="btn btn-primary" style="flex:1;"
+                            id="save-${id}-btn" onclick="saveIface(${iface.idx})">Save</button>
+                    <button type="button" class="btn btn-outline-primary" style="flex:1;"
+                            id="save-${id}-live-btn" onclick="saveIface(${iface.idx}, true)"
+                            title="Apply without restarting the WLAN">Apply live</button>
+                </div>
+                <div style="font-size:11px; color:#888; margin-top:6px;">
+                    <b>Apply live</b> renames an enabled SSID with no restart; turning an SSID on/off
+                    restarts only this SSID.
+                </div>
                 ${isVxd ? `
                 <hr class="my-3">
                 <div style="font-size:11px; color:#888; margin-bottom:8px;">
@@ -897,7 +917,34 @@ function loadStatus() {
 // ═══════════════════════════════════════════════════════════════
 // Save Main AP  (POST ?action=save_ap)
 // ═══════════════════════════════════════════════════════════════
-function saveAp() {
+// Apply live (iwpriv / single-radio or single-SSID restart): short overlay, error
+// surfaced right away, then poll soon - the poll also confirms the change, which
+// cancels the revert timer. A dropped connection (the radio we are on was
+// re-opened) is expected, so keep polling until the router answers again.
+function sendLive(url, body) {
+    let aborted = false;
+    showOverlay('Applying live…');
+    fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body
+    })
+    .then(r => {
+        if (r && !r.ok) { aborted = true; return r.text().then(t => { throw new Error(t || ('HTTP ' + r.status)); }); }
+    })
+    .then(() => { if (!aborted) setTimeout(() => pollUntilBack(), 1500); })
+    .catch(err => {
+        if (aborted) {
+            hideOverlay();
+            setFormEnabled(true);
+            toastr["warning"](err.message || 'Apply failed', "Error");
+        } else {
+            setTimeout(() => pollUntilBack(), 3000);
+        }
+    });
+}
+
+function saveAp(live) {
     const ssid = document.getElementById('ap-ssid').value.trim();
     if (!ssid) { alert('SSID is required.'); return; }
 
@@ -918,7 +965,8 @@ function saveAp() {
                + '&autoChannel='  + autoChannel
                + '&channelwidth=' + channelwidth
                + '&controlband='  + controlband
-               + '&txpower='      + txpower;
+               + '&txpower='      + txpower
+               + (live ? '&live=1' : '');
 
     const origDis = currentStatus?.ifaces?.find(i => i.type === 'ap')?.disabled ?? 1;
 
@@ -946,6 +994,7 @@ function saveAp() {
             toastr["warning"]('Save error: ' + (err.message || err), "Error");
         });
     } else {
+        if (live) { sendLive(CGI + '?action=save_ap&band=' + currentBand, body); return; }
         // wlan_apply will restart → use countdown + poll-until-back.
         // A fast 4xx/5xx (e.g. the coin-slot NodeMCU didn't ACK) returns
         // BEFORE any restart, so surface it and skip the poll.
@@ -975,13 +1024,14 @@ function saveAp() {
 // ═══════════════════════════════════════════════════════════════
 // Save VAP / VXD  (POST ?action=save_iface&idx=N)
 // ═══════════════════════════════════════════════════════════════
-function saveIface(idx) {
+function saveIface(idx, live) {
     const id      = 'iface-' + idx;
     const ssid    = document.getElementById(id + '-ssid').value.trim();
     const disabled = (apClientMode || !isToggleOn(id)) ? 1 : 0;
 
     let body = 'disabled=' + disabled;
     if (ssid) body += '&ssid=' + encodeURIComponent(ssid);
+    if (live) body += '&live=1';
 
     const origIface = currentStatus?.ifaces?.find(i => i.idx === idx);
     const origDis   = origIface?.disabled ?? 1;
@@ -1009,6 +1059,7 @@ function saveIface(idx) {
             toastr["warning"]('Save error: ' + (err.message || err), "Error");
         });
     } else {
+        if (live) { sendLive(CGI + '?action=save_iface&band=' + currentBand + '&idx=' + idx, body); return; }
         let aborted = false;
         startCountdown('Applying');
         fetch(CGI + '?action=save_iface&band=' + currentBand + '&idx=' + idx, {

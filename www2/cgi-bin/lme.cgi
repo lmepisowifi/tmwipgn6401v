@@ -61,62 +61,109 @@ LAN_REVERT_SPEED=/tmp/lan_revert_speed
 LAN_REVERT_START=/tmp/lan_revert_start
 LAN_REVERT_TIMEOUT=90
 
-# ---- startup.sh speed persistence ----
+# ---- startup.sh (still used for reboot-schedule / timezone / other boot-time sections) ----
 STARTUP_SH=/lmepisowifi/www2/sh/startup.sh
 
 # ---- shared data directory (layout, etc.) ----
 DATA_DIR=/lmepisowifi/www2/data
 LAYOUT_FILE="$DATA_DIR/dashboard_layout.json"
 
-# update_startup_speed <port> <speed_abilities>
-#   port           : 1-4 (user-facing, matches lan.sh convention)
-#   speed_abilities: space-separated ability tokens already in canonical order
-#                    (e.g. "100f", "10h 10f 100h 100f 1000f"), OR empty to
-#                    remove the entry for that port (used when reverting to auto).
+# ---------------------------------------------------------------------------
+# CHANGED (lmepisowifi): LAN speed persistence now lives in the MIB
+# (SW_PORT_TBL) instead of a BEGIN_LAN_SPEEDS section in startup.sh.
 #
-# Interface mapping: LAN1 = port 1 = eth0.2 = diag index 0
-#                    LAN2 = port 2 = eth0.3 = diag index 1
-#                    LAN3 = port 3 = eth0.4 = diag index 2
-#                    LAN4 = port 4 = eth0.5 = diag index 3
+# boa's restart_ethernet() reads SW_PORT_TBL.<idx>.{Enable,Duplex,Speed} on
+# every boot (startELan / startup_RG) and programs the PHY auto-nego ability
+# from them, so no startup.sh line is needed any more.
 #
-# Each managed entry in startup.sh is a single line of the form:
-#   ( wait_for_iface <iface> && diag port set auto-nego port <idx> ability <speeds> ) &
-# The function rewrites the BEGIN_LAN_SPEEDS … END_LAN_SPEEDS section in-place.
-update_startup_speed() {
-    _UPD_PORT="$1"
-    _UPD_SPEED="$2"
+#   port 1 = SW_PORT_TBL.0 = eth0.2 = diag index 0
+#   port 2 = SW_PORT_TBL.1 = eth0.3 = diag index 1
+#   port 3 = SW_PORT_TBL.2 = eth0.4 = diag index 2
+#   port 4 = SW_PORT_TBL.3 = eth0.5 = diag index 3
+#   (index == diag phy index only while PORT_REMAPPING is identity, which is
+#    the default: `mib get PORT_REMAPPING` -> 00 01 02 03 ...)
+#
+#   Duplex: 0=half 1=full 2=auto     Speed: 0=10M 1=100M 2=1000M 3=auto
+#
+# The MIB can only express these ability sets exactly:
+#   one mode (10h|10f|100h|100f|1000f), both duplexes of one speed
+#   (10h+10f, 100h+100f), all-full (10f+100f+1000f), and everything (auto).
+# Any other combination is widened to the smallest expressible set that
+# contains it, so the port never ends up *less* capable than requested.
+# ---------------------------------------------------------------------------
 
-    [ ! -f "$STARTUP_SH" ] && return
+# speed_to_mib <abilities> -> sets _MIB_DUPLEX / _MIB_SPEED
+speed_to_mib() {
+    _STM=" $1 "
+    _a=0; _b=0; _c=0; _d=0; _e=0
+    case "$_STM" in *" 10h "*)   _a=1 ;; esac
+    case "$_STM" in *" 10f "*)   _b=1 ;; esac
+    case "$_STM" in *" 100h "*)  _c=1 ;; esac
+    case "$_STM" in *" 100f "*)  _d=1 ;; esac
+    case "$_STM" in *" 1000f "*) _e=1 ;; esac
+    _n=$((_a + _b + _c + _d + _e))
 
-    case "$_UPD_PORT" in
-        1) _UPD_IFACE="eth0.2"; _UPD_IDX="0" ;;
-        2) _UPD_IFACE="eth0.3"; _UPD_IDX="1" ;;
-        3) _UPD_IFACE="eth0.4"; _UPD_IDX="2" ;;
-        4) _UPD_IFACE="eth0.5"; _UPD_IDX="3" ;;
+    # empty / all five  -> auto/auto (the MIB default)
+    if [ "$_n" -eq 0 ] || [ "$_n" -eq 5 ]; then
+        _MIB_DUPLEX=2; _MIB_SPEED=3; return
+    fi
+    # exactly one mode
+    if [ "$_n" -eq 1 ]; then
+        [ "$_a" -eq 1 ] && { _MIB_DUPLEX=0; _MIB_SPEED=0; }
+        [ "$_b" -eq 1 ] && { _MIB_DUPLEX=1; _MIB_SPEED=0; }
+        [ "$_c" -eq 1 ] && { _MIB_DUPLEX=0; _MIB_SPEED=1; }
+        [ "$_d" -eq 1 ] && { _MIB_DUPLEX=1; _MIB_SPEED=1; }
+        [ "$_e" -eq 1 ] && { _MIB_DUPLEX=1; _MIB_SPEED=2; }
+        return
+    fi
+    # 2+ modes
+    if [ $((_c + _d + _e)) -eq 0 ]; then          # within {10h,10f}
+        _MIB_DUPLEX=2; _MIB_SPEED=0
+    elif [ $((_a + _b + _e)) -eq 0 ]; then        # within {100h,100f}
+        _MIB_DUPLEX=2; _MIB_SPEED=1
+    elif [ $((_a + _c)) -eq 0 ]; then             # within {10f,100f,1000f}
+        _MIB_DUPLEX=1; _MIB_SPEED=3
+    else                                          # anything else -> auto
+        _MIB_DUPLEX=2; _MIB_SPEED=3
+    fi
+}
+
+# persist_lan_speed <port 1-4> <abilities, or empty for auto>
+persist_lan_speed() {
+    case "$1" in
+        1) _PL_IDX=0 ;;
+        2) _PL_IDX=1 ;;
+        3) _PL_IDX=2 ;;
+        4) _PL_IDX=3 ;;
+        *) return 1 ;;
     esac
+    speed_to_mib "$2"
+    mib set "SW_PORT_TBL.${_PL_IDX}.Duplex" "$_MIB_DUPLEX" >/dev/null 2>&1 \
+    && mib set "SW_PORT_TBL.${_PL_IDX}.Speed" "$_MIB_SPEED" >/dev/null 2>&1 \
+    && mib commit >/dev/null 2>&1
+    _PL_RC=$?
+    clear_legacy_startup_speeds
+    return $_PL_RC
+}
 
-    _UPD_REMOVE=0
-    [ -z "$_UPD_SPEED" ] && _UPD_REMOVE=1
-
-    _UPD_TMP="/tmp/startup_sh_$$.tmp"
-
+# Migration shim: older builds wrote
+#   ( wait_for_iface eth0.N && diag port set auto-nego port I ability ... ) &
+# lines between BEGIN_LAN_SPEEDS / END_LAN_SPEEDS in startup.sh.  If one is
+# still there it would run after the MIB is applied and override it, so drop
+# them.  No-op (and no flash write) once the section is empty.  Safe to delete
+# this function and its call once every unit has been through it.
+clear_legacy_startup_speeds() {
+    [ -f "$STARTUP_SH" ] || return 0
+    busybox grep -q '^( *wait_for_iface eth0\.[0-9]' "$STARTUP_SH" 2>/dev/null || return 0
+    _CL_TMP="/tmp/startup_sh_$$.tmp"
     busybox awk \
-        -v iface="$_UPD_IFACE" \
-        -v idx="$_UPD_IDX" \
-        -v speed="$_UPD_SPEED" \
-        -v remove_only="$_UPD_REMOVE" \
         'BEGIN { in_sec=0 }
          /^# --- BEGIN_LAN_SPEEDS ---/ { print; in_sec=1; next }
-         /^# --- END_LAN_SPEEDS ---/ {
-             if (!remove_only && speed != "") {
-                 print "( wait_for_iface " iface " && diag port set auto-nego port " idx " ability " speed " ) &"
-             }
-             in_sec=0; print; next
-         }
-         in_sec && index($0, "wait_for_iface " iface) > 0 { next }
+         /^# --- END_LAN_SPEEDS ---/   { in_sec=0; print; next }
+         in_sec && /wait_for_iface/    { next }
          { print }' \
-        "$STARTUP_SH" > "$_UPD_TMP" \
-    && busybox mv "$_UPD_TMP" "$STARTUP_SH" \
+        "$STARTUP_SH" > "$_CL_TMP" \
+    && busybox mv "$_CL_TMP" "$STARTUP_SH" \
     && busybox chmod 755 "$STARTUP_SH"
 }
 
@@ -2306,7 +2353,7 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
             touch "$LAN_REVERT_PENDING"
             date +%s > "$LAN_REVERT_START"
 
-            # Persist the new speed to startup.sh so it survives reboots.
+            # Persist the new speed to the MIB (SW_PORT_TBL) so it survives reboots.
             # Expand the user-supplied SPEED into canonical ordered abilities
             # (same ordering lan.sh uses: 10h 10f 100h 100f 1000f).
             # "auto" means all speeds enabled = the default after reboot, so
@@ -2324,7 +2371,7 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
                     done
                     PERSIST_SPEED="${PERSIST_SPEED# }"
                 fi
-                update_startup_speed "$PORT" "$PERSIST_SPEED"
+                persist_lan_speed "$PORT" "$PERSIST_SPEED"
             fi
 
             (
@@ -2341,7 +2388,7 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
                     [ -n "$RB_SPD" ] && RB_ARGS="$RB_ARGS --speed $RB_SPD"
                     sh "$LAN_SH" $RB_ARGS 2>&1
                     rm -f "$LAN_REVERT_PENDING" "$LAN_REVERT_PORT" "$LAN_REVERT_POWER" "$LAN_REVERT_SPEED" "$LAN_REVERT_START"
-                    # Also revert startup.sh back to the pre-change speed so
+                    # Also revert the persisted MIB speed back to the pre-change value so
                     # the next reboot does not re-apply the discarded setting.
                     if echo "$RB_SPD" | busybox grep -qi "auto" || [ -z "$RB_SPD" ]; then
                         RB_PERSIST=""
@@ -2355,7 +2402,7 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
                         done
                         RB_PERSIST="${RB_PERSIST# }"
                     fi
-                    update_startup_speed "$RB_PORT" "$RB_PERSIST"
+                    persist_lan_speed "$RB_PORT" "$RB_PERSIST"
                 fi
             ) &
 

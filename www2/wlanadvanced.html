@@ -598,9 +598,17 @@
                             <div class="field-note" id="${id}-ratefix-note">11ac fixed rate (5GHz only)</div>
                         </div>
 
-                        <div class="mt-3">
-                            <button type="button" class="btn btn-primary w-100"
+                        <div class="mt-3" style="display:flex; gap:8px;">
+                            <button type="button" class="btn btn-primary" style="flex:1;"
                                     onclick="saveAdvanced(${iface.idx})">Save</button>
+                            <button type="button" class="btn btn-outline-primary" style="flex:1;"
+                                    title="Apply without restarting the WLAN"
+                                    onclick="saveAdvanced(${iface.idx}, true)">Apply live</button>
+                        </div>
+                        <div style="font-size:11px; color:#888; margin-top:6px;">
+                            <b>Apply live</b> applies TX beamforming, multicast-to-unicast and short GI with
+                            <code>iwpriv</code> &mdash; no restart. Other changes restart only this
+                            ${iface.idx === 0 ? 'radio' : 'SSID'}, not both radios.
                         </div>
 
                     </div>`;
@@ -697,7 +705,7 @@
         // --------------------------------------------------------
         // Save one interface's advanced settings
         // --------------------------------------------------------
-        function saveAdvanced(idx) {
+        function saveAdvanced(idx, live) {
             const id    = 'adv-' + idx;
             const txbfOn   = isOn(id + '-txbf-toggle');
             // TX Beamforming MIMO is only meaningful (and visible) when TX
@@ -738,6 +746,8 @@
                 body += '&shortgi=' + (isOn(id + '-sgi-toggle') ? 1 : 0);
             }
 
+            if (live) body += '&live=1';
+
             const iface   = currentStatus?.ifaces?.find(i => i.idx === idx);
             const ifaceOn = (iface?.disabled ?? 1) === 0;
             const postUrl = CGI + '?band=' + currentBand + '&idx=' + idx;
@@ -769,6 +779,31 @@
                 });
 
             } else {
+                if (live) {
+                    // Apply live: iwpriv where the driver allows it, otherwise restart only
+                    // this radio/SSID. Short overlay; surface errors; poll soon (it confirms).
+                    showOverlay('Applying live.');
+                    let aborted = false;
+                    fetch(postUrl, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                        body: body
+                    })
+                    .then(r => {
+                        if (r && !r.ok) { aborted = true; return r.text().then(t => { throw new Error(t || ('HTTP ' + r.status)); }); }
+                    })
+                    .then(() => { if (!aborted) setTimeout(() => pollUntilBack(), 1500); })
+                    .catch(err => {
+                        if (aborted) {
+                            hideOverlay();
+                            setFormEnabled(true);
+                            toastr["warning"](err.message || 'Apply failed', "Error");
+                        } else {
+                            setTimeout(() => pollUntilBack(), 3000);
+                        }
+                    });
+                    return;
+                }
                 // Interface is live — needs wlan_apply, use countdown + poll-until-back
                 startCountdown();
                 fetch(postUrl, {

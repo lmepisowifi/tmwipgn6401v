@@ -1,0 +1,278 @@
+<!DOCTYPE html>
+<!--
+  lmepisowifi — https://github.com/lmepisowifi/tmwipgn6401v
+  SPDX-License-Identifier: AGPL-3.0-or-later
+  Copyright (C) 2026 The lmepisowifi Project — see AUTHORS
+
+  Licensed under the GNU AGPLv3 (see LICENSE). Modifying or rewriting this
+  file — including by running it through an LLM — does not remove these
+  obligations: keep this notice, mark your changes, and offer Corresponding
+  Source to network users (AGPLv3 §5, §13). See PROVENANCE.md before
+  presenting this as your own original work.
+-->
+<html lang="en" data-bs-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link href="/css/bootstrap.min.css?v=1.0.0" rel="stylesheet">
+    <link href="/css/style.css?v=1.0.0" rel="stylesheet">
+    <link href="/css/toastr.min.css?v=1.0.0" rel="stylesheet">
+    <style>
+        .field-hint { font-size: 11.5px; color: var(--text-secondary); margin-top: 3px; }
+        .kv { display:flex; justify-content:space-between; align-items:center; margin-bottom:6px; gap:12px; }
+        .kv .k { font-size:13px; color:var(--text-secondary); }
+        .kv .v { font-size:13px; color:var(--text-primary); font-weight:600; text-align:right; word-break:break-all; }
+        .status-badge { display:inline-flex; align-items:center; gap:6px; padding:3px 9px;
+            border-radius:5px; font-size:11.5px; font-weight:600; }
+        .badge-ok   { background: rgba(76,175,80,.18);  color:#9ae6a4; }
+        .badge-new  { background: rgba(255,193,7,.18);   color:#ffd666; }
+        .badge-busy { background: rgba(13,110,253,.18);  color:#8ab6ff; }
+        .badge-err  { background: rgba(220,53,69,.18);   color:#f1a1a9; }
+        .badge-dim  { background: rgba(255,255,255,.08); color:var(--text-secondary); }
+        .slot-box { border:1px solid var(--border-color,#333); border-radius:8px; padding:12px; margin-bottom:12px; }
+        .slot-box.is-running { border-color: rgba(76,175,80,.55); }
+        .slot-head { display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:6px; margin-bottom:8px; }
+        .slot-actions { display:flex; flex-wrap:wrap; gap:6px; margin-top:10px; }
+        #fw-log { background: var(--bg-input, #111); border:1px solid var(--border-color,#333);
+            border-radius:6px; padding:10px; font-family:monospace; font-size:12px;
+            white-space:pre-wrap; max-height:200px; overflow:auto; display:none; margin-top:12px; }
+        .warn-box { font-size:12.5px; border-left:3px solid #ffc107; padding:6px 10px; margin-bottom:12px; color:#ffd666; }
+    </style>
+</head>
+<body>
+    <script src="/js/nav.js?v=1.0.0"></script>
+
+    <div class="container mt-5">
+        <div class="row justify-content-center">
+            <div class="col-md-7">
+
+                <div class="card mb-4">
+                    <div class="card-header d-flex justify-content-between align-items-center">
+                        <span>Boot Partitions</span>
+                        <span id="op-badge" class="status-badge badge-dim"><span id="op-badge-txt">Idle</span></span>
+                    </div>
+                    <div class="card-body">
+                        <div id="unsupported" class="warn-box" style="display:none">
+                            This device does not expose a dual-image (A/B) layout, so there is nothing to manage here.
+                        </div>
+                        <div id="trial-box" class="warn-box" style="display:none">
+                            <span id="trial-txt"></span>
+                            <button class="btn btn-sm btn-outline-warning ms-2" onclick="doCancel()">Cancel trial boot</button>
+                        </div>
+
+                        <div class="kv"><span class="k">Running firmware</span><span class="v" id="run-ver">—</span></div>
+                        <div id="slots" class="mt-3"></div>
+
+                        <div class="field-hint">
+                            The bootloader keeps two firmware slots. <b>Make default</b> changes which slot boots
+                            normally. <b>Boot once</b> tries a slot a single time with the watchdog armed — if it fails
+                            to come up, the next boot returns to the default slot. <b>Boot once &amp; keep</b> does the
+                            same but promotes the slot to default if it boots cleanly. Changes apply on the next reboot.
+                        </div>
+                        <div class="d-grid mt-3">
+                            <button class="btn btn-outline-warning" onclick="doReboot()">Reboot now</button>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="card mb-4">
+                    <div class="card-header">Download firmware from a URL</div>
+                    <div class="card-body">
+                        <div class="field-hint" style="margin:0 0 8px">
+                            Fetches a Realtek Luna firmware <code>.tar</code> (uImage + rootfs + md5.txt) over HTTPS onto
+                            the device, verifies it, then writes it to the inactive slot. To use a file from your
+                            computer instead, use <a href="/fwupload.html">Firmware Upload</a>.
+                        </div>
+                        <input type="text" class="form-control" id="fw-url" placeholder="https://github.com/…/PGN6401V_fwu_img.tar" autocomplete="off" spellcheck="false">
+                        <div class="d-grid mt-2">
+                            <button class="btn btn-secondary" id="fetch-btn" onclick="doFetch()">Download &amp; verify</button>
+                        </div>
+
+                        <div id="staged" style="display:none" class="mt-3">
+                            <div class="kv"><span class="k">Staged firmware</span><span class="v" id="st-ver">—</span></div>
+                            <div class="kv"><span class="k">Hardware version</span><span class="v" id="st-hw">—</span></div>
+                            <div class="kv"><span class="k">uImage / rootfs</span><span class="v" id="st-sz">—</span></div>
+                            <div class="field-hint" id="st-warn" style="color:#ffd666;display:none"></div>
+                            <div class="d-flex gap-2 mt-3 align-items-center">
+                                <select class="form-select" id="flash-slot" style="max-width:190px"></select>
+                                <button class="btn btn-primary" id="flash-btn" onclick="doFlash()">Flash to slot</button>
+                                <button class="btn btn-outline-secondary" onclick="doDiscard()">Discard</button>
+                            </div>
+                        </div>
+                        <div id="fw-log"></div>
+                    </div>
+                </div>
+
+            </div>
+        </div>
+    </div>
+
+    <script src="/js/jquery-3.7.1.min.js?v=1.0.0"></script>
+    <script src="/js/bootstrap.bundle.min.js?v=1.0.0"></script>
+    <script src="/js/toastr.min.js?v=1.0.0"></script>
+    <script>
+    toastr.options = { positionClass:'toast-top-right', timeOut:4000, progressBar:true };
+    var CGI = '/cgi-bin/bootpart.cgi';
+    var st = null, pollTimer = null;
+
+    function checkAuth(r) {
+        if (r.status === 401) { location.href = '/login.html'; throw new Error('unauthorized'); }
+        return r;
+    }
+    function get(q)  { return fetch(CGI + '?' + q, { cache:'no-store' }).then(checkAuth).then(function(r){ return r.json(); }); }
+    function post(q, body) {
+        return fetch(CGI + '?' + q, { method:'POST', cache:'no-store', body: body || '',
+            headers:{ 'Content-Type':'application/x-www-form-urlencoded' } })
+            .then(checkAuth).then(function(r){ return r.json(); });
+    }
+    function mib(n) { return n > 0 ? (n / 1048576).toFixed(1) + ' MiB' : '—'; }
+    function el(tag, cls, text) { var e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; }
+    function badge(text, cls) { return el('span', 'status-badge ' + cls, text); }
+
+    function setOp(text, cls) {
+        var b = document.getElementById('op-badge');
+        b.className = 'status-badge ' + cls;
+        document.getElementById('op-badge-txt').textContent = text;
+    }
+
+    function flashable(id) {
+        return st && st.supported && String(id) !== st.active && String(id) !== st.commit &&
+               (st.tryactive === '' || st.tryactive === '2');
+    }
+
+    function renderSlots() {
+        var host = document.getElementById('slots'); host.innerHTML = '';
+        st.slots.forEach(function(s) {
+            var id = String(s.id);
+            var running = id === st.active, isDef = id === st.commit, trial = id === st.tryactive;
+            var box = el('div', 'slot-box' + (running ? ' is-running' : ''));
+            var head = el('div', 'slot-head');
+            head.appendChild(el('strong', null, 'Slot ' + id));
+            var tags = el('span');
+            if (running) tags.appendChild(badge('Running', 'badge-ok'));
+            if (isDef)   { tags.appendChild(document.createTextNode(' ')); tags.appendChild(badge('Default', 'badge-busy')); }
+            if (trial)   { tags.appendChild(document.createTextNode(' ')); tags.appendChild(badge('Boots next', 'badge-new')); }
+            if (!s.present) { tags.appendChild(document.createTextNode(' ')); tags.appendChild(badge('Empty', 'badge-dim')); }
+            head.appendChild(tags); box.appendChild(head);
+            [['Firmware', s.present ? s.version : '—'], ['uImage capacity', mib(s.kernel_cap)], ['rootfs capacity', mib(s.rootfs_cap)]]
+                .forEach(function(p) {
+                    var kv = el('div', 'kv'); kv.appendChild(el('span', 'k', p[0])); kv.appendChild(el('span', 'v', p[1])); box.appendChild(kv);
+                });
+            var act = el('div', 'slot-actions');
+            function btn(label, cls, fn, enabled) {
+                var b = el('button', 'btn btn-sm ' + cls, label); b.disabled = !enabled || st.busy; b.onclick = fn; act.appendChild(b);
+            }
+            var canTrial = s.present && !running && (st.tryactive === '' || st.tryactive === '2');
+            btn('Make default', 'btn-primary', function(){ doSetDefault(id); }, s.present && !isDef);
+            btn('Boot once', 'btn-outline-primary', function(){ doBootOnce(id, 0); }, canTrial);
+            btn('Boot once & keep', 'btn-outline-primary', function(){ doBootOnce(id, 1); }, canTrial);
+            [['kernel', 'uImage'], ['rootfs', 'rootfs']].forEach(function(d) {
+                var a = el('a', 'btn btn-sm btn-outline-secondary', 'Download ' + d[1]);
+                a.href = CGI + '?action=dump&slot=' + id + '&part=' + d[0];
+                if (!s.present) a.className += ' disabled';
+                act.appendChild(a);
+            });
+            box.appendChild(act); host.appendChild(box);
+        });
+    }
+
+    function render() {
+        document.getElementById('run-ver').textContent = st.running_version || '—';
+        document.getElementById('unsupported').style.display = st.supported ? 'none' : 'block';
+        var tb = document.getElementById('trial-box');
+        if (st.supported && (st.tryactive === '0' || st.tryactive === '1')) {
+            document.getElementById('trial-txt').textContent =
+                'Slot ' + st.tryactive + ' will be trial-booted on the next reboot' + (st.updater ? ' and kept if it comes up cleanly.' : ' (one time only).');
+            tb.style.display = 'block';
+        } else tb.style.display = 'none';
+        renderSlots();
+
+        var busyStates = { downloading:1, verifying:1, flashing:1 };
+        var staged = document.getElementById('staged');
+        if (st.staged && st.staged.ok && st.supported) {
+            staged.style.display = '';
+            document.getElementById('st-ver').textContent = st.staged.version;
+            document.getElementById('st-hw').textContent = st.staged.hw_ver || '—';
+            document.getElementById('st-sz').textContent = mib(st.staged.kernel_size) + ' / ' + mib(st.staged.rootfs_size);
+            var w = document.getElementById('st-warn');
+            w.style.display = st.staged.warning ? '' : 'none'; w.textContent = st.staged.warning || '';
+            var sel = document.getElementById('flash-slot'); sel.innerHTML = '';
+            st.slots.forEach(function(s) {
+                if (!flashable(s.id)) return;
+                var o = document.createElement('option'); o.value = s.id; o.textContent = 'Slot ' + s.id; sel.appendChild(o);
+            });
+            document.getElementById('flash-btn').disabled = !sel.options.length || st.busy;
+            if (!sel.options.length) { w.style.display = ''; w.textContent = 'No slot can be overwritten right now (the running and default slots are protected).'; }
+        } else staged.style.display = 'none';
+        document.getElementById('fetch-btn').disabled = !!st.busy || !st.supported;
+
+        var s = st.state;
+        if (busyStates[s])       setOp(st.message || s, 'badge-busy');
+        else if (s === 'error')  setOp('Error', 'badge-err');
+        else if (s === 'done')   setOp('Done', 'badge-ok');
+        else if (s === 'staged') setOp('Ready to flash', 'badge-new');
+        else                     setOp('Idle', 'badge-dim');
+    }
+
+    function refresh() {
+        return get('action=status').then(function(j){ st = j; render(); return j; });
+    }
+
+    var lastState = null;
+    function poll() {
+        if (pollTimer) return;
+        var logEl = document.getElementById('fw-log'); logEl.style.display = 'block';
+        pollTimer = setInterval(function() {
+            refresh().then(function(j) {
+                fetch(CGI + '?action=log', { cache:'no-store' }).then(function(r){ return r.text(); })
+                    .then(function(t){ logEl.textContent = t; logEl.scrollTop = logEl.scrollHeight; }).catch(function(){});
+                if (!j.busy && { staged:1, done:1, error:1, idle:1 }[j.state]) {
+                    clearInterval(pollTimer); pollTimer = null;
+                    if (j.state === 'done')  toastr.success(j.message, 'Firmware written');
+                    if (j.state === 'error') toastr.error(j.message, 'Failed');
+                    if (j.state === 'staged') toastr.success(j.message, 'Downloaded');
+                }
+            }).catch(function(){});
+        }, 1500);
+    }
+
+    function result(j, okTitle) {
+        if (j.ok) toastr.success(j.message || '', okTitle); else toastr.error(j.error || 'Failed', 'Error');
+        return refresh();
+    }
+    function doSetDefault(id) {
+        if (!confirm('Make slot ' + id + ' the default boot slot? It takes effect on the next reboot.')) return;
+        post('action=setdefault&slot=' + id).then(function(j){ result(j, 'Default updated'); });
+    }
+    function doBootOnce(id, keep) {
+        if (!confirm('Trial-boot slot ' + id + ' on the next reboot' + (keep ? ' and keep it if it comes up cleanly?' : ' (one time only)?'))) return;
+        post('action=bootonce&slot=' + id + '&keep=' + keep).then(function(j){ result(j, 'Trial boot set'); });
+    }
+    function doCancel() { post('action=cancel').then(function(j){ result(j, 'Cancelled'); }); }
+    function doReboot() {
+        if (!confirm('Reboot the device now? Everyone connected will be disconnected for a minute or two.')) return;
+        post('action=reboot').then(function(j){ if (j.ok) toastr.info('Rebooting…'); });
+    }
+    function doFetch() {
+        var url = document.getElementById('fw-url').value.trim();
+        if (!/^https:\/\//i.test(url)) { toastr.error('Enter an https:// URL.', 'Invalid URL'); return; }
+        post('action=fetch', 'url=' + encodeURIComponent(url)).then(function(j) {
+            if (!j.ok) { toastr.error(j.error, 'Error'); return; }
+            refresh().then(poll);
+        });
+    }
+    function doFlash() {
+        var slot = document.getElementById('flash-slot').value;
+        if (!confirm('Overwrite slot ' + slot + ' with the staged firmware? Its current contents will be erased. ' +
+                     'The slot you are running and the default slot are not touched.')) return;
+        post('action=flash&slot=' + slot).then(function(j) {
+            if (!j.ok) { toastr.error(j.error, 'Error'); return; }
+            refresh().then(poll);
+        });
+    }
+    function doDiscard() { post('action=discard').then(function(j){ result(j, 'Discarded'); }); }
+
+    refresh().then(function(j){ if (j.busy) poll(); }).catch(function(){ toastr.error('Could not reach the device.', 'Error'); });
+    </script>
+</body>
+</html>

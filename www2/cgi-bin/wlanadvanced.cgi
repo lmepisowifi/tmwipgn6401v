@@ -125,6 +125,67 @@ pd_int() {
     printf '%s' "$V"
 }
 
+# ── Live apply: iwpriv first, then a single-radio / single-SSID restart ──────
+# `mib set` + `mib commit` only persist a change. To make it take effect without
+# `wlan_apply restart` (which stops and starts BOTH radios and every SSID):
+#   1. iwpriv <if> set_mib key=value on the running driver - no restart at all.
+#      set_mib is a raw write into the driver's per-interface mib struct, so it
+#      is only used for what the driver re-reads at runtime (SSID, beamforming,
+#      mc2u, short GI) or when the interface is re-opened (channel, width,
+#      sideband - see wl_bounce).
+#   2. wlanapply (src/wlanapply) - the vendor config_WLAN(ACT_RESTART_xG, idx):
+#      restarts ONE radio, or ONE SSID, for everything iwpriv can't take
+#      (radio on/off, AP/client mode, TX power, Auto width, security, PMF ...).
+#   3. the stock `wlan_apply restart`, only if that helper is missing or fails.
+WLANAPPLY=/lmepisowifi/www2/tool/wlanapply
+WL_HELPER_OK=""
+
+# wl_set IF KEY VALUE -> iwpriv IF set_mib KEY=VALUE (skipped if IF is absent)
+wl_set() {
+    if [ ! -d "${WL_NETSYS:-/sys/class/net}/$1" ]; then
+        dbg "wl_set: $1 not present, skipped $2=$3"
+        return 1
+    fi
+    iwpriv "$1" set_mib "$2=$3" >/dev/null 2>&1
+    _wl_rc=$?
+    dbg "wl_set: iwpriv $1 set_mib $2=$3 -> rc=$_wl_rc"
+    return $_wl_rc
+}
+
+# wl_helper_ok -> 0 when wlanapply is usable (same preflight as wan-profile.cgi)
+wl_helper_ok() {
+    if [ -z "$WL_HELPER_OK" ]; then
+        WL_HELPER_OK=1
+        if [ -f "$WLANAPPLY" ]; then
+            [ -x "$WLANAPPLY" ] || chmod +x "$WLANAPPLY" 2>/dev/null
+            if [ -x "$WLANAPPLY" ] && "$WLANAPPLY" check >/dev/null 2>&1; then
+                WL_HELPER_OK=0
+            fi
+        fi
+    fi
+    return "$WL_HELPER_OK"
+}
+
+# wl_restart_scoped BAND IDX -> restart one radio (IDX 0 = whole band: the VAPs
+# hang off the root, so a root/radio change restarts that band's SSIDs, as the
+# vendor does) or a single SSID (IDX 1-4 = vap0-3, 5 = vxd). BAND: 5 | 24.
+wl_restart_scoped() {
+    if [ "$1" = "5" ]; then _wl_bn=5g; else _wl_bn=2g; fi
+    _wl_ix="$2"; [ "$_wl_ix" = "0" ] && _wl_ix=all
+    if wl_helper_ok; then
+        "$WLANAPPLY" restart "$_wl_bn" "$_wl_ix" >> "$DBG_LOG" 2>&1
+        _wl_rc=$?
+        if [ "$_wl_rc" = "0" ]; then
+            dbg "wl_restart_scoped: wlanapply restart $_wl_bn $_wl_ix ok"
+            return 0
+        fi
+        dbg "wl_restart_scoped: wlanapply restart $_wl_bn $_wl_ix failed (rc=$_wl_rc), falling back to wlan_apply restart"
+    else
+        dbg "wl_restart_scoped: wlanapply unavailable, falling back to wlan_apply restart"
+    fi
+    wlan_apply restart
+}
+
 # Per-interface getters (idx 0-5). MIMO/TXBF/MC2U/rate-limits/PMF/SHA-256/
 # rate-adaptive/fixed-rate are assumed to exist per MBSSIB_TBL entry, the same
 # way dotIEEE80211W (PMF) is already confirmed per-idx in wlansecurity —
@@ -323,6 +384,8 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
     FORM_SHA=$(pd_int  sha256        0)
     FORM_RATEADAPT=$(pd_int rate_adaptive 1)
     FORM_FIXEDRATE=$(pd_int fixed_rate    0)
+    FORM_LIVE=$(pd_int live               0)
+    case "$FORM_LIVE" in 1) ;; *) FORM_LIVE=0 ;; esac
 
     # Validate binary flags / enums
     case "$FORM_MIMO" in 0|1)   ;; *) FORM_MIMO=0 ;; esac
@@ -418,14 +481,14 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
     # Every other field on this form still needs a full wlan_apply restart,
     # so only take the iwpriv fast path when nothing else changed.
     OTHER_FIELDS_UNCHANGED=1
-    [ "$FORM_MC2U"      != "$OLD_MC2U" ]      && OTHER_FIELDS_UNCHANGED=0
+    [ "$FORM_LIVE" != "1" ] && [ "$FORM_MC2U" != "$OLD_MC2U" ] && OTHER_FIELDS_UNCHANGED=0
     [ "$FORM_TXR"       != "$OLD_TXR" ]       && OTHER_FIELDS_UNCHANGED=0
     [ "$FORM_RXR"       != "$OLD_RXR" ]       && OTHER_FIELDS_UNCHANGED=0
     [ "$FORM_PMF"       != "$OLD_PMF" ]       && OTHER_FIELDS_UNCHANGED=0
     [ "$FORM_SHA"       != "$OLD_SHA" ]       && OTHER_FIELDS_UNCHANGED=0
     [ "$FORM_RATEADAPT" != "$OLD_RATEADAPT" ] && OTHER_FIELDS_UNCHANGED=0
     [ "$FORM_RATEADAPT" = "0" ] && [ "$FORM_FIXEDRATE" != "$OLD_FIXEDRATE" ] && OTHER_FIELDS_UNCHANGED=0
-    [ "$IDX" = "0" ] && [ "$FORM_SGI" != "$OLD_SGI" ] && OTHER_FIELDS_UNCHANGED=0
+    [ "$FORM_LIVE" != "1" ] && [ "$IDX" = "0" ] && [ "$FORM_SGI" != "$OLD_SGI" ] && OTHER_FIELDS_UNCHANGED=0
 
     if [ "$OTHER_FIELDS_UNCHANGED" = "1" ]; then
         IWPRIV_IF=$(vif_name "$IDX")
@@ -434,6 +497,15 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
         iwpriv "$IWPRIV_IF" set_mib "txbfer=$FORM_TXBF"
         iwpriv "$IWPRIV_IF" set_mib "txbfee=$FORM_TXBF"
         iwpriv "$IWPRIV_IF" set_mib "txbf_mu=$FORM_MIMO"
+        if [ "$FORM_LIVE" = "1" ]; then
+            # mc2u_disable is read per packet; short GI is radio-wide and is
+            # picked up by clients as they (re)associate (vendor sets 20M+40M).
+            [ "$FORM_MC2U" != "$OLD_MC2U" ] && wl_set "$IWPRIV_IF" mc2u_disable "$FORM_MC2U"
+            if [ "$IDX" = "0" ] && [ "$FORM_SGI" != "$OLD_SGI" ]; then
+                wl_set "$WLAN_IF" shortGI20M "$FORM_SGI"
+                wl_set "$WLAN_IF" shortGI40M "$FORM_SGI"
+            fi
+        fi
         printf "Status: 200 OK\r\n"
         printf "Content-Type: text/plain\r\n\r\n"
         printf "OK"
@@ -490,7 +562,11 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
                 mib set "$SGI_KEY" "$(cat "${RP}_sgi")"
             fi
             mib commit
-            wlan_apply restart
+            if [ "$FORM_LIVE" = "1" ]; then
+                wl_restart_scoped "$BAND" "$IDX"
+            else
+                wlan_apply restart
+            fi
             if [ "$IDX" = "5" ]; then
                 dbg "save_adv idx=5 revert: also restarting multi-ap agent service"
                 sysconf multi_ap_agent_restart
@@ -499,8 +575,13 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
         fi
     ) &
 
-    dbg "save_adv idx=$IDX: launching wlan_apply restart"
-    wlan_apply restart
+    if [ "$FORM_LIVE" = "1" ]; then
+        dbg "save_adv idx=$IDX: live apply - restarting only band $BAND idx $IDX via wlanapply"
+        wl_restart_scoped "$BAND" "$IDX"
+    else
+        dbg "save_adv idx=$IDX: launching wlan_apply restart"
+        wlan_apply restart
+    fi
     if [ "$IDX" = "5" ]; then
         dbg "save_adv idx=5: also restarting multi-ap agent service"
         sysconf multi_ap_agent_restart

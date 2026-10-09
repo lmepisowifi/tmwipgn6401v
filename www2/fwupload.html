@@ -1,0 +1,244 @@
+<!DOCTYPE html>
+<!--
+  lmepisowifi — https://github.com/lmepisowifi/tmwipgn6401v
+  SPDX-License-Identifier: AGPL-3.0-or-later
+  Copyright (C) 2026 The lmepisowifi Project — see AUTHORS
+
+  Licensed under the GNU AGPLv3 (see LICENSE). Modifying or rewriting this
+  file — including by running it through an LLM — does not remove these
+  obligations: keep this notice, mark your changes, and offer Corresponding
+  Source to network users (AGPLv3 §5, §13). See PROVENANCE.md before
+  presenting this as your own original work.
+-->
+<html lang="en" data-bs-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link href="/css/bootstrap.min.css?v=1.0.0" rel="stylesheet">
+    <link href="/css/style.css?v=1.0.0" rel="stylesheet">
+    <link href="/css/toastr.min.css?v=1.0.0" rel="stylesheet">
+    <style>
+        .field-hint { font-size: 11.5px; color: var(--text-secondary); margin-top: 3px; }
+        .kv { display:flex; justify-content:space-between; align-items:center; margin-bottom:6px; gap:12px; }
+        .kv .k { font-size:13px; color:var(--text-secondary); }
+        .kv .v { font-size:13px; color:var(--text-primary); font-weight:600; text-align:right; word-break:break-all; }
+        .status-badge { display:inline-flex; align-items:center; gap:6px; padding:4px 10px;
+            border-radius:5px; font-size:12px; font-weight:600; }
+        .badge-ok   { background: rgba(76,175,80,.18);  color:#9ae6a4; }
+        .badge-new  { background: rgba(255,193,7,.18);   color:#ffd666; }
+        .badge-busy { background: rgba(13,110,253,.18);  color:#8ab6ff; }
+        .badge-err  { background: rgba(220,53,69,.18);   color:#f1a1a9; }
+        .badge-dim  { background: rgba(255,255,255,.08); color:var(--text-secondary); }
+        .drop { border:2px dashed var(--border-color,#444); border-radius:8px; padding:26px 12px; text-align:center;
+            cursor:pointer; color:var(--text-secondary); transition:border-color .2s, background .2s; }
+        .drop.over { border-color:#8ab6ff; background:rgba(13,110,253,.08); }
+        .drop .fname { color:var(--text-primary); font-weight:600; word-break:break-all; }
+        #fw-log { background: var(--bg-input, #111); border:1px solid var(--border-color,#333);
+            border-radius:6px; padding:10px; font-family:monospace; font-size:12px;
+            white-space:pre-wrap; max-height:200px; overflow:auto; display:none; margin-top:12px; }
+        .warn-box { font-size:12.5px; border-left:3px solid #ffc107; padding:6px 10px; margin-bottom:12px; color:#ffd666; }
+    </style>
+</head>
+<body>
+    <script src="/js/nav.js?v=1.0.0"></script>
+
+    <div class="container mt-5">
+        <div class="row justify-content-center">
+            <div class="col-md-6">
+
+                <div class="card mb-4">
+                    <div class="card-header d-flex justify-content-between align-items-center">
+                        <span>Firmware Upload</span>
+                        <span id="op-badge" class="status-badge badge-dim"><span id="op-badge-txt">Idle</span></span>
+                    </div>
+                    <div class="card-body">
+                        <div id="unsupported" class="warn-box" style="display:none">
+                            This device does not expose a dual-image (A/B) layout, so firmware cannot be uploaded here.
+                        </div>
+
+                        <div class="drop" id="drop" onclick="document.getElementById('file').click()">
+                            <div id="drop-text">Drop a Realtek Luna firmware <code>.tar</code> here, or click to choose</div>
+                            <div class="fname" id="fname"></div>
+                        </div>
+                        <input type="file" id="file" accept=".tar,application/x-tar" style="display:none">
+
+                        <div class="progress mt-3" id="prog-wrap" style="display:none;height:10px">
+                            <div class="progress-bar" id="prog" style="width:0%"></div>
+                        </div>
+                        <div class="field-hint" id="prog-txt"></div>
+
+                        <div class="d-grid mt-3">
+                            <button class="btn btn-secondary" id="upload-btn" onclick="doUpload()" disabled>Upload &amp; verify</button>
+                        </div>
+
+                        <div id="staged" style="display:none" class="mt-4">
+                            <div class="kv"><span class="k">Firmware</span><span class="v" id="st-ver">—</span></div>
+                            <div class="kv"><span class="k">Hardware version</span><span class="v" id="st-hw">—</span></div>
+                            <div class="kv"><span class="k">uImage / rootfs</span><span class="v" id="st-sz">—</span></div>
+                            <div class="field-hint" id="st-warn" style="color:#ffd666;display:none"></div>
+                            <div class="d-flex gap-2 mt-3 align-items-center">
+                                <select class="form-select" id="flash-slot" style="max-width:190px"></select>
+                                <button class="btn btn-primary" id="flash-btn" onclick="doFlash()">Flash to slot</button>
+                                <button class="btn btn-outline-secondary" onclick="doDiscard()">Discard</button>
+                            </div>
+                        </div>
+
+                        <div id="done-box" class="mt-3" style="display:none">
+                            <div class="warn-box" style="border-color:#4caf50;color:#9ae6a4" id="done-txt"></div>
+                            <div class="d-grid"><a class="btn btn-primary" href="/bootpart.html">Go to Boot Partitions</a></div>
+                        </div>
+                        <div id="fw-log"></div>
+
+                        <div class="field-hint mt-3">
+                            The file is checked against its <code>md5.txt</code> and the device's hardware version, written to
+                            the <b>inactive</b> slot only, and read back to confirm it. The slot you are running and the default
+                            slot are never overwritten, so a failed or interrupted flash cannot stop the device booting. Afterwards,
+                            choose how to boot the new slot on <a href="/bootpart.html">Boot Partitions</a>. The tar needs RAM
+                            for itself plus its largest image while flashing; very large files may be refused.
+                        </div>
+                    </div>
+                </div>
+
+            </div>
+        </div>
+    </div>
+
+    <script src="/js/jquery-3.7.1.min.js?v=1.0.0"></script>
+    <script src="/js/bootstrap.bundle.min.js?v=1.0.0"></script>
+    <script src="/js/toastr.min.js?v=1.0.0"></script>
+    <script>
+    toastr.options = { positionClass:'toast-top-right', timeOut:4000, progressBar:true };
+    var CGI = '/cgi-bin/bootpart.cgi';
+    var st = null, pollTimer = null, chosen = null, uploading = false;
+
+    function checkAuth(r) {
+        if (r.status === 401) { location.href = '/login.html'; throw new Error('unauthorized'); }
+        return r;
+    }
+    function get(q)  { return fetch(CGI + '?' + q, { cache:'no-store' }).then(checkAuth).then(function(r){ return r.json(); }); }
+    function post(q) {
+        return fetch(CGI + '?' + q, { method:'POST', cache:'no-store', body:'',
+            headers:{ 'Content-Type':'application/x-www-form-urlencoded' } })
+            .then(checkAuth).then(function(r){ return r.json(); });
+    }
+    function mib(n) { return n > 0 ? (n / 1048576).toFixed(1) + ' MiB' : '—'; }
+    function setOp(text, cls) {
+        document.getElementById('op-badge').className = 'status-badge ' + cls;
+        document.getElementById('op-badge-txt').textContent = text;
+    }
+    function flashable(id) {
+        return st && st.supported && String(id) !== st.active && String(id) !== st.commit &&
+               (st.tryactive === '' || st.tryactive === '2');
+    }
+
+    function render() {
+        document.getElementById('unsupported').style.display = st.supported ? 'none' : 'block';
+        var staged = document.getElementById('staged');
+        if (st.staged && st.staged.ok && st.supported && !uploading) {
+            staged.style.display = '';
+            document.getElementById('st-ver').textContent = st.staged.version;
+            document.getElementById('st-hw').textContent = st.staged.hw_ver || '—';
+            document.getElementById('st-sz').textContent = mib(st.staged.kernel_size) + ' / ' + mib(st.staged.rootfs_size);
+            var w = document.getElementById('st-warn');
+            w.style.display = st.staged.warning ? '' : 'none'; w.textContent = st.staged.warning || '';
+            var sel = document.getElementById('flash-slot'); sel.innerHTML = '';
+            st.slots.forEach(function(s) {
+                if (!flashable(s.id)) return;
+                var o = document.createElement('option'); o.value = s.id; o.textContent = 'Slot ' + s.id; sel.appendChild(o);
+            });
+            document.getElementById('flash-btn').disabled = !sel.options.length || st.busy;
+            if (!sel.options.length) { w.style.display = ''; w.textContent = 'No slot can be overwritten right now (the running and default slots are protected).'; }
+        } else staged.style.display = 'none';
+
+        document.getElementById('upload-btn').disabled = !chosen || uploading || !!st.busy || !st.supported;
+        var dn = document.getElementById('done-box');
+        if (st.state === 'done') { dn.style.display = ''; document.getElementById('done-txt').textContent = st.message; }
+        else dn.style.display = 'none';
+
+        var s = st.state;
+        if (s === 'flashing' || s === 'verifying' || s === 'downloading') setOp(st.message || s, 'badge-busy');
+        else if (s === 'error')  setOp('Error', 'badge-err');
+        else if (s === 'done')   setOp('Done', 'badge-ok');
+        else if (s === 'staged') setOp('Ready to flash', 'badge-new');
+        else                     setOp('Idle', 'badge-dim');
+    }
+
+    function refresh() { return get('action=status').then(function(j){ st = j; render(); return j; }); }
+
+    function poll() {
+        if (pollTimer) return;
+        var logEl = document.getElementById('fw-log'); logEl.style.display = 'block';
+        pollTimer = setInterval(function() {
+            refresh().then(function(j) {
+                fetch(CGI + '?action=log', { cache:'no-store' }).then(function(r){ return r.text(); })
+                    .then(function(t){ logEl.textContent = t; logEl.scrollTop = logEl.scrollHeight; }).catch(function(){});
+                if (!j.busy && { staged:1, done:1, error:1, idle:1 }[j.state]) {
+                    clearInterval(pollTimer); pollTimer = null;
+                    if (j.state === 'done')  toastr.success(j.message, 'Firmware written');
+                    if (j.state === 'error') toastr.error(j.message, 'Failed');
+                }
+            }).catch(function(){});
+        }, 1500);
+    }
+
+    function choose(f) {
+        if (!f) return;
+        chosen = f;
+        document.getElementById('fname').textContent = f.name + '  (' + mib(f.size) + ')';
+        document.getElementById('upload-btn').disabled = !st || !st.supported || !!st.busy;
+        if (!/\.tar$/i.test(f.name)) toastr.warning('That does not look like a .tar file.', 'Check the file');
+    }
+
+    function doUpload() {
+        if (!chosen || uploading) return;
+        uploading = true; render();
+        var xhr = new XMLHttpRequest();
+        var wrap = document.getElementById('prog-wrap'), bar = document.getElementById('prog'), txt = document.getElementById('prog-txt');
+        wrap.style.display = ''; bar.style.width = '0%'; txt.textContent = 'Uploading…';
+        xhr.upload.onprogress = function(e) {
+            if (!e.lengthComputable) return;
+            var p = Math.round(e.loaded * 100 / e.total);
+            bar.style.width = p + '%'; txt.textContent = 'Uploading… ' + p + '% (' + mib(e.loaded) + ' of ' + mib(e.total) + ')';
+            if (e.loaded >= e.total) txt.textContent = 'Upload complete — verifying checksums (this can take a few seconds)…';
+        };
+        xhr.onerror = function() { uploading = false; txt.textContent = 'Upload failed.'; toastr.error('The connection dropped during the upload.', 'Upload failed'); refresh(); };
+        xhr.onload = function() {
+            uploading = false;
+            if (xhr.status === 401) { location.href = '/login.html'; return; }
+            var j = null; try { j = JSON.parse(xhr.responseText); } catch (e) {}
+            if (!j || !j.ok) { txt.textContent = ''; toastr.error((j && j.error) || 'Upload failed', 'Rejected'); }
+            else { txt.textContent = 'Verified.'; toastr.success('Firmware verified: ' + j.version, 'Ready to flash'); }
+            refresh();
+        };
+        xhr.open('POST', CGI + '?action=upload');
+        xhr.setRequestHeader('Content-Type', 'application/octet-stream');
+        xhr.send(chosen);
+    }
+
+    function doFlash() {
+        var slot = document.getElementById('flash-slot').value;
+        if (!confirm('Overwrite slot ' + slot + ' with this firmware? Its current contents will be erased. ' +
+                     'The slot you are running and the default slot are not touched.')) return;
+        post('action=flash&slot=' + slot).then(function(j) {
+            if (!j.ok) { toastr.error(j.error, 'Error'); return; }
+            refresh().then(poll);
+        });
+    }
+    function doDiscard() {
+        post('action=discard').then(function(j) {
+            if (j.ok) { chosen = null; document.getElementById('fname').textContent = ''; document.getElementById('prog-wrap').style.display = 'none'; document.getElementById('prog-txt').textContent = ''; }
+            else toastr.error(j.error, 'Error');
+            refresh();
+        });
+    }
+
+    var drop = document.getElementById('drop');
+    ['dragenter','dragover'].forEach(function(n){ drop.addEventListener(n, function(e){ e.preventDefault(); drop.classList.add('over'); }); });
+    ['dragleave','drop'].forEach(function(n){ drop.addEventListener(n, function(e){ e.preventDefault(); drop.classList.remove('over'); }); });
+    drop.addEventListener('drop', function(e){ choose(e.dataTransfer.files[0]); });
+    document.getElementById('file').addEventListener('change', function(e){ choose(e.target.files[0]); });
+
+    refresh().then(function(j){ if (j.busy) poll(); }).catch(function(){ toastr.error('Could not reach the device.', 'Error'); });
+    </script>
+</body>
+</html>
