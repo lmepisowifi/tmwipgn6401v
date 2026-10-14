@@ -282,16 +282,13 @@
                 🔗 Merged &mdash; the SSID &amp; security you save here also apply to the paired interface on the other band.
             </div>
             <div style="display:flex; gap:8px;" class="mt-3">
-                <button type="button" class="btn btn-primary" style="flex:1;" id="save-ap-btn" onclick="saveAp()">
-                    Save
-                </button>
-                <button type="button" class="btn btn-outline-primary" style="flex:1;" id="save-ap-live-btn" onclick="saveAp(true)"
+                <button type="button" class="btn btn-primary" style="flex:1;" id="save-ap-btn" onclick="saveAp(true)"
                         title="Apply without restarting the WLAN">
-                    Apply live
+                    Apply
                 </button>
             </div>
             <div style="font-size:11px; color:#888; margin-top:6px;">
-                <b>Apply live</b> pushes SSID, 802.11 mode, channel and width straight into the radio with
+                <b>Apply</b> pushes SSID, 802.11 mode, channel and width straight into the radio with
                 <code>iwpriv</code> &mdash; no restart (a channel or width change briefly re-opens this radio).
                 Anything else (radio on/off, TX power, Auto width) restarts only this radio, not both.
             </div>
@@ -696,13 +693,11 @@ function buildIfaceCards(ifaces) {
                 </div>
                 <div style="display:flex; gap:8px;" class="mt-3">
                     <button type="button" class="btn btn-primary" style="flex:1;"
-                            id="save-${id}-btn" onclick="saveIface(${iface.idx})">Save</button>
-                    <button type="button" class="btn btn-outline-primary" style="flex:1;"
-                            id="save-${id}-live-btn" onclick="saveIface(${iface.idx}, true)"
-                            title="Apply without restarting the WLAN">Apply live</button>
+                            id="save-${id}-btn" onclick="saveIface(${iface.idx}, true)"
+                            title="Apply without restarting the WLAN">Apply</button>
                 </div>
                 <div style="font-size:11px; color:#888; margin-top:6px;">
-                    <b>Apply live</b> renames an enabled SSID with no restart; turning an SSID on/off
+                    <b>Apply</b> renames an enabled SSID with no restart; turning an SSID on/off
                     restarts only this SSID.
                 </div>
                 ${isVxd ? `
@@ -923,7 +918,7 @@ function loadStatus() {
 // re-opened) is expected, so keep polling until the router answers again.
 function sendLive(url, body) {
     let aborted = false;
-    showOverlay('Applying live…');
+    showOverlay('Applying…');
     fetch(url, {
         method: 'POST',
         headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
