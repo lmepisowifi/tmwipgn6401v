@@ -215,6 +215,46 @@
             </div>
         </div>
 
+        <!-- Regulatory Domain (global — HW_WLAN0/1_REG_DOMAIN, written together for both radios) -->
+        <div class="card mb-3" id="card-regdomain">
+            <div class="card-header d-flex align-items-center gap-2" style="flex-wrap:wrap; row-gap:4px;">
+                <span style="font-size:12px; white-space:nowrap;">Regulatory Domain</span>
+                <span class="mode-badge ap">both radios</span>
+            </div>
+            <div class="card-body pb-2">
+                <div class="setting-row" style="align-items:flex-start;">
+                    <div style="flex:1; margin-right:8px;">
+                        <div class="setting-label">Domain</div>
+                        <div class="setting-desc">Sets the allowed channels and TX power limits for 2.4 GHz and 5 GHz together. Pick the domain that matches where this router is used. Applying restarts WiFi on both radios.</div>
+                    </div>
+                    <select id="regdomain-sel" class="form-select form-select-sm" style="max-width:190px;">
+                        <option value="" disabled hidden>Unknown</option>
+                        <option value="1">FCC (1)</option>
+                        <option value="2">IC (2)</option>
+                        <option value="3">ETSI (3)</option>
+                        <option value="4">SPAIN (4)</option>
+                        <option value="5">FRANCE (5)</option>
+                        <option value="6">MKK (6)</option>
+                        <option value="7">ISRAEL (7)</option>
+                        <option value="8">MKK1 (8)</option>
+                        <option value="9">MKK2 (9)</option>
+                        <option value="10">MKK3 (10)</option>
+                        <option value="11">NCC (11)</option>
+                        <option value="12">RUSSIAN (12)</option>
+                        <option value="13">CN (13)</option>
+                        <option value="14">GLOBAL (14)</option>
+                        <option value="15">WORLD-WIDE (15)</option>
+                    </select>
+                </div>
+                <!-- Shown only when the two radios are currently on different domains -->
+                <div class="field-note" id="regdomain-mismatch-note" style="display:none;"></div>
+                <div class="mt-3">
+                    <button type="button" class="btn btn-primary w-100" id="regdomain-save-btn"
+                            onclick="saveRegDomain()">Apply</button>
+                </div>
+            </div>
+        </div>
+
         <!-- Iface cards injected here (Main AP, VAPs, VXD) -->
         <div id="ifaces-container"></div>
 
@@ -344,7 +384,8 @@
             if (bandSel) bandSel.disabled = !enabled;
             document.querySelectorAll(
                 '#ifaces-container input, #ifaces-container select, #ifaces-container button, ' +
-                '#card-bandsteer select, #card-bandsteer button'
+                '#card-bandsteer select, #card-bandsteer button, ' +
+                '#card-regdomain select, #card-regdomain button'
             ).forEach(el => { el.disabled = !enabled; });
             document.querySelectorAll('#ifaces-container .wlan-toggle')
                 .forEach(el => el.classList.toggle('disabled-ui', !enabled));
@@ -644,6 +685,32 @@
             if (bsSel && currentStatus) {
                 bsSel.value = String(currentStatus.band_steering ?? 0);
             }
+
+            // Regulatory domain is global too (HW_WLAN0 = 5 GHz, HW_WLAN1 = 2.4 GHz).
+            const rdSel  = document.getElementById('regdomain-sel');
+            const rdNote = document.getElementById('regdomain-mismatch-note');
+            if (rdSel && currentStatus) {
+                const r5  = parseInt(currentStatus.regdomain_5, 10)  || 0;
+                const r24 = parseInt(currentStatus.regdomain_24, 10) || 0;
+                const cur = r5 || r24;
+                if (cur && !rdSel.querySelector('option[value="' + cur + '"]')) {
+                    // A value outside the vendor dropdown list (e.g. set from the CLI)
+                    const opt = document.createElement('option');
+                    opt.value = String(cur);
+                    opt.textContent = 'Current (' + cur + ')';
+                    rdSel.appendChild(opt);
+                }
+                rdSel.value = cur ? String(cur) : '';
+                if (rdNote) {
+                    if (r5 && r24 && r5 !== r24) {
+                        rdNote.textContent = '⚠️ The two radios are on different domains right now (5 GHz: ' +
+                            r5 + ', 2.4 GHz: ' + r24 + '). Apply sets both to the selected domain.';
+                        rdNote.style.display = 'block';
+                    } else {
+                        rdNote.style.display = 'none';
+                    }
+                }
+            }
         }
 
         // --------------------------------------------------------
@@ -837,6 +904,50 @@
                 body: body
             }).catch(() => {});
             setTimeout(() => pollUntilBack(), 4000);
+        }
+
+        // --------------------------------------------------------
+        // Save global regulatory domain (HW_WLAN0/1_REG_DOMAIN — both radios)
+        // --------------------------------------------------------
+        function saveRegDomain() {
+            const sel = document.getElementById('regdomain-sel');
+            const val = sel.value;
+            if (!val) {
+                toastr["warning"]('Choose a regulatory domain first.', "Regulatory Domain");
+                return;
+            }
+            const label = sel.options[sel.selectedIndex].textContent;
+            if (!confirm('Set the regulatory domain to ' + label + '?\n\n' +
+                         'WiFi restarts on both radios, and the allowed channels and TX power ' +
+                         'follow the new domain. Use the domain that matches where this router operates.')) {
+                return;
+            }
+            const body    = 'regdomain=' + encodeURIComponent(val);
+            const postUrl = CGI + '?band=' + currentBand + '&action=save_regdomain';
+
+            setFormEnabled(false);
+            // Applying restarts WiFi on both radios: same countdown + poll-until-back
+            // flow as band steering. A fast 4xx (invalid value) returns before any
+            // restart, so surface it and skip the poll.
+            let aborted = false;
+            startCountdown();
+            fetch(postUrl, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                body: body
+            })
+            .then(r => {
+                if (r && !r.ok) { aborted = true; return r.text().then(t => { throw new Error(t || ('HTTP ' + r.status)); }); }
+            })
+            .catch(err => {
+                if (aborted) {
+                    hideOverlay();
+                    setFormEnabled(true);
+                    toastr["warning"](err.message || 'Apply failed', "Error");
+                }
+                // else: expected connection drop during restart — ignore
+            });
+            setTimeout(() => { if (!aborted) pollUntilBack(); }, 4000);
         }
 
         // --------------------------------------------------------

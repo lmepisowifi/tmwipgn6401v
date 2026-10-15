@@ -245,6 +245,12 @@ if [ "$REQUEST_METHOD" = "GET" ]; then
         # card shows the same value regardless of which band is selected.
         BSTEER=$(mib_get "WIFI_STA_CONTROL"); case "$BSTEER" in 0|1|3) ;; *) BSTEER=0 ;; esac
 
+        # Wireless regulatory domain: vendor HW settings, GLOBAL like band
+        # steering. HW_WLAN0_* belongs to wlan0 (5GHz) and HW_WLAN1_* to wlan1
+        # (2.4GHz) - see band_keys(). 0 means the entry could not be read.
+        REG5=$(mib_get "HW_WLAN0_REG_DOMAIN");  case "$REG5"  in ''|*[!0-9]*) REG5=0  ;; esac
+        REG24=$(mib_get "HW_WLAN1_REG_DOMAIN"); case "$REG24" in ''|*[!0-9]*) REG24=0 ;; esac
+
         # Whether Unified SSID is enabled — the page uses this to allow/lock the
         # band-steering control (steering is only offered when it's on).
         UNIFIED=$(unified_enabled)
@@ -291,8 +297,8 @@ if [ "$REQUEST_METHOD" = "GET" ]; then
 
         printf "Status: 200 OK\r\n"
         printf "Content-Type: application/json\r\n\r\n"
-        printf '{"band":"%s","wlan_if":"%s","shortgi":%s,"band_steering":%s,"unified_ssid":%s,"ifaces":%s,"pending":%s,"remaining":%d}' \
-            "$BAND" "$WLAN_IF" "$SGI" "$BSTEER" "$UNIFIED" "$IFACES_J" "$PENDING" "$REMAINING"
+        printf '{"band":"%s","wlan_if":"%s","shortgi":%s,"band_steering":%s,"regdomain_5":%s,"regdomain_24":%s,"unified_ssid":%s,"ifaces":%s,"pending":%s,"remaining":%d}' \
+            "$BAND" "$WLAN_IF" "$SGI" "$BSTEER" "$REG5" "$REG24" "$UNIFIED" "$IFACES_J" "$PENDING" "$REMAINING"
         exit 0
     fi
 
@@ -312,6 +318,42 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
         | busybox tr -d '\r\n')
     case "$BAND" in 5) ;; *) BAND=24 ;; esac
     band_keys "$BAND"
+
+    # --- action=save_regdomain: global wireless regulatory domain ------------
+    # Vendor HW settings HW_WLAN0_REG_DOMAIN (5GHz, wlan0) and
+    # HW_WLAN1_REG_DOMAIN (2.4GHz, wlan1). The vendor config_WLAN() passes the
+    # value to the driver as `iwpriv <if> set_mib regdomain=N` every time WLAN
+    # (re)starts, so this does what the vendor web UI does (mib set + commit
+    # into the hardware-settings area) and then restarts both radios. Both
+    # entries are written together so the radios can never end up on different
+    # domains - this build does not remap the HW entry per radio. The accepted
+    # range (1-15) mirrors the vendor dropdown. A valid value cannot lock the
+    # admin out, so no per-interface revert timer is needed.
+    if echo "$QUERY_STRING" | busybox grep -q "action=save_regdomain"; then
+        __CL="${CONTENT_LENGTH:-0}"; case "$__CL" in *[!0-9]*|"") __CL=0 ;; esac
+        [ "$__CL" -gt 65536 ] && __CL=65536
+        POST_DATA=$(busybox dd bs=1 count="$__CL" 2>/dev/null)
+
+        FORM_REGDOM=$(pd_int regdomain 0)
+        if [ "$FORM_REGDOM" -lt 1 ] || [ "$FORM_REGDOM" -gt 15 ]; then
+            dbg "save_regdomain: rejected out-of-range value '$FORM_REGDOM'"
+            printf "Status: 400 Bad Request\r\n"
+            printf "Content-Type: text/plain\r\n\r\n"
+            printf "Invalid regulatory domain"
+            exit 0
+        fi
+
+        mib set "HW_WLAN0_REG_DOMAIN" "$FORM_REGDOM"
+        mib set "HW_WLAN1_REG_DOMAIN" "$FORM_REGDOM"
+        mib commit
+        dbg "save_regdomain: applied HW_WLAN0_REG_DOMAIN=HW_WLAN1_REG_DOMAIN=$FORM_REGDOM"
+        wlan_apply restart
+
+        printf "Status: 200 OK\r\n"
+        printf "Content-Type: text/plain\r\n\r\n"
+        printf "OK"
+        exit 0
+    fi
 
     # --- action=save_bandsteer: global band steering (WIFI_STA_CONTROL) -------
     # This is a single radio-wide key (no band / no idx). Applying it restarts
