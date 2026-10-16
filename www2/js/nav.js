@@ -54,6 +54,7 @@ setInterval(function () {
         { label: 'WLAN',  children: [
             { label: 'WiFi Basic',    href: '/wlanbasic.html'     },
             { label: 'Security',      href: '/wlansecurity.html'  },
+            { label: 'WPS',           href: '/wlanwps.html'       },
             { label: 'Advanced',      href: '/wlanadvanced.html'  },
             { label: 'Site Survey',   href: '/sitesurvey.html'    },
             { label: 'MAC Filter',    href: '/wlanmac.html'       },
