@@ -9,6 +9,9 @@
   obligations: keep this notice, mark your changes, and offer Corresponding
   Source to network users (AGPLv3 §5, §13). See PROVENANCE.md before
   presenting this as your own original work.
+
+  Changes: simplified layout (band dropdown + one Start WPS button, PIN
+  methods collapsed) and switched to the shared .wlan-toggle switch.
 -->
 <html lang="en" data-bs-theme="dark">
 <head>
@@ -17,56 +20,78 @@
     <link href="/css/bootstrap.min.css?v=1.0.0" rel="stylesheet">
     <link href="/css/style.css?v=1.0.0" rel="stylesheet">
     <style>
-        .controls-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
-        .status-txt   { font-size: 12px; color: var(--text-secondary); margin-left: auto; }
-        .sub          { font-size: 12px; color: var(--text-secondary); }
-        .empty-state  { padding: 28px; text-align: center; color: var(--text-secondary); font-size: 13px; }
-
-        /* ── Tags / badges (same palette as wlansta.html) ── */
-        .tag {
-            display: inline-block; padding: 1px 7px; border-radius: 3px;
-            font-size: 11px; background: rgba(255,255,255,.07); color: var(--text-secondary);
+        /* ── Toggle switch (same as the other WLAN pages) ── */
+        .wlan-toggle {
+            width: 50px; height: 28px;
+            border-radius: 14px;
+            background: #555;
+            position: relative; cursor: pointer;
+            transition: background 0.25s; flex-shrink: 0;
+            user-select: none;
         }
-        .tag-band24 { background: rgba(255,193,7,.16);  color: #ffd54f; }
-        .tag-band5  { background: rgba(13,110,253,.18); color: #6ea8fe; }
-        .tag-on     { background: rgba(76,175,80,.18);  color: #81c784; }
-        .tag-off    { background: rgba(255,255,255,.06); color: var(--text-secondary); }
-        .tag-warn   { background: rgba(255,193,7,.16);  color: #ffd54f; }
-        .tag-bad    { background: rgba(255,87,34,.18);  color: #ff8a65; }
+        .wlan-toggle.on { background: #ffffff; }
+        .wlan-toggle.disabled-ui { opacity: 0.35; pointer-events: none; }
+        .wlan-toggle-knob {
+            position: absolute; width: 20px; height: 20px;
+            border-radius: 50%; background: #fff;
+            top: 4px; left: 4px;
+            transition: left 0.25s, background 0.25s;
+            box-shadow: 0 1px 4px rgba(0,0,0,0.5);
+        }
+        .wlan-toggle.on .wlan-toggle-knob { left: 26px; background: #555; }
 
-        .band-head  { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
-        .band-title { display: flex; align-items: center; gap: 8px; min-width: 0; }
-        .band-ssid  { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-        .badges     { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px; }
+        /* ── Band selector ── */
+        #band-bar { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; }
+        #band-bar label {
+            font-size: 11px; color: var(--text-secondary);
+            text-transform: uppercase; letter-spacing: 0.08em; white-space: nowrap;
+        }
+        #band-select { width: 140px; }
+
+        /* ── Collapsible card ── */
+        .card-header.collapsible { cursor: pointer; }
+        .card-chevron {
+            width: 8px; height: 8px;
+            border-right: 2px solid var(--text-secondary);
+            border-bottom: 2px solid var(--text-secondary);
+            transform: rotate(45deg);
+            transition: transform 0.2s; flex-shrink: 0;
+        }
+        .card.collapsed .card-chevron { transform: rotate(-45deg); }
+        .card .card-body {
+            overflow: hidden; max-height: 1500px;
+            transition: max-height 0.3s ease, opacity 0.25s ease,
+                        padding-top 0.3s ease, padding-bottom 0.3s ease;
+        }
+        .card.collapsed .card-body {
+            max-height: 0; opacity: 0;
+            padding-top: 0 !important; padding-bottom: 0 !important;
+        }
+
+        /* ── Text / messages ── */
+        .sub { font-size: 12px; color: var(--text-secondary); }
+        .section-label {
+            font-size: 11px; text-transform: uppercase;
+            letter-spacing: 0.08em; color: var(--text-secondary);
+            margin-bottom: 8px; margin-top: 4px;
+        }
+        .row-inline { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+        .pin-input  { width: 170px; }
 
         .msg-box {
             font-size: 12px; line-height: 1.45; border-radius: 4px;
-            padding: 8px 10px; margin-bottom: 10px;
+            padding: 8px 10px; margin-bottom: 12px;
         }
         .msg-box ul { margin: 0; padding-left: 16px; }
         .msg-bad  { background: rgba(255,87,34,.12);  border: 1px solid rgba(255,87,34,.35);  color: #ffab91; }
         .msg-warn { background: rgba(255,193,7,.10);  border: 1px solid rgba(255,193,7,.30);  color: #ffe082; }
 
-        .sect { border-top: 1px solid rgba(255,255,255,.08); padding-top: 12px; margin-top: 12px; }
-        .sect-title { font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .4px;
-                      color: var(--text-secondary); margin-bottom: 8px; }
-        .row-inline { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-        .pin-input  { width: 150px; font-family: monospace; letter-spacing: 1px; }
-
-        .win-box { font-size: 13px; border-radius: 4px; padding: 8px 10px; margin-top: 10px;
+        .win-box { font-size: 13px; border-radius: 4px; padding: 8px 10px; margin-top: 12px;
                    background: rgba(13,110,253,.12); border: 1px solid rgba(13,110,253,.35); color: #9ec5fe; }
         .win-bar { height: 4px; border-radius: 2px; background: rgba(255,255,255,.1); margin-top: 6px; overflow: hidden; }
         .win-bar > div { height: 100%; background: #6ea8fe; transition: width 1s linear; }
 
-        .router-pin { font-family: monospace; font-size: 22px; letter-spacing: 3px; }
-
-        .btn-spinner {
-            display: inline-block; width: 13px; height: 13px;
-            border: 2px solid rgba(255,255,255,.4); border-top-color: #fff;
-            border-radius: 50%; animation: spin .7s linear infinite;
-            margin-right: 7px; vertical-align: -2px;
-        }
-        @keyframes spin { to { transform: rotate(360deg); } }
+        .pin-divider { border-top: 1px solid rgba(255,255,255,.08); margin: 14px 0; }
     </style>
     <link href="/css/toastr.min.css?v=1.0.0" rel="stylesheet">
 </head>
@@ -83,62 +108,97 @@
         </div>
     </div>
 
-    <div class="container mt-4">
+    <div class="container mt-4" style="max-width:780px;">
 
-        <!-- ── Controls ── -->
-        <div class="card mb-3">
-            <div class="card-body" style="padding: 12px 16px !important;">
-                <div class="controls-row">
-                    <button id="refresh-btn" class="btn btn-primary" onclick="manualRefresh()">Refresh</button>
-                    <span class="status-txt" id="status-txt">Loading…</span>
-                </div>
-            </div>
-        </div>
-
-        <!-- ── Not-supported banner ── -->
         <div id="unsupported" class="msg-box msg-warn" style="display:none;"></div>
 
-        <!-- ── Per-band cards ── -->
-        <div class="row g-3" id="bands">
-            <div class="col-12"><div class="card"><div class="empty-state">Loading…</div></div></div>
+        <!-- Band selector -->
+        <div id="band-bar">
+            <label for="band-select">Band</label>
+            <select class="form-select" id="band-select" onchange="switchBand(this.value)">
+                <option value="24">2.4 GHz</option>
+                <option value="5">5 GHz</option>
+            </select>
         </div>
 
-        <!-- ── Router PIN ── -->
-        <div class="card mt-3" id="pin-card" style="display:none;">
-            <div class="card-header">Router PIN</div>
-            <div class="card-body">
-                <div class="sub mb-2">
-                    The PIN a client types in to join with <em>its</em> “WPS PIN” option
-                    (start a router-PIN window on a band above first).
+        <!-- Main card: switch + push button -->
+        <div class="card mb-3" id="wps-card" style="display:none;">
+            <div class="card-header d-flex align-items-center justify-content-between gap-2">
+                <div style="min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;">
+                    <span>WPS</span>
+                    <span class="sub" id="ssid" style="margin-left:6px;"></span>
                 </div>
+                <div class="wlan-toggle" id="toggle-wps" onclick="toggleWps()"
+                     role="switch" aria-checked="false" title="Turn WPS on / off for this band">
+                    <div class="wlan-toggle-knob"></div>
+                </div>
+            </div>
+            <div class="card-body">
+                <div id="msgs"></div>
                 <div class="row-inline">
-                    <input id="router-pin" class="form-control pin-input router-pin" maxlength="8"
-                           inputmode="numeric" autocomplete="off" spellcheck="false"
-                           style="width:200px;" oninput="pinHint()">
+                    <button class="btn btn-primary" id="btn-pbc" onclick="startPbc()" disabled>Start PBC</button>
+                    <span class="sub" id="pbc-hint"></span>
+                </div>
+                <div id="win"></div>
+            </div>
+        </div>
+
+        <!-- PIN methods (collapsed) -->
+        <div class="card mb-3 collapsed" id="pin-card" style="display:none;">
+            <div class="card-header collapsible d-flex align-items-center gap-2" onclick="toggleCard(this)">
+                <span class="card-chevron"></span>
+                <span style="white-space:nowrap;">Connect with a PIN <span class="sub" id="pin-band"></span></span>
+            </div>
+            <div class="card-body">
+                <div class="section-label">Device PIN</div>
+                <div class="row-inline">
+                    <input id="cpin" class="form-control pin-input" inputmode="numeric" oninput="onDevPinInput()"
+                           autocomplete="off" spellcheck="false" placeholder="Device PIN" disabled>
+                    <button class="btn btn-outline-primary" id="btn-cpin" onclick="startClientPin()" disabled>Connect</button>
+                </div>
+                <div class="sub mt-1">Type the PIN shown on the device you want to connect.</div>
+
+                <div class="pin-divider"></div>
+
+                <div class="section-label">AP Pin</div>
+                <div class="row-inline">
+                    <input id="router-pin" class="form-control pin-input" inputmode="numeric"
+                           autocomplete="off" spellcheck="false" oninput="onPinInput()">
                     <button class="btn btn-outline-secondary" onclick="genPin()">Generate</button>
-                    <button class="btn btn-primary" id="pin-save" onclick="savePin()">Save PIN</button>
+                    <button class="btn btn-primary" id="btn-savepin" onclick="savePin()">Save</button>
                     <span class="sub" id="pin-hint"></span>
                 </div>
-                <div class="sub mt-2">
-                    A PIN is 4 digits, or 8 digits whose last digit is a checksum (Generate makes a valid one).
-                    Saving restarts the radios that have WPS on, so connected clients drop for a few seconds.
+                <div class="sub mt-1">
+                    4 digits, or 8 digits ending in a checksum (Generate makes a valid one).
+                    Saving restarts the radios that have WPS on.
+                </div>
+                <div class="row-inline mt-2">
+                    <button class="btn btn-outline-secondary" id="btn-rpin" onclick="startRouterPin()" disabled>Open PIN window</button>
+                    <span class="sub">(Opens WPS Window), after clicking it, enter the AP Pin on the device.</span>
+                </div>
+
+                <div class="pin-divider"></div>
+
+                <div class="row-inline">
+                    <button class="btn btn-outline-secondary btn-sm" id="btn-unlock" onclick="unlockWps()" disabled>Reset lockdown</button>
+                    <span class="sub">Clears the lock WPS applies after too many wrong PINs.</span>
                 </div>
             </div>
         </div>
 
-        <div class="sub mt-3 mb-4">
-            Push-button is the safer method: it only lets a device join during a short window you open here.
-            PIN methods can be brute-forced, so turn WPS off on a band you don't use it on.
-            Turning WPS on or off restarts <em>only that band's</em> radio.
+        <div class="sub mb-4">
+            Push button is the safest method. PIN methods can be guessed, so leave WPS off on a band you don't use it on.
         </div>
     </div>
 
     <script src="/js/jquery-3.7.1.min.js?v=1.0.0"></script>
     <script src="/js/toastr.min.js?v=1.0.0"></script>
     <script>
-    // ── Overlay helpers ──
-    var overlayEl  = document.getElementById('overlay');
-    var overlayTxt = document.getElementById('overlay-text');
+    // ── Helpers ──
+    function $(id) { return document.getElementById(id); }
+
+    var overlayEl  = $('overlay');
+    var overlayTxt = $('overlay-text');
     function showOverlay(msg) { overlayTxt.textContent = msg || ''; overlayEl.classList.add('visible'); }
     function hideOverlay()    { overlayEl.classList.remove('visible'); }
 
@@ -155,20 +215,27 @@
             .replace(/>/g,'&gt;').replace(/"/g,'&quot;');
     }
 
+    function toggleCard(headerEl) {
+        var card = headerEl.closest('.card');
+        if (card) card.classList.toggle('collapsed');
+    }
+
     // ── State ──
     var ST        = null;     // last /wlanwps.cgi?action=status
+    var cur       = '24';     // band shown on the page
+    var inited    = false;
     var deadline  = {};       // band -> epoch ms when its PBC/PIN window closes
     var kinds     = {};       // band -> 'pbc' | 'pin' | 'cpin'
     var tickTimer = null;
     var liveTimer = null;
     var busy      = false;
-    var typed     = {};       // band -> client-PIN text, survives re-renders
+    var pinDirty  = false;    // router-PIN box edited but not saved
 
-    var CGI = '/cgi-bin/wlanwps.cgi';
+    var DEFAULT_PIN = '12345670';
+    var CGI   = '/cgi-bin/wlanwps.cgi';
     var BANDS = ['24', '5'];
-    function bandName(b)  { return b === '5' ? '5 GHz' : '2.4 GHz'; }
-    function bandClass(b) { return b === '5' ? 'tag-band5' : 'tag-band24'; }
-    function findBand(b)  {
+    function bandName(b) { return b === '5' ? '5 GHz' : '2.4 GHz'; }
+    function findBand(b) {
         if (!ST) return null;
         for (var i = 0; i < ST.bands.length; i++) if (ST.bands[i].band === b) return ST.bands[i];
         return null;
@@ -217,183 +284,180 @@
     }
 
     // ── Loading ──
-    function setStatus(t) { document.getElementById('status-txt').textContent = t; }
+    function syncWindows() {
+        BANDS.forEach(function (b) {
+            var x = findBand(b);
+            if (x && x.left > 0) { deadline[b] = Date.now() + x.left * 1000; kinds[b] = x.kind; }
+            else { delete deadline[b]; delete kinds[b]; }
+        });
+    }
 
     function load(quiet) {
-        if (!quiet) setStatus('Loading…');
         return getJSON('action=status').then(function (d) {
             ST = d;
-            BANDS.forEach(function (b) {
-                var x = findBand(b);
-                if (x && x.left > 0) { deadline[b] = Date.now() + x.left * 1000; kinds[b] = x.kind; }
-                else { delete deadline[b]; delete kinds[b]; }
-            });
+            if (!inited) {
+                inited = true;
+                var a = findBand('24'), c = findBand('5');
+                if (!(a && a.present) && c && c.present) cur = '5';
+                $('band-select').value = cur;
+            }
+            syncWindows();
             render();
-            setStatus('Updated ' + new Date().toLocaleTimeString());
             scheduleLive();
         }).catch(function (e) {
             if (e && e.message === 'session') return;
-            setStatus('Could not load WPS status');
+            if (!ST) {
+                var un = $('unsupported');
+                un.style.display = '';
+                un.textContent = 'Could not load WPS status. Reload the page to try again.';
+            }
             if (!quiet) notify('error', 'Could not load WPS status');
         });
     }
-    function manualRefresh() { load(false); }
+
+    function switchBand(b) { cur = b; render(); }
 
     // ── Rendering ──
-    function badge(cls, txt) { return '<span class="tag ' + cls + '">' + esc(txt) + '</span>'; }
-
-    function bandCard(b) {
-        var x = findBand(b);
-        if (!x || !x.present) {
-            return '<div class="col-lg-6"><div class="card"><div class="card-header">' +
-                badge(bandClass(b), bandName(b)) + '</div><div class="card-body"><div class="sub">' +
-                'This firmware does not expose WPS settings for the ' + bandName(b) + ' radio.' +
-                '</div></div></div></div>';
-        }
-
-        var blocked   = x.blockers && x.blockers.length > 0;
-        var canUse    = ST.wscdBin && x.enabled && !blocked && x.radioOn;
-        var ready     = canUse && x.running;
-        var windowOn  = deadline[b] && deadline[b] > Date.now();
-        var why = !ST.wscdBin ? 'No WPS daemon on this firmware'
-                : !x.enabled  ? 'Turn WPS on for this band first'
-                : blocked     ? x.blockers[0]
-                : !x.radioOn  ? 'The radio is turned off'
-                : !x.running  ? 'The WPS daemon is not running yet'
-                : '';
-        var dis = ready ? '' : ' disabled title="' + esc(why) + '"';
-
-        var h = '<div class="col-lg-6"><div class="card h-100">';
-        h += '<div class="card-header"><div class="band-head">' +
-             '<div class="band-title">' + badge(bandClass(b), bandName(b)) +
-             '<span class="band-ssid">' + esc(x.ssid || '—') + '</span></div>' +
-             '<div class="form-check form-switch m-0">' +
-             '<input class="form-check-input" type="checkbox" role="switch" id="sw-' + b + '"' +
-             (x.enabled ? ' checked' : '') + ' onchange="toggleWps(\'' + b + '\', this)">' +
-             '<label class="form-check-label" for="sw-' + b + '" style="font-size:12px;">WPS</label>' +
-             '</div></div></div>';
-        h += '<div class="card-body">';
-
-        h += '<div class="badges">' +
-             badge(x.enabled ? 'tag-on' : 'tag-off', x.enabled ? 'WPS on' : 'WPS off') +
-             badge(x.configured ? 'tag-on' : 'tag-off', x.configured ? 'Configured' : 'Unconfigured') +
-             (x.enabled ? badge(x.running ? 'tag-on' : (blocked || !x.radioOn ? 'tag-off' : 'tag-warn'),
-                                x.running ? 'Daemon running' : 'Daemon not running') : '') +
-             '</div>';
-
-        if (blocked) {
-            h += '<div class="msg-box msg-bad"><strong>WPS can\'t run on this band:</strong><ul>';
-            x.blockers.forEach(function (m) { h += '<li>' + esc(m) + '</li>'; });
-            h += '</ul><div style="margin-top:6px;">Fix it under WLAN → Security / Basic, then refresh.</div></div>';
-        }
-        if (x.warnings && x.warnings.length) {
-            h += '<div class="msg-box msg-warn"><ul>';
-            x.warnings.forEach(function (m) { h += '<li>' + esc(m) + '</li>'; });
-            h += '</ul></div>';
-        }
-        if (x.enabled && !blocked && x.radioOn && !x.running) {
-            h += '<div class="msg-box msg-warn">The WPS daemon isn\'t up for this band. It starts when the radio ' +
-                 'restarts — toggle WPS off and on again, or restart WiFi from WLAN → Basic.</div>';
-        }
-
-        // push button
-        h += '<div class="sect"><div class="sect-title">Push button (PBC)</div>' +
-             '<div class="row-inline"><button class="btn btn-primary" id="pbc-' + b + '"' + dis +
-             ' onclick="startPbc(\'' + b + '\')">Start WPS</button>' +
-             '<span class="sub">Then press WPS on the device within 2 minutes.</span></div></div>';
-
-        // client PIN
-        h += '<div class="sect"><div class="sect-title">Add a device by its PIN</div>' +
-             '<div class="row-inline"><input id="cpin-' + b + '" class="form-control pin-input" maxlength="9" ' +
-             'inputmode="numeric" autocomplete="off" spellcheck="false" placeholder="Device PIN"' +
-             (ready ? '' : ' disabled') + ' value="' + esc(typed[b] || '') + '" ' +
-             'oninput="typed[\'' + b + '\']=this.value">' +
-             '<button class="btn btn-outline-primary" id="cpinbtn-' + b + '"' + dis +
-             ' onclick="startClientPin(\'' + b + '\')">Connect</button></div>' +
-             '<div class="sub" style="margin-top:6px;">Enter the PIN printed on / shown by the device.</div></div>';
-
-        // router PIN session + lockdown
-        h += '<div class="sect"><div class="sect-title">Use this router\'s PIN</div>' +
-             '<div class="row-inline"><button class="btn btn-outline-secondary" id="rpin-' + b + '"' + dis +
-             ' onclick="startRouterPin(\'' + b + '\')">Open PIN window</button>' +
-             '<button class="btn btn-outline-secondary" id="unlock-' + b + '"' + dis +
-             ' onclick="unlockWps(\'' + b + '\')">Reset lockdown</button></div>' +
-             '<div class="sub" style="margin-top:6px;">Opens a 2-minute window for a device to join using ' +
-             'the router PIN below. “Reset lockdown” clears the lock WPS applies after repeated wrong PINs.</div></div>';
-
-        h += '<div id="win-' + b + '"></div>';
-        h += '</div></div></div>';
-        return h;
-    }
-
     function render() {
-        var un = document.getElementById('unsupported');
-        var supported = ST && ST.wscdBin && ST.bands.some(function (x) { return x.present; });
+        var un = $('unsupported');
+        var anyBand = ST && ST.bands.some(function (y) { return y.present; });
+        var supported = !!(ST && ST.wscdBin && anyBand);
+
         if (!supported) {
             un.style.display = '';
             un.innerHTML = '<strong>WPS isn\'t available on this firmware build.</strong> ' +
                 (ST && !ST.wscdBin ? 'The WPS daemon (<code>wscd</code>) is not installed. ' : '') +
-                (ST && !ST.bands.some(function (x) { return x.present; })
-                    ? 'The router does not expose WPS settings (<code>wsc_disabled</code>). ' : '') +
-                'Nothing on this page will work until that is present.';
+                (ST && !anyBand ? 'The router does not expose WPS settings (<code>wsc_disabled</code>). ' : '');
         } else {
             un.style.display = 'none';
         }
+        $('wps-card').style.display = supported ? '' : 'none';
+        $('pin-card').style.display = supported ? '' : 'none';
+        $('band-bar').style.display = supported ? '' : 'none';
+        if (!supported) { tick(); return; }
 
-        // keep what the user is typing across a re-render
-        BANDS.forEach(function (b) {
-            var el = document.getElementById('cpin-' + b);
-            if (el) typed[b] = el.value;
-        });
-        var rp = document.getElementById('router-pin');
-        var keepRp = rp && document.activeElement === rp ? rp.value : null;
+        // band dropdown: grey out a radio this firmware doesn't expose
+        var sel = $('band-select');
+        for (var i = 0; i < sel.options.length; i++) {
+            var bx = findBand(sel.options[i].value);
+            sel.options[i].disabled = !(bx && bx.present);
+        }
+        sel.value = cur;
 
-        document.getElementById('bands').innerHTML = BANDS.map(bandCard).join('');
+        var x       = findBand(cur);
+        var present = !!(x && x.present);
+        var blocked = present && x.blockers && x.blockers.length > 0;
+        var ready   = present && x.enabled && !blocked && x.radioOn && x.running;
 
-        var pc = document.getElementById('pin-card');
-        pc.style.display = (ST && ST.wscdBin) ? '' : 'none';
-        rp = document.getElementById('router-pin');
-        if (rp && keepRp === null) rp.value = ST ? ST.pin : '';
-        else if (rp) rp.value = keepRp;
+        $('ssid').textContent = present && x.ssid ? x.ssid : '';
+        $('pin-band').textContent = '· ' + bandName(cur);
+
+        // switch
+        var tg = $('toggle-wps');
+        tg.classList.toggle('on', present && !!x.enabled);
+        tg.classList.toggle('disabled-ui', !present);
+        tg.setAttribute('aria-checked', (present && x.enabled) ? 'true' : 'false');
+
+        // messages
+        var m = '';
+        if (!present) {
+            m += '<div class="msg-box msg-warn">This firmware has no WPS settings for the ' + bandName(cur) + ' radio.</div>';
+        } else {
+            if (blocked) {
+                m += '<div class="msg-box msg-bad"><strong>WPS can\'t run on this band:</strong><ul>';
+                x.blockers.forEach(function (t) { m += '<li>' + esc(t) + '</li>'; });
+                m += '</ul><div style="margin-top:6px;">Fix it under WLAN → Security / Basic, then reload.</div></div>';
+            }
+            // WPS on while the network is password-protected (encrypt 0 = open)
+            if (!blocked && x.enabled && typeof x.encrypt === 'number' && x.encrypt !== 0) {
+                m += '<div class="msg-box msg-bad"><strong>It is recommended to disable WPS</strong> on this band, ' +
+                     'as its PIN can be brute-forced to reveal your WiFi password even though the network is secured. ' +
+                     'Turn it on only when you need to add a device.</div>';
+            }
+            if (x.warnings && x.warnings.length) {
+                m += '<div class="msg-box msg-warn"><ul>';
+                x.warnings.forEach(function (t) { m += '<li>' + esc(t) + '</li>'; });
+                m += '</ul></div>';
+            }
+            if (x.enabled && !blocked && !x.radioOn) {
+                m += '<div class="msg-box msg-warn">The ' + bandName(cur) + ' radio is turned off.</div>';
+            } else if (x.enabled && !blocked && !x.running) {
+                m += '<div class="msg-box msg-warn">WPS is still starting. If this stays, turn WPS off and on again, ' +
+                     'or restart WiFi under WLAN → Basic.</div>';
+            }
+        }
+        // default AP Pin, only matters while WPS is on for some band
+        var anyOn = ST.bands.some(function (y) { return y.present && y.enabled; });
+        if (anyOn && ST.pin === DEFAULT_PIN) {
+            m += '<div class="msg-box msg-warn"><strong>The WPS PIN is the default one (' + DEFAULT_PIN + ').</strong> ' +
+                 'It is publicly known, so set your own. ' +
+                 '<a href="#" onclick="openPinCard(); return false;">Change it</a></div>';
+        }
+        $('msgs').innerHTML = m;
+
+        // push button + hint
+        var mins = Math.max(1, Math.round(((ST && ST.walkTime) || 120) / 60));
+        $('btn-pbc').disabled = !ready;
+        $('pbc-hint').textContent = ready
+            ? '(Push Button Connect), after clicking it, Then press the WPS button on your device within ' + mins + ' minute' + (mins > 1 ? 's' : '') + '.'
+            : (present && !x.enabled ? 'WPS is off. Turn it on with the switch.' : '');
+
+        // PIN card
+        ['cpin', 'btn-cpin', 'btn-rpin', 'btn-unlock'].forEach(function (id) { $(id).disabled = !ready; });
+        var rp = $('router-pin');
+        if (!pinDirty) rp.value = ST.pin || '';
         pinHint();
+
         tick();
     }
 
-    function pinHint() {
-        var el = document.getElementById('router-pin'), h = document.getElementById('pin-hint');
-        if (!el || !h) return;
-        var v = el.value.replace(/\D/g, '');
-        if (el.value !== v) el.value = v;
-        if (!v) { h.textContent = ''; return; }
-        h.style.color = pinValid(v) ? '#81c784' : '#ff8a65';
-        h.textContent = pinValid(v) ? 'Valid PIN' : (v.length < 4 ? '' : 'Invalid checksum / length');
+    function openPinCard() {
+        $('pin-card').classList.remove('collapsed');
+        setTimeout(function () { $('router-pin').focus(); }, 300);
     }
-    function genPin() { document.getElementById('router-pin').value = makePin(); pinHint(); }
+
+    function pinHint() {
+        var el = $('router-pin'), h = $('pin-hint');
+        var v = el.value.replace(/\D/g, '').slice(0, 8);
+        if (el.value !== v) el.value = v;
+        if (!v || v.length < 4) { h.textContent = ''; return; }
+        h.style.color = pinValid(v) ? '#81c784' : '#ff8a65';
+        h.textContent = pinValid(v) ? 'Valid PIN' : 'Invalid PIN';
+    }
+    // keep digits only (drops spaces/dashes, also from pasted "1234-5670"), max 8
+    function onDevPinInput() {
+        var el = $('cpin'), v = el.value.replace(/\D/g, '').slice(0, 8);
+        if (el.value !== v) el.value = v;
+    }
+    function onPinInput() { pinDirty = true; pinHint(); }
+    function genPin()     { $('router-pin').value = makePin(); pinDirty = true; pinHint(); }
 
     // ── PBC / PIN window countdown ──
     var KIND_TXT = {
-        pbc:  'Push-button window open — press WPS on the device now.',
-        pin:  'Router-PIN window open — on the device choose “WPS PIN” and enter the router PIN.',
-        cpin: 'Device-PIN window open — start WPS on the device now.'
+        pbc:  'Press the WPS button on your device now.',
+        pin:  'On the device, choose “WPS PIN” and enter the AP Pin.',
+        cpin: 'Start WPS on the device now.'
     };
     function tick() {
-        var any = false;
+        var now = Date.now(), any = false;
+        BANDS.forEach(function (b) { if (deadline[b] && deadline[b] > now) any = true; });
+
+        var box  = $('win');
+        var left = deadline[cur] ? Math.ceil((deadline[cur] - now) / 1000) : 0;
+        if (left > 0) {
+            var total = (ST && ST.walkTime) || 120;
+            var mm = Math.floor(left / 60), ss = left % 60;
+            box.innerHTML = '<div class="win-box">' + esc(KIND_TXT[kinds[cur]] || 'WPS window open.') +
+                ' <strong>' + mm + ':' + (ss < 10 ? '0' : '') + ss + '</strong>' +
+                '<div class="win-bar"><div style="width:' + Math.max(0, Math.min(100, left * 100 / total)) + '%"></div></div></div>';
+        } else {
+            box.innerHTML = '';
+        }
+
         BANDS.forEach(function (b) {
-            var box = document.getElementById('win-' + b);
-            if (!box) return;
-            var left = deadline[b] ? Math.ceil((deadline[b] - Date.now()) / 1000) : 0;
-            if (left > 0) {
-                any = true;
-                var total = ST ? ST.walkTime : 120;
-                var m = Math.floor(left / 60), s = left % 60;
-                box.innerHTML = '<div class="win-box">' + esc(KIND_TXT[kinds[b]] || 'WPS window open.') +
-                    ' <strong>' + m + ':' + (s < 10 ? '0' : '') + s + '</strong>' +
-                    '<div class="win-bar"><div style="width:' + Math.max(0, Math.min(100, left * 100 / total)) + '%"></div></div></div>';
-            } else {
-                if (deadline[b]) { delete deadline[b]; delete kinds[b]; }
-                box.innerHTML = '';
-            }
+            if (deadline[b] && deadline[b] <= now) { delete deadline[b]; delete kinds[b]; }
         });
+
         if (any && !tickTimer) tickTimer = setInterval(tick, 1000);
         if (!any && tickTimer) { clearInterval(tickTimer); tickTimer = null; }
     }
@@ -419,14 +483,14 @@
     }
 
     // ── Actions ──
-    function act(label, action, params, okMsg, after) {
+    function act(label, action, params, okMsg) {
         if (busy) return;
         busy = true;
         post(action, params).then(function (r) {
             busy = false;
             if (r.ok) { notify('success', okMsg); }
             else      { notify('error', r.text || 'Request failed'); }
-            return (after || load)(true);
+            return load(true);
         }).catch(function (e) {
             busy = false;
             if (e && e.message === 'session') return;
@@ -434,29 +498,29 @@
         });
     }
 
-    function startPbc(b)       { act('Start WPS', 'pbc', { band: b }, 'WPS push-button window opened (' + bandName(b) + ')'); }
-    function startRouterPin(b) { act('PIN window', 'pin_router', { band: b }, 'Router-PIN window opened (' + bandName(b) + ')'); }
-    function unlockWps(b)      { act('Reset lockdown', 'unlock', { band: b }, 'WPS lockdown cleared (' + bandName(b) + ')'); }
+    function startPbc()       { act('Start WPS', 'pbc', { band: cur }, 'WPS started (' + bandName(cur) + ')'); }
+    function startRouterPin() { act('PIN window', 'pin_router', { band: cur }, 'PIN window opened (' + bandName(cur) + ')'); }
+    function unlockWps()      { act('Reset lockdown', 'unlock', { band: cur }, 'Lockdown cleared (' + bandName(cur) + ')'); }
 
-    function startClientPin(b) {
-        var el = document.getElementById('cpin-' + b);
-        var p = el ? el.value.replace(/[\s-]/g, '') : '';
+    function startClientPin() {
+        var p = $('cpin').value.replace(/[\s-]/g, '');
         if (!pinValid(p)) { notify('warning', 'Enter the device PIN: 4 digits, or 8 digits with a valid checksum'); return; }
-        act('Connect by PIN', 'pin_client', { band: b, pin: p }, 'Device-PIN window opened (' + bandName(b) + ')');
+        act('Connect by PIN', 'pin_client', { band: cur, pin: p }, 'Device-PIN window opened (' + bandName(cur) + ')');
     }
 
     // WPS on/off restarts that radio; wscd comes up a few seconds later.
-    function toggleWps(b, cb) {
-        var want = cb.checked;
+    function toggleWps() {
+        var b = cur, x = findBand(b);
+        if (!x || !x.present || busy) return;
+        var want = !x.enabled;
         var msg = (want ? 'Turn WPS on for ' : 'Turn WPS off for ') + bandName(b) +
                   '?\n\nThis restarts the ' + bandName(b) + ' radio, so devices on it will disconnect for a few seconds.';
-        if (!window.confirm(msg)) { cb.checked = !want; return; }
-        if (busy) { cb.checked = !want; return; }
+        if (!window.confirm(msg)) return;
         busy = true;
         showOverlay('Applying — restarting the ' + bandName(b) + ' radio…');
         post('set_enabled', { band: b, enabled: want ? 1 : 0 }).then(function (r) {
             if (!r.ok) {
-                busy = false; hideOverlay(); cb.checked = !want;
+                busy = false; hideOverlay();
                 notify('error', r.text || 'Could not change WPS');
                 return;
             }
@@ -466,13 +530,13 @@
                 tries++;
                 setTimeout(function () {
                     load(true).then(function () {
-                        var x = findBand(b);
-                        var settled = x && (want ? (x.running || (x.blockers && x.blockers.length) || !x.radioOn)
-                                                 : !x.running);
+                        var y = findBand(b);
+                        var settled = y && (want ? (y.running || (y.blockers && y.blockers.length) || !y.radioOn)
+                                                 : !y.running);
                         if (settled || tries >= 8) {
                             busy = false; hideOverlay();
-                            if (want && x && x.enabled && !x.running && !(x.blockers && x.blockers.length)) {
-                                notify('warning', 'WPS is on, but the daemon has not started yet. Refresh in a few seconds.');
+                            if (want && y && y.enabled && !y.running && !(y.blockers && y.blockers.length)) {
+                                notify('warning', 'WPS is on, but the daemon has not started yet. Reload in a few seconds.');
                             } else {
                                 notify('success', 'WPS ' + (want ? 'enabled' : 'disabled') + ' (' + bandName(b) + ')');
                             }
@@ -481,24 +545,25 @@
                 }, tries === 0 ? 5000 : 3000);
             })();
         }).catch(function (e) {
-            busy = false; hideOverlay(); cb.checked = !want;
+            busy = false; hideOverlay();
             if (!(e && e.message === 'session')) notify('error', 'Request failed');
         });
     }
 
     function savePin() {
-        var v = document.getElementById('router-pin').value.replace(/\D/g, '');
+        var v = $('router-pin').value.replace(/\D/g, '');
         if (!pinValid(v)) { notify('warning', 'Invalid PIN: 4 digits, or 8 digits with a valid checksum'); return; }
-        if (ST && v === ST.pin) { notify('info', 'That is already the router PIN'); return; }
-        if (!window.confirm('Save this PIN?\n\nThis restarts the radios that have WPS on, so connected devices will disconnect for a few seconds.')) return;
+        if (ST && v === ST.pin) { notify('info', 'That is already the AP Pin'); return; }
+        if (!window.confirm('Save this PIN?\n\nThis restarts the current wlan band that has WPS on, so connected devices will disconnect for a few seconds.')) return;
         if (busy) return;
         busy = true;
-        showOverlay('Saving PIN — restarting WPS radios…');
+        showOverlay('Saving PIN & Restarting wlan');
         post('set_pin', { pin: v }).then(function (r) {
             if (!r.ok) { busy = false; hideOverlay(); notify('error', r.text || 'Could not save the PIN'); return; }
             setTimeout(function () {
+                pinDirty = false;
                 load(true).then(function () {
-                    busy = false; hideOverlay(); notify('success', 'Router PIN saved');
+                    busy = false; hideOverlay(); notify('success', 'AP Pin saved');
                 });
             }, 6000);
         }).catch(function (e) {
