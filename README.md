@@ -26,7 +26,7 @@ record. Short version: keep the license and notices, say what you
 changed, and if you run a modified version as a network service, make
 your Corresponding Source available to your users (AGPLv3 §5, §13).
 
-## LLM's used to make the project
+## LLMs used to make the project
 
 - Claude (Sonnet & Opus series, mainly Sonnet was used due to not having claude code, or the paid plans.)
 - Gemini (3.8 Flash)
