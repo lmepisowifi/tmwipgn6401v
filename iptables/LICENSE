@@ -1,0 +1,50 @@
+The kernel modules in this directory are third-party software, not part of the
+lmepisowifi project's own AGPLv3 code:
+
+  xt_hl.ko    Xtables "ttl"/"hl" match   (Linux kernel net/netfilter/xt_hl.c)
+  xt_HL.ko    Xtables "TTL"/"HL" target  (Linux kernel net/netfilter/xt_HL.c)
+
+They are built from the Linux kernel and retain their original license. This
+NOTICE stands in for a source-file header (the artifacts are compiled kernel
+objects and cannot carry one). Being shipped in this repository, or in the
+release tarballs next to the AGPLv3 scripts that insmod them, does not
+relicense them: they are separate works, loaded into the kernel on demand by
+lmehspt.sh (anti-tether).
+
+SPDX-License-Identifier: GPL-2.0-only
+
+Copyright
+---------
+  net/netfilter/xt_hl.c
+    Copyright (C) 2000,2001 Harald Welte <laforge@netfilter.org>
+    Copyright (C) 2001-2002 Maciej Soltysiak <solt@dns.toxicfilms.tv>
+
+  net/netfilter/xt_HL.c
+    Copyright (C) 2000,2005 Harald Welte <laforge@netfilter.org>
+    Maciej Soltysiak <solt@dns.toxicfilms.tv>
+
+  Both are licensed under the GNU GPL, version 2 only.
+
+Build
+-----
+  Built for the Realtek RTL9607C vendor kernel: Linux 4.4.140, SMP,
+  mod_unload, MIPS32r2, 32-bit, big-endian (see `vermagic` in each .ko).
+
+Corresponding source (GPL-2.0 section 3)
+----------------------------------------
+  Upstream source of the files above, as of Linux v4.4.140:
+    https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git/tree/net/netfilter/xt_hl.c?h=v4.4.140
+    https://git.kernel.org/pub/scm/linux/kernel/git/stable/linux.git/tree/net/netfilter/xt_HL.c?h=v4.4.140
+
+  The modules correspond to the vendor's GPLv2 kernel source release
+  described under "GPLv2 dump status" in README.md.
+
+  Written offer: for at least three years from the date of each release that
+  contains these binaries, anyone who has received them may obtain the
+  complete corresponding source for them, on a medium customarily used for
+  software interchange, for no more than the cost of performing the
+  distribution, by opening an issue at
+    https://github.com/lmepisowifi/tmwipgn6401v/issues
+
+The full license text is in LICENSES/GPL-2.0-only.txt of the
+source repository and at https://www.gnu.org/licenses/old-licenses/gpl-2.0.txt

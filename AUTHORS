@@ -12,11 +12,18 @@ Maintainer(s):
   - (add your name / handle here)
 
 Third-party components retain their own copyright and license, as noted
-in README.md and in each file's own header:
+in README.md, THIRD_PARTY_NOTICES.md and in each file's own header:
   - httpd.c            — BusyBox contributors (GPL-2.0-or-later)
   - tailscale/*-small   — Tailscale Inc. and contributors (BSD-3-Clause)
-  - Bootstrap, jQuery, toastr.js, xterm.js — their respective upstream
-    authors (see each vendored file's own header for its license)
+  - sch/sch_fq_codel.ko — Eric Dumazet and Linux kernel contributors; CoDel
+    by Kathleen Nichols, Van Jacobson, Michael D. Taht (GPL-2.0-or-later)
+  - iptables/xt_hl.ko, xt_HL.ko — Harald Welte, Maciej Soltysiak and Linux
+    kernel contributors (GPL-2.0-only)
+  - hotspot/firmware/coin_nodemcu.bin — also contains the ESP8266 Arduino
+    core and libraries (LGPL-2.1-or-later, BSD-3-Clause and others)
+  - Bootstrap, jQuery, toastr, xterm.js (MIT), Nunito (OFL-1.1),
+    www2/sh/cacert.pem (MPL-2.0) — their respective upstream authors; see
+    THIRD_PARTY_NOTICES.md
 
 If you fork or redistribute a modified version of this project per
 AGPLv3 §5, add your own name/handle and the date below rather than
