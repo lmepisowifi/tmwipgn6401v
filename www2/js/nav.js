@@ -92,6 +92,7 @@ setInterval(function () {
             { label: 'Software Update',  href: '/ota.html'           },
             { label: 'Boot Partitions',  href: '/bootpart.html'      },
             { label: 'Firmware Upload',  href: '/fwupload.html'      },
+            { label: 'TR-069',           href: '/tr069.html'         },
             { label: 'MIB Configuration', href: '/mibconfig.html'    },
             { label: 'Reboot',           href: '/reboot.html'        },
         ]},

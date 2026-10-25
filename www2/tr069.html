@@ -1,0 +1,486 @@
+<!DOCTYPE html>
+<!--
+  lmepisowifi — https://github.com/lmepisowifi/tmwipgn6401v
+  SPDX-License-Identifier: AGPL-3.0-or-later
+  Copyright (C) 2026 The lmepisowifi Project — see AUTHORS
+
+  Licensed under the GNU AGPLv3 (see LICENSE). Modifying or rewriting this
+  file — including by running it through an LLM — does not remove these
+  obligations: keep this notice, mark your changes, and offer Corresponding
+  Source to network users (AGPLv3 §5, §13). See PROVENANCE.md before
+  presenting this as your own original work.
+-->
+<html lang="en" data-bs-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link href="/css/bootstrap.min.css?v=1.0.0" rel="stylesheet">
+    <link href="/css/style.css?v=1.0.0" rel="stylesheet">
+    <link href="/css/toastr.min.css?v=1.0.0" rel="stylesheet">
+    <style>
+        .field-hint { font-size:12px; color:var(--text-secondary); margin-top:4px; line-height:1.5; }
+        .invalid-feedback { display:block; }
+        .form-control.is-invalid { border-color:#dc3545; }
+        code { color:#fff; font-size:12px; }
+
+        /* ── Toggle switch (matches other pages) ── */
+        .wlan-toggle {
+            width: 50px; height: 28px; border-radius: 14px;
+            background: #555; position: relative; cursor: pointer;
+            transition: background 0.25s; flex-shrink: 0; user-select: none;
+        }
+        .wlan-toggle.on { background: #ffffff; }
+        .wlan-toggle.disabled-ui { opacity: 0.35; pointer-events: none; }
+        .wlan-toggle-knob {
+            position: absolute; width: 20px; height: 20px;
+            border-radius: 50%; background: #fff;
+            top: 4px; left: 4px;
+            transition: left 0.25s, background 0.25s;
+            box-shadow: 0 1px 4px rgba(0,0,0,0.5);
+        }
+        .wlan-toggle.on .wlan-toggle-knob { left: 26px; background: #555; }
+
+        .tr-badge { display:inline-block; padding:2px 9px; border-radius:3px; font-size:11px; font-weight:700; }
+        .tr-badge.on   { background:rgba(76,175,80,.2);   color:#81c784; }
+        .tr-badge.off  { background:rgba(220,53,69,.18);  color:#e17e88; }
+        .tr-badge.none { background:rgba(158,158,158,.18); color:#aaa; }
+
+        .tr-section { font-size:12px; font-weight:700; letter-spacing:.06em; text-transform:uppercase;
+                      color:var(--text-secondary); margin:18px 0 10px; }
+        .tr-section:first-child { margin-top:0; }
+        .tr-switch-row { display:flex; align-items:flex-start; gap:12px; margin-bottom:12px; }
+        .tr-switch-row .tr-switch-text { min-width:0; }
+        .tr-switch-title { font-size:14px; }
+        .tr-note { font-size:12px; padding:8px 10px; border-radius:6px; margin-top:12px;
+                   background:rgba(255,193,7,.10); border:1px solid rgba(255,193,7,.28); color:#ffd54f; }
+    </style>
+</head>
+<body>
+
+<div id="overlay">
+    <div id="overlay-blur"></div>
+    <div id="overlay-msg"><div id="overlay-spinner"></div><span id="overlay-text"></span></div>
+</div>
+
+<script src="/js/nav.js?v=1.0.0"></script>
+
+<div class="container mt-4 mb-5" style="max-width:640px;">
+
+    <div class="card">
+        <div class="card-header d-flex align-items-center justify-content-between">
+            <span>TR-069 (CWMP)</span>
+            <span id="tr-badge" class="tr-badge none">Loading&hellip;</span>
+        </div>
+        <div class="card-body">
+
+            <p class="field-hint mt-0">
+                TR-069 lets an Auto Configuration Server (ACS) &mdash; normally your ISP's &mdash; manage this
+                device remotely. The client is the vendor's <code>cwmpClient</code>. Point it at your own ACS,
+                or turn it off to stop remote management.
+            </p>
+
+            <div id="tr-notinstalled" class="tr-note" style="display:none;">
+                This firmware has no <code>/bin/cwmpClient</code>, so there is no TR-069 client to configure.
+            </div>
+
+            <!-- ─── Client ─── -->
+            <div class="tr-section">Client</div>
+
+            <div class="tr-switch-row">
+                <div class="wlan-toggle" id="tr-autoexec" onclick="flip('tr-autoexec')" role="switch"
+                     title="Run the TR-069 client"><div class="wlan-toggle-knob"></div></div>
+                <div class="tr-switch-text">
+                    <div class="tr-switch-title">TR-069 daemon</div>
+                    <div class="field-hint mt-0">Runs <code>cwmpClient</code> on boot and after Apply. Off stops it and keeps it from starting.</div>
+                </div>
+            </div>
+
+            <div class="tr-switch-row">
+                <div class="wlan-toggle" id="tr-cwmp-enabled" onclick="flip('tr-cwmp-enabled')" role="switch"
+                     title="EnableCWMP parameter"><div class="wlan-toggle-knob"></div></div>
+                <div class="tr-switch-text">
+                    <div class="tr-switch-title">Enable CWMP</div>
+                    <div class="field-hint mt-0">The device's <code>EnableCWMP</code> parameter. When off the client stays running but does not contact the ACS.</div>
+                </div>
+            </div>
+
+            <!-- ─── ACS ─── -->
+            <div class="tr-section">ACS</div>
+
+            <div class="mb-2">
+                <label for="tr-url" class="form-label">URL</label>
+                <input type="text" class="form-control" id="tr-url" maxlength="256" autocomplete="off"
+                       spellcheck="false" placeholder="http://acs.example.com:9090/">
+                <div class="field-hint">Must start with <code>http://</code> or <code>https://</code>.</div>
+                <div class="invalid-feedback" id="tr-url-err" style="display:none"></div>
+            </div>
+
+            <div class="mb-2">
+                <label for="tr-username" class="form-label">Username</label>
+                <input type="text" class="form-control" id="tr-username" maxlength="256" autocomplete="off" spellcheck="false">
+                <div class="invalid-feedback" id="tr-username-err" style="display:none"></div>
+            </div>
+
+            <div class="mb-2">
+                <label for="tr-password" class="form-label">Password</label>
+                <div class="input-group">
+                    <input type="password" class="form-control" id="tr-password" maxlength="256"
+                           autocomplete="new-password" spellcheck="false">
+                    <button type="button" class="btn btn-outline-secondary" onclick="togglePw('tr-password', this)">Show</button>
+                </div>
+                <div class="invalid-feedback" id="tr-password-err" style="display:none"></div>
+            </div>
+
+            <div class="tr-switch-row mt-3">
+                <div class="wlan-toggle" id="tr-inform" onclick="flip('tr-inform')" role="switch"
+                     title="Periodic Inform"><div class="wlan-toggle-knob"></div></div>
+                <div class="tr-switch-text">
+                    <div class="tr-switch-title">Periodic Inform</div>
+                    <div class="field-hint mt-0">Contact the ACS on a timer, not only when it asks.</div>
+                </div>
+            </div>
+
+            <div class="mb-2">
+                <label for="tr-interval" class="form-label">Inform interval (seconds)</label>
+                <input type="text" class="form-control" id="tr-interval" maxlength="10" inputmode="numeric"
+                       autocomplete="off" placeholder="43200">
+                <div class="invalid-feedback" id="tr-interval-err" style="display:none"></div>
+            </div>
+
+            <!-- ─── Connection Request ─── -->
+            <div class="tr-section">Connection Request</div>
+            <p class="field-hint mt-0">
+                How the ACS reaches this device to start a session. Leave username and password empty if
+                your ACS does not authenticate connection requests.
+            </p>
+
+            <div class="mb-2">
+                <label for="tr-cr-name" class="form-label">Username</label>
+                <input type="text" class="form-control" id="tr-cr-name" maxlength="256" autocomplete="off" spellcheck="false">
+                <div class="invalid-feedback" id="tr-cr-name-err" style="display:none"></div>
+            </div>
+
+            <div class="mb-2">
+                <label for="tr-cr-pw" class="form-label">Password</label>
+                <div class="input-group">
+                    <input type="password" class="form-control" id="tr-cr-pw" maxlength="256"
+                           autocomplete="new-password" spellcheck="false">
+                    <button type="button" class="btn btn-outline-secondary" onclick="togglePw('tr-cr-pw', this)">Show</button>
+                </div>
+                <div class="invalid-feedback" id="tr-cr-pw-err" style="display:none"></div>
+            </div>
+
+            <div class="row g-2">
+                <div class="col-8">
+                    <label for="tr-cr-path" class="form-label">Path</label>
+                    <input type="text" class="form-control" id="tr-cr-path" maxlength="31" autocomplete="off"
+                           spellcheck="false" placeholder="/tr069">
+                    <div class="invalid-feedback" id="tr-cr-path-err" style="display:none"></div>
+                </div>
+                <div class="col-4">
+                    <label for="tr-cr-port" class="form-label">Port</label>
+                    <input type="text" class="form-control" id="tr-cr-port" maxlength="5" inputmode="numeric"
+                           autocomplete="off" placeholder="7547">
+                    <div class="invalid-feedback" id="tr-cr-port-err" style="display:none"></div>
+                </div>
+            </div>
+
+            <div id="tr-acl-note" class="tr-note" style="display:none;">
+                The CWMP WAN ACL is enabled on this device. It limits which source addresses may send
+                Connection Requests; its entries can't be edited from this page.
+            </div>
+
+            <div class="d-grid gap-2 mt-4">
+                <button class="btn btn-primary" id="tr-apply" onclick="applySettings()">Apply</button>
+                <button class="btn btn-outline-secondary" id="tr-restart" onclick="restartClient()">Restart TR-069 client</button>
+            </div>
+        </div>
+    </div>
+
+    <div class="card mt-3">
+        <div class="card-body" style="font-size:0.82em; color:var(--text-secondary)">
+            <strong style="color:var(--bs-body-color)">On Apply:</strong>
+            changed values are written to flash (<code>mib commit</code>) and <code>cwmpClient</code> is
+            restarted (only if something changed). Restarting makes the device open a new session with
+            the ACS. If your ISP's ACS is replaced or the client is turned off, the ISP can no longer
+            manage or provision this device remotely.
+        </div>
+    </div>
+</div>
+
+<script src="/js/bootstrap.bundle.min.js?v=1.0.0"></script>
+<script src="/js/jquery-3.7.1.min.js?v=1.0.0"></script>
+<script src="/js/toastr.min.js?v=1.0.0"></script>
+<script>
+    toastr.options = { closeButton:true, progressBar:true, positionClass:'toast-top-right', timeOut:4000 };
+
+    // ---------------------------------------------------------------
+    // Overlay
+    // ---------------------------------------------------------------
+    var overlay        = document.getElementById('overlay');
+    var overlayTxt     = document.getElementById('overlay-text');
+    var overlaySpinner = document.getElementById('overlay-spinner');
+
+    function showOverlay(msg, spinning) {
+        overlayTxt.textContent = msg;
+        overlaySpinner.style.display = (spinning === false) ? 'none' : '';
+        overlay.classList.add('visible');
+    }
+    function hideOverlay(cb) {
+        overlay.classList.remove('visible');
+        if (cb) setTimeout(cb, 360);
+    }
+
+    // ---------------------------------------------------------------
+    // State
+    // ---------------------------------------------------------------
+    var installed = true;
+    var aclEnabled = false;
+    var TEXT_IDS   = ['tr-url', 'tr-username', 'tr-password', 'tr-interval',
+                      'tr-cr-name', 'tr-cr-pw', 'tr-cr-path', 'tr-cr-port'];
+    var TOGGLE_IDS = ['tr-autoexec', 'tr-cwmp-enabled', 'tr-inform'];
+    var BTN_IDS    = ['tr-apply', 'tr-restart'];
+
+    function byId(id) { return document.getElementById(id); }
+    function getToggle(id) { return byId(id).classList.contains('on') ? 1 : 0; }
+    function setToggle(id, on) { byId(id).classList.toggle('on', !!on); }
+
+    function flip(id) {
+        byId(id).classList.toggle('on');
+        if (id === 'tr-inform') syncInterval();
+    }
+
+    // Interval is only editable while Periodic Inform is on (like the vendor page).
+    function syncInterval() {
+        var on = getToggle('tr-inform') === 1;
+        byId('tr-interval').disabled = !on || !installed;
+    }
+
+    function togglePw(id, btn) {
+        var el = byId(id);
+        var show = el.type === 'password';
+        el.type = show ? 'text' : 'password';
+        btn.textContent = show ? 'Hide' : 'Show';
+    }
+
+    function setFormLocked(locked) {
+        TEXT_IDS.forEach(function (id) { byId(id).disabled = locked; });
+        TOGGLE_IDS.forEach(function (id) { byId(id).classList.toggle('disabled-ui', locked); });
+        BTN_IDS.forEach(function (id) { byId(id).disabled = locked; });
+        if (!locked) syncInterval();
+    }
+
+    function setBadge(d) {
+        var b = byId('tr-badge');
+        if (!d.installed) { b.className = 'tr-badge none'; b.textContent = 'Not installed'; }
+        else if (d.running) { b.className = 'tr-badge on'; b.textContent = 'Running · PID ' + d.pid; }
+        else { b.className = 'tr-badge off'; b.textContent = 'Stopped'; }
+    }
+
+    // ---------------------------------------------------------------
+    // Validation (the CGI re-checks everything; this is for fast feedback)
+    // ---------------------------------------------------------------
+    function setFieldError(inputId, msg) {
+        var inp = byId(inputId), err = byId(inputId + '-err');
+        if (msg) {
+            inp.classList.add('is-invalid');
+            if (err) { err.textContent = msg; err.style.display = 'block'; }
+        } else {
+            inp.classList.remove('is-invalid');
+            if (err) err.style.display = 'none';
+        }
+    }
+    function clearErrors() { TEXT_IDS.forEach(function (id) { setFieldError(id, null); }); }
+
+    var PRINTABLE = /^[\x20-\x7e]*$/;
+
+    function checkText(id, label) {
+        var v = byId(id).value;
+        if (v.length > 256) return label + ' is too long (max 256 characters)';
+        if (!PRINTABLE.test(v)) return label + ' may only contain plain ASCII characters';
+        return null;
+    }
+
+    function validate() {
+        var errs = {};
+        var url = byId('tr-url').value;
+        if (!/^https?:\/\/[^\s]+$/.test(url) || !PRINTABLE.test(url))
+            errs['tr-url'] = 'Enter a URL starting with http:// or https://';
+        else if (url.length > 256)
+            errs['tr-url'] = 'URL is too long (max 256 characters)';
+
+        var e;
+        if ((e = checkText('tr-username', 'Username'))) errs['tr-username'] = e;
+        if ((e = checkText('tr-password', 'Password'))) errs['tr-password'] = e;
+        if ((e = checkText('tr-cr-name', 'Username')))  errs['tr-cr-name'] = e;
+        if ((e = checkText('tr-cr-pw', 'Password')))    errs['tr-cr-pw'] = e;
+
+        if (getToggle('tr-inform') === 1) {
+            var iv = byId('tr-interval').value;
+            if (!/^\d{1,10}$/.test(iv) || +iv < 1 || +iv > 2147483647)
+                errs['tr-interval'] = 'Enter a whole number of seconds (1 or more)';
+        }
+
+        var path = byId('tr-cr-path').value;
+        if (path.length > 31 || !/^[A-Za-z0-9\/_.~%-]*$/.test(path))
+            errs['tr-cr-path'] = 'Up to 31 characters: letters, digits and / _ . ~ % -';
+
+        var port = byId('tr-cr-port').value;
+        if (!/^\d{1,5}$/.test(port) || +port < 1 || +port > 65535)
+            errs['tr-cr-port'] = 'Enter a port from 1 to 65535';
+
+        clearErrors();
+        Object.keys(errs).forEach(function (id) { setFieldError(id, errs[id]); });
+        return Object.keys(errs).length === 0;
+    }
+
+    var ERRORS = {
+        bad_url:         'ACS URL must start with http:// or https:// and contain no spaces.',
+        bad_username:    'ACS username is invalid.',
+        bad_password:    'ACS password is invalid.',
+        bad_conreq_name: 'Connection Request username is invalid.',
+        bad_conreq_pw:   'Connection Request password is invalid.',
+        bad_path:        'Connection Request path is invalid.',
+        bad_port:        'Connection Request port must be 1–65535.',
+        bad_interval:    'Inform interval must be a whole number of seconds (1 or more).',
+        bad_request:     'The request was incomplete.',
+        set_failed:      'Writing a setting failed; nothing was changed.',
+        commit_failed:   'Saving to flash failed; nothing was changed.',
+        not_installed:   'This firmware has no TR-069 client.',
+        helper_missing:  'tr069_ctl.sh is missing on the device. Reinstall the web interface.',
+        post_required:   'Bad request.',
+        unknown_action:  'Bad request.'
+    };
+    function errText(code) { return ERRORS[code] || ('Error: ' + code); }
+
+    // ---------------------------------------------------------------
+    // Load
+    // ---------------------------------------------------------------
+    function fill(d) {
+        installed  = d.installed !== false;
+        aclEnabled = String(d.acl_enable) === '1';
+
+        setBadge(d);
+        byId('tr-notinstalled').style.display = installed ? 'none' : '';
+        byId('tr-acl-note').style.display = aclEnabled ? '' : 'none';
+
+        setToggle('tr-autoexec',     d.autoexec === 1);
+        setToggle('tr-cwmp-enabled', d.cwmp_enabled === 1);
+        setToggle('tr-inform',       d.inform === 1);
+        byId('tr-url').value       = d.url || '';
+        byId('tr-username').value  = d.username || '';
+        byId('tr-password').value  = d.password || '';
+        byId('tr-interval').value  = d.interval;
+        byId('tr-cr-name').value   = d.conreq_name || '';
+        byId('tr-cr-pw').value     = d.conreq_pw || '';
+        byId('tr-cr-path').value   = d.conreq_path || '';
+        byId('tr-cr-port').value   = d.conreq_port;
+    }
+
+    function loadStatus(quiet) {
+        if (!quiet) { setFormLocked(true); showOverlay('Loading…'); }
+        return fetch('/cgi-bin/tr069.cgi?action=status', { cache: 'no-store' })
+            .then(function (r) { return r.json(); })
+            .then(function (d) {
+                if (!d.ok) throw new Error(d.error || 'status');
+                fill(d);
+                clearErrors();
+                hideOverlay(function () { setFormLocked(!installed); });
+            })
+            .catch(function (err) {
+                hideOverlay(function () { setFormLocked(false); });
+                toastr['warning'](err && err.message && ERRORS[err.message] ? errText(err.message) : 'Failed to load TR-069 settings.', 'Error');
+            });
+    }
+
+    // ---------------------------------------------------------------
+    // Apply / restart
+    // ---------------------------------------------------------------
+    function post(action, body) {
+        return fetch('/cgi-bin/tr069.cgi?action=' + action, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: body || ''
+        }).then(function (r) { return r.json(); });
+    }
+
+    function afterRestart(msg, done) {
+        // cwmpClient is restarted in the background a few seconds after the
+        // CGI replies; give it time, then refresh the Running/Stopped badge.
+        showOverlay(msg);
+        setTimeout(function () {
+            loadStatus(true).then(function () { if (done) done(); });
+        }, 6000);
+    }
+
+    function applySettings() {
+        if (!validate()) return;
+
+        var inform = getToggle('tr-inform');
+        var body = 'autoexec='      + getToggle('tr-autoexec')
+                 + '&cwmp_enabled=' + getToggle('tr-cwmp-enabled')
+                 + '&url='          + encodeURIComponent(byId('tr-url').value)
+                 + '&username='     + encodeURIComponent(byId('tr-username').value)
+                 + '&password='     + encodeURIComponent(byId('tr-password').value)
+                 + '&inform='       + inform
+                 + '&interval='     + encodeURIComponent(inform ? byId('tr-interval').value : '')
+                 + '&conreq_name='  + encodeURIComponent(byId('tr-cr-name').value)
+                 + '&conreq_pw='    + encodeURIComponent(byId('tr-cr-pw').value)
+                 + '&conreq_path='  + encodeURIComponent(byId('tr-cr-path').value)
+                 + '&conreq_port='  + encodeURIComponent(byId('tr-cr-port').value);
+
+        setFormLocked(true);
+        showOverlay('Applying TR-069 settings…');
+
+        post('save', body)
+            .then(function (d) {
+                if (!d.ok) {
+                    hideOverlay(function () { setFormLocked(false); });
+                    toastr['warning'](errText(d.error), 'Error');
+                    return;
+                }
+                if (!d.changed) {
+                    hideOverlay(function () { setFormLocked(false); });
+                    toastr['info']('No changes to apply.');
+                    return;
+                }
+                afterRestart('Saved. Restarting the TR-069 client…', function () {
+                    hideOverlay(function () { setFormLocked(false); });
+                    toastr['success']('TR-069 settings applied.');
+                    if (d.port_changed && aclEnabled)
+                        toastr['info']('The Connection Request port changed. Reboot the device so the CWMP ACL firewall rules use the new port.', '', { timeOut: 10000 });
+                });
+            })
+            .catch(function () {
+                hideOverlay(function () { setFormLocked(false); });
+                toastr['warning']('Request failed.', 'Error');
+            });
+    }
+
+    function restartClient() {
+        setFormLocked(true);
+        showOverlay('Restarting the TR-069 client…');
+        post('restart')
+            .then(function (d) {
+                if (!d.ok) {
+                    hideOverlay(function () { setFormLocked(false); });
+                    toastr['warning'](errText(d.error), 'Error');
+                    return;
+                }
+                afterRestart('Restarting the TR-069 client…', function () {
+                    hideOverlay(function () { setFormLocked(false); });
+                });
+            })
+            .catch(function () {
+                hideOverlay(function () { setFormLocked(false); });
+                toastr['warning']('Request failed.', 'Error');
+            });
+    }
+
+    // ---------------------------------------------------------------
+    // Init
+    // ---------------------------------------------------------------
+    loadStatus();
+</script>
+</body>
+</html>
