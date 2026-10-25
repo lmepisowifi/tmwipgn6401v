@@ -90,11 +90,48 @@
                 </div>
             </div>
 
+            <!-- DHCP Mode card (server / relay / br0 client, like stock boa's DHCP Mode page) -->
+            <div class="col-md-10">
+                <div class="card">
+                    <div class="card-header">DHCP Mode</div>
+                    <div class="card-body">
+                        <div class="row g-3">
+                            <div class="col-md-6">
+                                <label for="dhcp-mode" class="form-label">Mode</label>
+                                <select class="form-select" id="dhcp-mode" onchange="onDhcpModeChange()">
+                                    <option value="2">DHCP Server</option>
+                                    <option value="1">DHCP Relay</option>
+                                    <option value="3">DHCP Client (br0)</option>
+                                    <option value="0">Disabled</option>
+                                </select>
+                            </div>
+                            <div class="col-md-6" id="dhcp-relay-wrap" style="display:none">
+                                <label for="dhcp-relay-server" class="form-label">Relay Server</label>
+                                <input type="text" class="form-control" id="dhcp-relay-server"
+                                       maxlength="15" autocomplete="off"
+                                       placeholder="upstream DHCP server, e.g. 10.0.0.1">
+                                <div class="invalid-feedback" id="dhcp-relay-server-err" style="display:none"></div>
+                            </div>
+                            <div class="col-12">
+                                <div class="form-text" id="dhcp-mode-hint"></div>
+                            </div>
+                            <div class="col-12" id="dhcp-br0-wrap" style="display:none">
+                                <span class="text-secondary">Current br0 address:</span>
+                                <strong id="dhcp-br0-addr">&mdash;</strong>
+                            </div>
+                        </div>
+                        <button type="button" class="btn btn-primary w-100 mt-3"
+                                id="dhcp-mode-save-btn" onclick="saveDhcpMode()">Apply</button>
+                    </div>
+                </div>
+            </div>
+
             <!-- DHCP Server card -->
             <div class="col-md-10">
                 <div class="card">
                     <div class="card-header d-flex align-items-center justify-content-between">
-                        <span>DHCP Server</span>
+                        <span>DHCP Server <span id="dhcp-server-inactive" class="text-secondary"
+                              style="font-size:0.85em; display:none">(inactive in this mode)</span></span>
                         <div id="dhcp-toggle" class="lan-toggle" onclick="toggleDhcp()"
                              role="switch" aria-checked="false" title="Enable / Disable DHCP server">
                             <div class="lan-toggle-knob"></div>
@@ -274,6 +311,11 @@
         let loadedLanIp     = '';
         let loadedLanSubnet = '';
         let loadedDhcpEnabled = false;
+        let loadedDhcpMode    = 2;   // 0 off, 1 relay, 2 server, 3 br0 client
+        let loadedRelayServer = '';
+        // Cards that don't apply in the current DHCP mode stay locked.
+        let dhcpServerInactive = false;   // relay / client
+        let lanIpInactive      = false;   // client: address comes from upstream
 
         // --------------------------------------------------------
         // Speed options
@@ -485,6 +527,7 @@
         }
 
         function unlockIpCard() {
+            if (lanIpInactive) return;
             document.getElementById('lan-ip').disabled          = false;
             document.getElementById('lan-subnet').disabled      = false;
             document.getElementById('lan-ip-save-btn').disabled = false;
@@ -585,6 +628,7 @@
         }
 
         function unlockDhcpCard() {
+            if (dhcpServerInactive) return;
             DHCP_FIELD_IDS.forEach(id => { document.getElementById(id).disabled = false; });
             document.getElementById('dhcp-toggle').classList.remove('disabled-ui');
         }
@@ -673,6 +717,10 @@
             })
             .then(() => {
                 loadedDhcpEnabled = nowEnabled;
+                // The toggle is DHCP_MODE 2 vs 0; keep the DHCP Mode card in step.
+                loadedDhcpMode = nowEnabled ? 2 : 0;
+                document.getElementById('dhcp-mode').value = String(loadedDhcpMode);
+                onDhcpModeChange();
                 if (countdownTimer) { clearInterval(countdownTimer); countdownTimer = null; }
                 spinner.style.display = 'none';
                 overlayTxt.textContent = 'Changes Applied.';
@@ -690,12 +738,185 @@
         }
 
         // --------------------------------------------------------
+        // DHCP Mode card (server / relay / br0 client / off)
+        // --------------------------------------------------------
+        const DHCP_MODE_HINTS = {
+            '2': 'This device hands out addresses to LAN clients from the pool in the DHCP Server card below.',
+            '1': 'LAN clients\u2019 DHCP requests are forwarded to the upstream server. That server needs a scope '
+               + 'for this router\u2019s LAN subnet and a route back to it. The DHCP Server card is inactive in this mode.',
+            '3': 'br0 itself asks an upstream DHCP server for its address, so this device\u2019s address will change '
+               + 'and the LAN IP and DHCP Server cards are inactive. Look the new address up on the upstream router. '
+               + 'The previous mode is restored after 90 s unless this page is opened at the new address.',
+            '0': 'No DHCP service on the LAN: clients need static addresses.'
+        };
+
+        const DHCP_MODE_IDS = ['dhcp-mode', 'dhcp-relay-server', 'dhcp-mode-save-btn'];
+        function lockDhcpMode()   { DHCP_MODE_IDS.forEach(id => { document.getElementById(id).disabled = true; }); }
+        function unlockDhcpMode() { DHCP_MODE_IDS.forEach(id => { document.getElementById(id).disabled = false; }); }
+
+        function onDhcpModeChange() {
+            const m = document.getElementById('dhcp-mode').value;
+            document.getElementById('dhcp-relay-wrap').style.display = (m === '1') ? '' : 'none';
+            document.getElementById('dhcp-mode-hint').textContent = DHCP_MODE_HINTS[m] || '';
+        }
+
+        // Fill every DHCP-related control from a dhcp_status response.
+        function applyDhcpStatus(data) {
+            loadedDhcpEnabled = !!data.enabled;
+            setDhcpToggle(loadedDhcpEnabled);
+            document.getElementById('dhcp-pool-start').value = data.pool_start || '';
+            document.getElementById('dhcp-pool-end').value   = data.pool_end   || '';
+            document.getElementById('dhcp-mask').value       = data.mask       || '';
+            document.getElementById('dhcp-gateway').value    = data.gateway    || '';
+            document.getElementById('dhcp-lease').value      = data.lease      || 86400;
+            document.getElementById('dhcp-domain').value     = data.domain     || '';
+            document.getElementById('dhcp-dns-opt').checked  = (data.dns_opt == 1);
+            document.getElementById('dhcp-dns1').value       = data.dns1 || '';
+            document.getElementById('dhcp-dns2').value       = data.dns2 || '';
+            document.getElementById('dhcp-dns3').value       = data.dns3 || '';
+
+            loadedDhcpMode    = (data.mode === undefined) ? (loadedDhcpEnabled ? 2 : 0) : +data.mode;
+            loadedRelayServer = data.relay_server || '';
+            document.getElementById('dhcp-mode').value         = String(loadedDhcpMode);
+            document.getElementById('dhcp-relay-server').value = loadedRelayServer;
+            onDhcpModeChange();
+
+            document.getElementById('dhcp-br0-wrap').style.display = (loadedDhcpMode === 3) ? '' : 'none';
+            document.getElementById('dhcp-br0-addr').textContent = data.br0_ip
+                ? data.br0_ip + (data.br0_mask ? ' / ' + data.br0_mask : '')
+                : 'waiting for a lease\u2026';
+
+            dhcpServerInactive = (loadedDhcpMode === 1 || loadedDhcpMode === 3);
+            lanIpInactive      = (loadedDhcpMode === 3);
+            document.getElementById('dhcp-server-inactive').style.display = dhcpServerInactive ? '' : 'none';
+        }
+
+        // Re-apply lock state after the mode (and so the inactive flags) changed.
+        function syncDhcpLocks() {
+            if (dhcpServerInactive) lockDhcpCard(); else unlockDhcpCard();
+            if (lanIpInactive)      lockIpCard();   else unlockIpCard();
+        }
+
+        function showClientModeNotice() {
+            secondsLeft = 90;
+            spinner.style.display = 'block';
+            const render = () => {
+                overlayTxt.innerHTML =
+                    'DHCP client mode: this device is asking your upstream DHCP server for an address.<br>'
+                    + 'Find its new address in that router\u2019s client list and open it within '
+                    + '<strong>' + secondsLeft + 's</strong> to keep this setting.';
+            };
+            overlay.classList.add('visible');
+            render();
+            countdownTimer = setInterval(() => {
+                secondsLeft--;
+                if (secondsLeft > 0) {
+                    render();
+                } else {
+                    clearInterval(countdownTimer);
+                    countdownTimer = null;
+                    spinner.style.display = 'none';
+                    overlayTxt.textContent = 'Reverting Changes. Reconnect at the previous address.';
+                }
+            }, 1000);
+        }
+
+        function showLeaveClientNotice(lanIp) {
+            spinner.style.display = 'none';
+            const url = 'http://' + lanIp + '/lan.html';
+            overlayTxt.innerHTML =
+                'Leaving DHCP client mode. This device returns to its configured address <strong>'
+                + lanIp + '</strong>.<br>Navigate to <a href="' + url + '" style="color:#fff">' + url + '</a>';
+            setTimeout(() => { window.location.href = url; }, 6000);
+        }
+
+        function saveDhcpMode() {
+            const modeVal  = document.getElementById('dhcp-mode').value;
+            const relayVal = document.getElementById('dhcp-relay-server').value.trim();
+
+            let relayErr = null;
+            if (modeVal === '1') {
+                relayErr = validateIpField(relayVal);
+                if (!relayErr && (relayVal === '0.0.0.0' || relayVal === '255.255.255.255'))
+                    relayErr = 'Not a usable server address';
+                if (!relayErr && relayVal === loadedLanIp)
+                    relayErr = 'Cannot be this router\u2019s own LAN IP';
+            }
+            setIpFieldError('dhcp-relay-server', 'dhcp-relay-server-err', relayErr);
+            if (relayErr) return;
+
+            if (+modeVal === loadedDhcpMode && (modeVal !== '1' || relayVal === loadedRelayServer)) {
+                toastr['info']('DHCP mode is already set to that.');
+                return;
+            }
+
+            const enteringClient = (modeVal === '3');
+            const leavingClient  = (loadedDhcpMode === 3);
+            if (enteringClient && !window.confirm(
+                    'Switch to DHCP client mode?\n\nThis device will drop its current address and ask the '
+                  + 'upstream DHCP server for a new one. If this page is not reopened at the new address '
+                  + 'within 90 seconds, the previous mode is restored.')) {
+                return;
+            }
+
+            lockDhcpMode();
+            lockDhcpCard();
+            lockIpCard();
+            lockAll();
+            startCountdown();
+
+            fetch('/cgi-bin/lme.cgi?action=dhcp_mode_save', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                body: 'mode=' + encodeURIComponent(modeVal)
+                    + '&relay_server=' + encodeURIComponent(relayVal)
+            })
+            .then(r => {
+                if (!r.ok) return r.text().then(t => { throw new Error(t); });
+                return r.json();
+            })
+            .then(res => {
+                if (res.async) {
+                    // br0's address is changing under us: this page can't confirm.
+                    // The server-side revert timer is the safety net, and opening
+                    // the page at the new address confirms it (see page init).
+                    if (countdownTimer) { clearInterval(countdownTimer); countdownTimer = null; }
+                    if (enteringClient) showClientModeNotice();
+                    else showLeaveClientNotice(res.lan_ip);
+                    return null;
+                }
+                return fetch('/cgi-bin/lme.cgi?action=dhcp_status')
+                    .then(r2 => r2.json())
+                    .then(st => {
+                        if (st && st.pending) {
+                            fetch('/cgi-bin/lme.cgi?action=dhcp_confirm').catch(() => {});
+                        }
+                        applyDhcpStatus(st);
+                        if (countdownTimer) { clearInterval(countdownTimer); countdownTimer = null; }
+                        spinner.style.display = 'none';
+                        overlayTxt.textContent = 'Changes Applied.';
+                        setTimeout(() => {
+                            overlay.classList.remove('visible');
+                            setTimeout(() => { unlockAll(); unlockDhcpMode(); syncDhcpLocks(); }, 350);
+                        }, 1000);
+                    });
+            })
+            .catch(err => {
+                if (countdownTimer) { clearInterval(countdownTimer); countdownTimer = null; }
+                overlay.classList.remove('visible');
+                setTimeout(() => { unlockAll(); unlockDhcpMode(); syncDhcpLocks(); }, 350);
+                toastr['warning']('Error: ' + (err.message || 'unknown'), 'Error');
+            });
+        }
+
+        // --------------------------------------------------------
         // Page init
         // --------------------------------------------------------
         window.addEventListener('DOMContentLoaded', () => {
             lockAll();
             lockIpCard();
             lockDhcpCard();
+            lockDhcpMode();
             showOverlay('Loading\u2026');
 
             // Fetch port status, LAN IP, and DHCP settings in parallel
@@ -721,28 +942,25 @@
             const dhcpFetch = fetch('/cgi-bin/lme.cgi?action=dhcp_status')
                 .then(r => r.json())
                 .then(data => {
-                    loadedDhcpEnabled = !!data.enabled;
-                    setDhcpToggle(loadedDhcpEnabled);
-                    document.getElementById('dhcp-pool-start').value = data.pool_start || '';
-                    document.getElementById('dhcp-pool-end').value   = data.pool_end   || '';
-                    document.getElementById('dhcp-mask').value       = data.mask       || '';
-                    document.getElementById('dhcp-gateway').value    = data.gateway    || '';
-                    document.getElementById('dhcp-lease').value      = data.lease      || 86400;
-                    document.getElementById('dhcp-domain').value     = data.domain     || '';
-                    document.getElementById('dhcp-dns-opt').checked  = (data.dns_opt == 1);
-                    document.getElementById('dhcp-dns1').value       = data.dns1 || '';
-                    document.getElementById('dhcp-dns2').value       = data.dns2 || '';
-                    document.getElementById('dhcp-dns3').value       = data.dns3 || '';
+                    applyDhcpStatus(data);
+                    // Being able to load this page proves the new DHCP mode left the
+                    // device reachable (e.g. opened at a fresh br0 client address),
+                    // same idea as the lan_confirm call above.
+                    if (data.pending) {
+                        fetch('/cgi-bin/lme.cgi?action=dhcp_confirm').catch(() => {});
+                    }
                 });
 
             Promise.all([portFetch, ipFetch, dhcpFetch])
                 .then(() => {
                     hideOverlay();
+                    unlockDhcpMode();
                     unlockIpCard();
                     unlockDhcpCard();
                 })
                 .catch(err => {
                     overlay.classList.remove('visible');
+                    unlockDhcpMode();
                     unlockIpCard();
                     unlockDhcpCard();
                     toastr['warning']('Error: ' + (err.message || 'failed to load'), 'Error');

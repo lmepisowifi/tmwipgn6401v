@@ -181,7 +181,28 @@ MAC_REVERT_TIMEOUT=90
 DHCP_REVERT_PENDING=/tmp/dhcp_revert_pending
 DHCP_REVERT_MODE=/tmp/dhcp_revert_mode
 DHCP_REVERT_START=/tmp/dhcp_revert_start
+DHCP_REVERT_RELAY=/tmp/dhcp_revert_relay
 DHCP_REVERT_TIMEOUT=90
+DHCP_CONTROL=/lmepisowifi/www2/sh/dhcp_control.sh
+
+# ---- DHCP mode helpers (server / relay / br0 client) ----
+# DHCP_MODE uses the stock boa values: 0 off, 1 relay, 2 server, 3 br0 client.
+# LAN_DHCP is the legacy "server enabled" flag; this UI keeps it 1 only for
+# server mode, as dhcp_enable always did.
+dhcp_set_mode_mibs() {
+    mib set DHCP_MODE "$1"
+    if [ "$1" = "2" ]; then
+        mib set LAN_DHCP 1
+    else
+        mib set LAN_DHCP 0
+    fi
+}
+
+dhcp_valid_ipv4() {
+    [ "$(printf '%s' "$1" | busybox awk -F. '
+        NF==4 { ok=1; for(i=1;i<=4;i++) if($i!~/^[0-9]+$/||$i+0>255) ok=0; print ok; exit }
+        { print 0 }')" = "1" ]
+}
 
 # ---- WLAN helper functions ----
 get_ssid() {
@@ -698,8 +719,24 @@ if [ "$REQUEST_METHOD" = "GET" ]; then
         DHCP_DNS3=$(mib get DHCPS_DNS3 2>/dev/null \
             | busybox grep "=" | busybox cut -d'=' -f2- | busybox tr -d '\r\n' | busybox sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
 
+        # "enabled" now means the DHCP *server* is the active mode; relay and
+        # br0-client mode have their own values below. Unset/unknown = server,
+        # matching dhcp_control.sh.
+        case "$DHCP_MODE_VAL" in
+            0|1|3) DHCP_MODE_NUM="$DHCP_MODE_VAL" ;;
+            *)     DHCP_MODE_NUM=2 ;;
+        esac
         DHCP_ENABLED=false
-        [ -n "$DHCP_MODE_VAL" ] && [ "$DHCP_MODE_VAL" != "0" ] && DHCP_ENABLED=true
+        [ "$DHCP_MODE_NUM" = "2" ] && DHCP_ENABLED=true
+
+        DHCP_RELAY_SRV=$(mib get DHCPS 2>/dev/null \
+            | busybox grep "=" | busybox cut -d'=' -f2- | busybox tr -d '\r\n' | busybox sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+        [ "$DHCP_RELAY_SRV" = "0.0.0.0" ] && DHCP_RELAY_SRV=""
+
+        # What br0 actually has right now (in client mode this is the lease).
+        BR0_TXT=$(/bin/ifconfig br0 2>/dev/null)
+        BR0_IP=$(printf '%s' "$BR0_TXT" | busybox grep -o 'inet \(addr:\)\?[0-9.]*' | busybox grep -o '[0-9.]*' | busybox head -n 1)
+        BR0_MASK=$(printf '%s' "$BR0_TXT" | busybox grep -o '\(Mask:\|netmask \)[0-9.]*' | busybox grep -o '[0-9.]*' | busybox head -n 1)
 
         [ -z "$DHCP_LEASE" ]  && DHCP_LEASE="86400"
         [ -z "$DHCP_MASK" ]   && DHCP_MASK="255.255.255.0"
@@ -722,16 +759,17 @@ if [ "$REQUEST_METHOD" = "GET" ]; then
 
         printf "Status: 200 OK\r\n"
         printf "Content-Type: application/json\r\n\r\n"
-        printf '{"enabled":%s,"pool_start":"%s","pool_end":"%s","mask":"%s","gateway":"%s","lease":%s,"domain":"%s","dns_opt":%s,"dns1":"%s","dns2":"%s","dns3":"%s","pending":%s,"remaining":%d}' \
+        printf '{"enabled":%s,"pool_start":"%s","pool_end":"%s","mask":"%s","gateway":"%s","lease":%s,"domain":"%s","dns_opt":%s,"dns1":"%s","dns2":"%s","dns3":"%s","pending":%s,"remaining":%d,"mode":%d,"relay_server":"%s","br0_ip":"%s","br0_mask":"%s"}' \
             "$DHCP_ENABLED" "$DHCP_POOL_START" "$DHCP_POOL_END" "$DHCP_MASK" "$DHCP_GW" \
             "$DHCP_LEASE" "$ESC_DOMAIN" "${DHCP_DNS_OPT:-0}" "$DHCP_DNS1" "$DHCP_DNS2" "$DHCP_DNS3" \
-            "$DHCP_PENDING" "$DHCP_REMAINING"
+            "$DHCP_PENDING" "$DHCP_REMAINING" \
+            "$DHCP_MODE_NUM" "$DHCP_RELAY_SRV" "$BR0_IP" "$BR0_MASK"
         exit 0
     fi
 
     # --- action=dhcp_confirm: client acknowledged, cancel the DHCP enable/disable revert ---
     if echo "$QUERY_STRING" | busybox grep -q "action=dhcp_confirm"; then
-        rm -f "$DHCP_REVERT_PENDING" "$DHCP_REVERT_MODE" "$DHCP_REVERT_START"
+        rm -f "$DHCP_REVERT_PENDING" "$DHCP_REVERT_MODE" "$DHCP_REVERT_START" "$DHCP_REVERT_RELAY"
         printf "Status: 200 OK\r\n"
         printf "Content-Type: text/plain\r\n\r\n"
         printf "confirmed"
@@ -1636,6 +1674,15 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
 
     # --- action=lan_ip_save: apply LAN IP address and subnet mask ---
     if echo "$QUERY_STRING" | busybox grep -q "action=lan_ip_save"; then
+        # br0 client mode: the address comes from the upstream DHCP server, so a
+        # static one must not be applied (stock boa hides this form in that mode).
+        CUR_DHCP_MODE=$(mib get DHCP_MODE 2>/dev/null | busybox cut -d'=' -f2- | busybox tr -d '\r\n ')
+        if [ "$CUR_DHCP_MODE" = "3" ]; then
+            printf "Status: 400 Bad Request\r\n"
+            printf "Content-Type: text/plain\r\n\r\n"
+            printf "LAN IP is assigned by DHCP while DHCP mode is Client"
+            exit 0
+        fi
         FORM_IP=$(echo "$POST_DATA" | busybox sed 's/&/\n/g' \
             | busybox grep '^ip=' | busybox cut -d'=' -f2-)
         FORM_IP=$(busybox httpd -d "$FORM_IP" | busybox tr -d '\r\n')
@@ -1850,40 +1897,134 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
         touch "$DHCP_REVERT_PENDING"
         date +%s > "$DHCP_REVERT_START"
 
+        # The server toggle means "server" (2) or "off" (0). dhcp_control.sh
+        # restart applies whatever DHCP_MODE now says — including stopping a
+        # relay / br0 client left over from a mode set elsewhere.
         if [ "$FORM_MODE" = "0" ]; then
-            mib set DHCP_MODE 0
-            mib set LAN_DHCP 0
-            mib commit
-            sh /lmepisowifi/www2/sh/dhcp_control.sh stop
+            dhcp_set_mode_mibs 0
         else
-            mib set DHCP_MODE 2
-            mib set LAN_DHCP 1
-            mib commit
-            sh /lmepisowifi/www2/sh/dhcp_control.sh restart
+            dhcp_set_mode_mibs 2
         fi
+        mib commit
+        sh "$DHCP_CONTROL" restart >/dev/null 2>&1
 
         # Background revert timer (same shape as macfilter_mode's)
         (
             sleep $DHCP_REVERT_TIMEOUT
             if [ -f "$DHCP_REVERT_PENDING" ]; then
                 RB_MODE=$(cat "$DHCP_REVERT_MODE")
-                mib set DHCP_MODE "$RB_MODE"
-                if [ "$RB_MODE" = "0" ]; then
-                    mib set LAN_DHCP 0
-                    mib commit
-                    sh /lmepisowifi/www2/sh/dhcp_control.sh stop
-                else
-                    mib set LAN_DHCP 1
-                    mib commit
-                    sh /lmepisowifi/www2/sh/dhcp_control.sh restart
-                fi
-                rm -f "$DHCP_REVERT_PENDING" "$DHCP_REVERT_MODE" "$DHCP_REVERT_START"
+                dhcp_set_mode_mibs "$RB_MODE"
+                mib commit
+                sh "$DHCP_CONTROL" restart
+                rm -f "$DHCP_REVERT_PENDING" "$DHCP_REVERT_MODE" "$DHCP_REVERT_START" "$DHCP_REVERT_RELAY"
             fi
-        ) &
+        ) >/dev/null 2>&1 </dev/null &
 
         printf "Status: 200 OK\r\n"
         printf "Content-Type: text/plain\r\n\r\n"
         printf "OK"
+        exit 0
+    fi
+
+    # --- action=dhcp_mode_save: choose off / server / relay / br0 client, like stock boa's "DHCP Mode" page ---
+    #   mode=0|1|2|3  (stock DHCP_TYPE_T: 0 off, 1 relay, 2 server, 3 client)
+    #   relay_server=<ipv4>   required for mode=1 (stored in the DHCPS MIB, the same one stock uses)
+    # Same safety net as dhcp_enable: the previous mode is restored after
+    # DHCP_REVERT_TIMEOUT unless the page confirms it can still be reached.
+    if echo "$QUERY_STRING" | busybox grep -q "action=dhcp_mode_save"; then
+        FORM_MODE=$(echo "$POST_DATA" | busybox sed 's/&/\n/g' \
+            | busybox grep '^mode=' | busybox cut -d'=' -f2-)
+        FORM_MODE=$(busybox httpd -d "$FORM_MODE" | busybox tr -d '\r\n')
+        FORM_RELAY=$(echo "$POST_DATA" | busybox sed 's/&/\n/g' \
+            | busybox grep '^relay_server=' | busybox cut -d'=' -f2-)
+        FORM_RELAY=$(busybox httpd -d "$FORM_RELAY" | busybox tr -d '\r\n')
+
+        case "$FORM_MODE" in
+            0|1|2|3) ;;
+            *)
+                printf "Status: 400 Bad Request\r\n"
+                printf "Content-Type: text/plain\r\n\r\n"
+                printf "Invalid DHCP mode"
+                exit 0
+                ;;
+        esac
+
+        LAN_IP_NOW=$(mib get LAN_IP_ADDR 2>/dev/null \
+            | busybox grep "=" | busybox cut -d'=' -f2- | busybox tr -d '\r\n' | busybox sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+
+        if [ "$FORM_MODE" = "1" ]; then
+            if ! dhcp_valid_ipv4 "$FORM_RELAY" || [ "$FORM_RELAY" = "0.0.0.0" ] || [ "$FORM_RELAY" = "255.255.255.255" ]; then
+                printf "Status: 400 Bad Request\r\n"
+                printf "Content-Type: text/plain\r\n\r\n"
+                printf "Invalid relay server address"
+                exit 0
+            fi
+            if [ "$FORM_RELAY" = "$LAN_IP_NOW" ]; then
+                printf "Status: 400 Bad Request\r\n"
+                printf "Content-Type: text/plain\r\n\r\n"
+                printf "Relay server cannot be this router's own LAN IP"
+                exit 0
+            fi
+        fi
+
+        OLD_MODE=$(mib get DHCP_MODE 2>/dev/null \
+            | busybox grep "=" | busybox cut -d'=' -f2- | busybox tr -d '\r\n' | busybox sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+        case "$OLD_MODE" in 0|1|3) ;; *) OLD_MODE=2 ;; esac
+        OLD_RELAY=$(mib get DHCPS 2>/dev/null \
+            | busybox grep "=" | busybox cut -d'=' -f2- | busybox tr -d '\r\n' | busybox sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+
+        # Save rollback state (mode, plus the relay server if this request changes it)
+        rm -f "$DHCP_REVERT_PENDING" "$DHCP_REVERT_MODE" "$DHCP_REVERT_START" "$DHCP_REVERT_RELAY"
+        echo "$OLD_MODE" > "$DHCP_REVERT_MODE"
+        [ "$FORM_MODE" = "1" ] && [ -n "$OLD_RELAY" ] && echo "$OLD_RELAY" > "$DHCP_REVERT_RELAY"
+        touch "$DHCP_REVERT_PENDING"
+        date +%s > "$DHCP_REVERT_START"
+
+        [ "$FORM_MODE" = "1" ] && mib set DHCPS "$FORM_RELAY"
+        dhcp_set_mode_mibs "$FORM_MODE"
+        mib commit
+
+        if [ "$OLD_MODE" = "3" ] || [ "$FORM_MODE" = "3" ]; then
+            # br0's address changes, so the connection serving this very request
+            # is about to go away. Answer first, apply a moment later; the revert
+            # timer below is what protects against ending up unreachable.
+            ASYNC=true
+            ( sleep 2; sh "$DHCP_CONTROL" restart ) >/dev/null 2>&1 </dev/null &
+        else
+            ASYNC=false
+            if ! sh "$DHCP_CONTROL" restart >/dev/null 2>&1; then
+                # Relay/server would not start: put everything back right now
+                # instead of leaving a dead mode behind for the revert timer.
+                [ -f "$DHCP_REVERT_RELAY" ] && mib set DHCPS "$OLD_RELAY"
+                dhcp_set_mode_mibs "$OLD_MODE"
+                mib commit
+                sh "$DHCP_CONTROL" restart >/dev/null 2>&1
+                rm -f "$DHCP_REVERT_PENDING" "$DHCP_REVERT_MODE" "$DHCP_REVERT_START" "$DHCP_REVERT_RELAY"
+                printf "Status: 500 Internal Server Error\r\n"
+                printf "Content-Type: text/plain\r\n\r\n"
+                printf "Could not start the new DHCP mode; the previous mode was restored"
+                exit 0
+            fi
+        fi
+
+        # Background revert timer (same shape as dhcp_enable's)
+        (
+            sleep $DHCP_REVERT_TIMEOUT
+            if [ -f "$DHCP_REVERT_PENDING" ]; then
+                RB_MODE=$(cat "$DHCP_REVERT_MODE")
+                [ -f "$DHCP_REVERT_RELAY" ] && mib set DHCPS "$(cat "$DHCP_REVERT_RELAY")"
+                dhcp_set_mode_mibs "$RB_MODE"
+                mib commit
+                sh "$DHCP_CONTROL" restart
+                rm -f "$DHCP_REVERT_PENDING" "$DHCP_REVERT_MODE" "$DHCP_REVERT_START" "$DHCP_REVERT_RELAY"
+            fi
+        ) >/dev/null 2>&1 </dev/null &
+
+        # lan_ip is where this device will be reachable if it ends up on its
+        # configured static address (i.e. any mode except client).
+        printf "Status: 200 OK\r\n"
+        printf "Content-Type: application/json\r\n\r\n"
+        printf '{"async":%s,"lan_ip":"%s"}' "$ASYNC" "$LAN_IP_NOW"
         exit 0
     fi
 
