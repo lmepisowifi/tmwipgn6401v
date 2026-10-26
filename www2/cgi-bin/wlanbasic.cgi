@@ -2049,8 +2049,19 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
         fi
         mib commit
 
-        dbg "sta_connect: launching wlan_apply restart"
-        wlan_apply restart
+        # Apply. Joining a different network can't be done with iwpriv alone:
+        # set_mib ssid= only stores the desired SSID (nothing re-scans or
+        # re-joins), and the new key / cipher / PMF mode have to reach the
+        # client's auth setup, which is built when the interface is started.
+        # So restart only what changed - the VXD (idx 5) on its own, or the
+        # whole band when the root itself is the client (idx 0) - through
+        # wlanapply, instead of `wlan_apply restart` (both radios + every
+        # SSID, which also drops the admin's own WiFi on the other band).
+        # wl_restart_scoped falls back to the stock restart if wlanapply is
+        # missing or fails. Always restarted, even when nothing differs: a
+        # repeated Connect is how a failed join gets retried.
+        dbg "sta_connect: applying band=$BAND idx=$IDX with a scoped restart"
+        wl_restart_scoped "$BAND" "$IDX"
         if [ "$IDX" = "5" ]; then
             dbg "sta_connect idx=5: also restarting multi-ap agent service"
             sysconf multi_ap_agent_restart

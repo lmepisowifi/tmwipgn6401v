@@ -1253,9 +1253,11 @@
                 toastr["warning"](txt || ('HTTP ' + r.status), 'Connect failed');
             }
         } catch (e) {
-            // A network error (TypeError) here almost always means the wlan_apply
-            // restart cut the admin's WiFi before the response arrived —
-            // treat it as a successful apply rather than showing a false error.
+            // The connect restarts only the client interface (wlanapply), so the
+            // admin's own link normally survives. A network error (TypeError) here
+            // still means the restart cut it before the response arrived — e.g. the
+            // client-mode root, or the stock full-restart fallback — so treat it as
+            // a successful apply rather than showing a false error.
             if (e instanceof TypeError) {
                 toastr["success"]('Applied. ' + (clientTarget ? clientTarget.label : 'Interface') +
                     ' is now joining "' + (ap.ssid || '') + '". (Reconnecting\u2026)', 'Connecting');
@@ -1450,9 +1452,11 @@
                 toastr["warning"](txt || ('HTTP ' + r.status), 'Connect failed');
             }
         } catch (e) {
-            // A network error (TypeError) here almost always means the wlan_apply
-            // restart cut the admin's WiFi before the response arrived —
-            // treat it as a successful apply rather than showing a false error.
+            // The connect restarts only the client interface (wlanapply), so the
+            // admin's own link normally survives. A network error (TypeError) here
+            // still means the restart cut it before the response arrived — e.g. the
+            // client-mode root, or the stock full-restart fallback — so treat it as
+            // a successful apply rather than showing a false error.
             if (e instanceof TypeError) {
                 toastr["success"]('Applied. ' + (clientTarget ? clientTarget.label : 'Interface') +
                     ' is now joining "' + ssid + '". (Reconnecting\u2026)', 'Connecting');
