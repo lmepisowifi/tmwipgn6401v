@@ -1,7 +1,7 @@
-version=1.5.64
-url=https://github.com/lmepisowifi/tmwipgn6401v/releases/download/v1.5.64/lmepisowifi-1.5.64.tar.gz
-url_mirror=https://cdn.jsdelivr.net/gh/lmepisowifi/tmwipgn6401v@main/dist/lmepisowifi-1.5.64.tar.gz
-sha256=7746bf114954082ff0f097d619dcb5690944a44aaf7343bf054c34923be12af0
-notes=Release 1.5.64
+version=1.5.65
+url=https://github.com/lmepisowifi/tmwipgn6401v/releases/download/v1.5.65/lmepisowifi-1.5.65.tar.gz
+url_mirror=https://cdn.jsdelivr.net/gh/lmepisowifi/tmwipgn6401v@main/dist/lmepisowifi-1.5.65.tar.gz
+sha256=228a3ad7eee93607a11e37fdcd8a2eb21887ec0c8971f82fe4f309038db7d495
+notes=Release 1.5.65
 nodemcu_version=1.3.4
 nodemcu_md5=29f132d3be09f5bfbcdd12b9d227f8ee
