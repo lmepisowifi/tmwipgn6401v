@@ -35,6 +35,7 @@
 #   fwboot.sh fetch <https-url>           download a tar into the staging area, then check it
 #   fwboot.sh flash <0|1> [tar]           write uImage+rootfs into slot N (never the running/default slot)
 #   fwboot.sh devpath <0|1> <kernel|rootfs>   print the volume device (for downloads)
+#   fwboot.sh avail                       free staging space in KB (RAM-aware; /tmp is a ramfs)
 #   fwboot.sh state | log | discard | reboot
 #
 # Test hooks: FWBOOT_NV, FWBOOT_UBINFO, FWBOOT_UBIUPDATE, FWBOOT_PROCMTD,
@@ -85,6 +86,26 @@ supported() {
 }
 
 busy() { [ -f "$WORK/pid" ] && kill -0 "$(cat "$WORK/pid" 2>/dev/null)" 2>/dev/null; }
+
+# Free staging space in KB (empty = unknown, caller skips the check).
+# $WORK lives in /tmp, which on this device is a ramfs: `df` reports it as
+# 0 / 0 / 0 (a ramfs has no size limit), so trusting df alone rejects every
+# upload with "have 0 KB". The real limit is free RAM, so: take MemAvailable
+# (kernel >= 3.14; ramfs/tmpfs pages are not counted in it), or MemFree+Buffers
+# on older kernels, and only also honour df when it reports a real size (a
+# size-limited tmpfs). The smaller of the two wins.
+ram_avail_kb() {
+    _mem=$(awk '/^MemAvailable:/{a=$2} /^MemFree:/{f=$2} /^Buffers:/{b=$2}
+                END{ if (a != "") print a; else if (f != "") print f + b }' /proc/meminfo 2>/dev/null)
+    _dfa=$(df -k "$WORK" 2>/dev/null | tail -n 1 | awk '$(NF-4) + 0 > 0 { print $(NF-2) }')
+    case "$_mem" in ""|*[!0-9]*) _mem="" ;; esac
+    case "$_dfa" in ""|*[!0-9]*) _dfa="" ;; esac
+    if [ -n "$_mem" ] && [ -n "$_dfa" ]; then
+        [ "$_dfa" -lt "$_mem" ] && echo "$_dfa" || echo "$_mem"
+    elif [ -n "$_mem" ]; then echo "$_mem"
+    elif [ -n "$_dfa" ]; then echo "$_dfa"
+    fi
+}
 
 # ---- tar validation ---------------------------------------------------------
 # Sets CK_ERR (non-empty = rejected), CK_WARN, CK_VER, CK_HW, CK_KSZ, CK_RSZ, CK_SIZE.
@@ -242,7 +263,7 @@ cmd_flash() {
 
     _big=$CK_KSZ; [ "$CK_RSZ" -gt "$_big" ] && _big=$CK_RSZ
     _need=$(( _big / 1024 + 2048 ))
-    _avail=$(df -k "$WORK" 2>/dev/null | tail -n 1 | awk '{print $(NF-2)}')
+    _avail=$(ram_avail_kb)
     case "$_avail" in ""|*[!0-9]*) ;; *)
         [ "$_avail" -ge "$_need" ] || { rm -f "$WORK/pid"; fail "not enough free memory in $WORK: need ${_need} KB, have ${_avail} KB"; } ;;
     esac
@@ -313,10 +334,11 @@ case "$1" in
     flash)      cmd_flash "$2" "$3" ;;
     devpath)    is_slot "$2" || exit 1
                 case "$3" in kernel) vol_dev k "$2" ;; rootfs) vol_dev r "$2" ;; *) exit 1 ;; esac ;;
+    avail)      ram_avail_kb ;;
     state)      cat "$WORK/state" 2>/dev/null ;;
     log)        tail -c 6000 "$WORK/log" 2>/dev/null ;;
     discard)    busy && { res_err "an operation is running"; exit 0; }
                 rm -f "$TAR" "$WORK/meta" "$WORK/uImage" "$WORK/rootfs"; setstate idle ""; res_ok "Staged firmware discarded" ;;
     reboot)     ( sleep 3; sync; reboot ) >/dev/null 2>&1 & res_ok "Rebooting" ;;
-    *)          echo "usage: $0 status|setdefault N|bootonce N KEEP|cancel|check [tar]|fetch URL|flash N [tar]|devpath N kernel|rootfs|state|log|discard|reboot" >&2; exit 2 ;;
+    *)          echo "usage: $0 status|setdefault N|bootonce N KEEP|cancel|check [tar]|fetch URL|flash N [tar]|devpath N kernel|rootfs|avail|state|log|discard|reboot" >&2; exit 2 ;;
 esac

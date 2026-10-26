@@ -29,7 +29,16 @@ SESSION_TIMEOUT=600
 BROWSER_SESSION=$(echo "$HTTP_COOKIE" | busybox sed -n 's/.*session=\([^;]*\).*/\1/p' | busybox tr -d '\r\n')
 BROWSER_SESSION=$(printf '%s' "$BROWSER_SESSION" | busybox tr -cd 'a-fA-F0-9')
 SESSION_FILE="/tmp/sessions/$BROWSER_SESSION"
-_deny() { printf "Status: 401 Unauthorized\r\nContent-Type: text/plain\r\n\r\nunauthorized"; exit 0; }
+# A 401 on a POST must also consume the body (bounded, since the caller is not
+# authenticated): replying and exiting with an upload still in flight makes
+# busybox httpd reset the connection, so fwupload.html would see "connection
+# dropped" instead of the 401 it turns into a redirect to /login.html.
+_deny() {
+    case "$REQUEST_METHOD$CONTENT_LENGTH" in
+        POST[0-9]*) case "$CONTENT_LENGTH" in *[!0-9]*) ;; *) [ "${#CONTENT_LENGTH}" -le 9 ] && [ "$CONTENT_LENGTH" -le 67108864 ] && busybox head -c "$CONTENT_LENGTH" >/dev/null 2>&1 ;; esac ;;
+    esac
+    printf "Status: 401 Unauthorized\r\nContent-Type: text/plain\r\n\r\nunauthorized"; exit 0
+}
 [ -z "$BROWSER_SESSION" ] && _deny
 [ -f "$SESSION_FILE" ] || _deny
 LAST=$(cat "$SESSION_FILE" 2>/dev/null | busybox tr -d '\r\n'); NOW=$(date +%s)
@@ -85,12 +94,21 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
             # transfer is detected instead of being flashed.
             case "$CONTENT_LENGTH" in ""|*[!0-9]*) jerr "missing Content-Length" ;; esac
             [ "$CONTENT_LENGTH" -gt 0 ] || jerr "empty upload"
-            [ "$CONTENT_LENGTH" -le 67108864 ] || jerr "file is larger than 64 MiB"
-            is_busy && jerr "another firmware operation is running"
-            AVAIL=$(df -k "$WORK" 2>/dev/null | busybox tail -n 1 | busybox awk '{print $(NF-2)}')
+            # Rejecting while the browser is still sending the body must not
+            # just answer and exit: busybox httpd then closes the socket with
+            # unread data, the kernel answers the rest of the upload with a
+            # TCP RST, and the browser throws the reply away and reports
+            # "connection dropped" about 1 MiB in, hiding the real reason.
+            # Read (and discard) the remaining body first; httpd closes our
+            # stdin once it has relayed all of it, so cat returns at the end.
+            uerr() { busybox cat >/dev/null 2>&1; jerr "$1"; }
+            [ "$CONTENT_LENGTH" -le 67108864 ] || uerr "file is larger than 64 MiB"
+            is_busy && uerr "another firmware operation is running"
+            # Free RAM, not `df`: /tmp is a ramfs here and df reports it as 0.
+            AVAIL=$(sh "$FW" avail 2>/dev/null)
             NEED=$(( CONTENT_LENGTH / 1024 + 4096 ))
             case "$AVAIL" in ""|*[!0-9]*) ;; *)
-                [ "$AVAIL" -ge "$NEED" ] || jerr "not enough free memory to stage the file (need ${NEED} KB, have ${AVAIL} KB)" ;;
+                [ "$AVAIL" -ge "$NEED" ] || uerr "not enough free memory to stage the file (need ${NEED} KB, have ${AVAIL} KB)" ;;
             esac
             rm -f "$WORK/upload.tar" "$WORK/meta"
             printf 'verifying' > "$WORK/state"; printf 'Receiving upload' > "$WORK/msg"
@@ -98,7 +116,7 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
             GOT=$(busybox wc -c < "$WORK/upload.tar.part" 2>/dev/null | busybox tr -d ' ')
             if [ "$GOT" != "$CONTENT_LENGTH" ]; then
                 rm -f "$WORK/upload.tar.part"; printf 'error' > "$WORK/state"; printf 'Upload was cut short' > "$WORK/msg"
-                jerr "upload was cut short ($GOT of $CONTENT_LENGTH bytes)"
+                uerr "upload was cut short ($GOT of $CONTENT_LENGTH bytes; out of RAM or the connection broke)"
             fi
             busybox mv "$WORK/upload.tar.part" "$WORK/upload.tar"
             json_hdr
