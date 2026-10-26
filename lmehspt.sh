@@ -2485,6 +2485,7 @@ fi
     # because the 404 is turned into a 302 before any error page is considered.
 cat > httpd.conf <<'EOF'
 404to302:cgi-bin/redirect.sh
+CacheControl:no-cache
 EOF
 
 

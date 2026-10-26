@@ -19,7 +19,8 @@ export GOMAXPROCS=2
 export XDG_CACHE_HOME=/tmp
 
 # ============================================================
-# tailscale_ctl.sh — Tailscale (userspace) lifecycle for lmepisowifi
+# tailscale_ctl.sh — Tailscale lifecycle for lmepisowifi (kernel TUN when
+# available, userspace-networking otherwise)
 # ============================================================
 
 ROOT="/lmepisowifi"
@@ -43,6 +44,17 @@ STARTUP="$ROOT/www2/sh/startup.sh"
 BB="busybox"
 
 LOCKDIR="/tmp/tailscale_ctl.lock"
+
+# Kernel TUN support (added): tun.ko ships next to the daemon. When
+# /dev/net/tun isn't usable, start_daemon() insmods it and, if that works,
+# runs tailscaled on a real kernel interface instead of userspace-networking.
+# Anything that goes wrong along the way just means userspace-networking, i.e.
+# the behaviour this script always had.
+TUN_KO="$TS_DIR/tun.ko"
+TUN_DEV="/dev/net/tun"
+TUN_IFACE="tailscale0"
+MODE_FILE="/tmp/tailscale_tun_mode"    # "tun" | "userspace": mode the running daemon was started in
+NOTE_FILE="/tmp/tailscale_tun_note"    # why userspace is in use (absent while TUN is active)
 
 TS_ENABLED=0
 TS_ROUTES=""
@@ -148,20 +160,86 @@ cleanup_stray_daemons() {
         kill -9 "$_p" 2>/dev/null
     done
 
-    rm -f "$PIDF" "$UPPIDF" "$SOCK" "$LOGIN_URL_FILE" "$DAEMON_LOG" "$UP_LOG" "$STATUS_CACHE"
+    rm -f "$PIDF" "$UPPIDF" "$SOCK" "$LOGIN_URL_FILE" "$DAEMON_LOG" "$UP_LOG" "$STATUS_CACHE" "$MODE_FILE"
 }
 
+# ── kernel TUN ──────────────────────────────────────────────────────────────
+
+# 0 if the tun driver is present (built into the kernel or module loaded)
+_tun_resident() {
+    [ -d /sys/class/misc/tun ] && return 0
+    $BB grep -q '^tun ' /proc/modules 2>/dev/null
+}
+
+# 0 if $TUN_DEV is a char device that can actually be opened, i.e. the driver
+# is there AND the node has the right major/minor
+_tun_openable() {
+    [ -c "$TUN_DEV" ] || return 1
+    ( exec 3<>"$TUN_DEV" ) 2>/dev/null
+}
+
+# Create $TUN_DEV when the driver is up but nothing (devtmpfs/mdev) made the
+# node. tun is a misc device; take major:minor from sysfs, 10:200 otherwise.
+_tun_make_node() {
+    [ -c "$TUN_DEV" ] && return 0
+    _mm="$(cat /sys/class/misc/tun/dev 2>/dev/null)"
+    case "$_mm" in
+        [0-9]*:[0-9]*) _maj="${_mm%%:*}"; _min="${_mm##*:}" ;;
+        *)             _maj=10; _min=200 ;;
+    esac
+    mkdir -p "$($BB dirname "$TUN_DEV")" 2>/dev/null
+    $BB mknod "$TUN_DEV" c "$_maj" "$_min" 2>/dev/null
+    [ -c "$TUN_DEV" ]
+}
+
+# 0 if kernel TUN is usable, loading $TUN_KO first when it isn't. Checks
+# BEFORE insmod, so a kernel with TUN built in (or the module already loaded)
+# never touches the .ko. On failure the reason is left in $_TUN_WHY.
+tun_ready() {
+    _TUN_WHY=""
+    _tun_openable && return 0
+
+    if ! _tun_resident; then
+        if [ ! -f "$TUN_KO" ]; then
+            _TUN_WHY="no TUN support in the kernel and $TUN_KO not found"
+            return 1
+        fi
+        if command -v insmod >/dev/null 2>&1; then _ins="insmod"; else _ins="$BB insmod"; fi
+        _err="$($_ins "$TUN_KO" 2>&1)"
+        if ! _tun_resident; then
+            # keep just the reason ("Invalid module format", ...)
+            _err="$(printf '%s\n' "$_err" | $BB head -n 1 | $BB sed 's/^.*: //' | $BB tr -d '\r"\\' | $BB cut -c1-80)"
+            _TUN_WHY="could not load tun.ko${_err:+ ($_err)}"
+            return 1
+        fi
+        logger -t tailscale "loaded $TUN_KO" 2>/dev/null
+    fi
+
+    _tun_make_node
+    _tun_openable && return 0
+    _TUN_WHY="tun driver is present but $TUN_DEV cannot be opened"
+    return 1
+}
+
+# $1 = tun | userspace
 launch_daemon_once() {
     [ -x "$DAEMON" ] || return 1
     mkdir -p "$STATE_DIR" 2>/dev/null
     rm -f "$DAEMON_LOG" "$PIDF"
 
+    if [ "$1" = "tun" ]; then
+        # Real kernel interface: local programs reach the tailnet through the
+        # routing table, so the SOCKS5/HTTP proxy listeners userspace mode
+        # needs are not started.
+        _net_args="--tun=$TUN_IFACE"
+    else
+        _net_args="--tun=userspace-networking --socks5-server=127.0.0.1:1055 --outbound-http-proxy-listen=127.0.0.1:1055"
+    fi
+
     "$DAEMON" \
         --statedir="$STATE_DIR" \
         --socket="$SOCK" \
-        --tun=userspace-networking \
-        --socks5-server=127.0.0.1:1055 \
-        --outbound-http-proxy-listen=127.0.0.1:1055 \
+        $_net_args \
         < /dev/null >"$DAEMON_LOG" 2>&1 &
     _pid=$!
     echo "$_pid" > "$PIDF"
@@ -174,6 +252,13 @@ launch_daemon_once() {
 wait_for_daemon_ready() {
     _i=0
     while [ "$_i" -lt 15 ]; do
+        # daemon already exited (e.g. refused to create the TUN device):
+        # don't sit out the full timeout before the caller can fall back
+        _dp="$(daemon_pid)"
+        if [ -n "$_dp" ] && ! kill -0 "$_dp" 2>/dev/null; then
+            return 1
+        fi
+
         if ! [ -e "$SOCK" ]; then
             sleep 1
             _i=$((_i + 1))
@@ -199,22 +284,31 @@ start_daemon() {
     daemon_running && return 0
 
     cleanup_stray_daemons
+    rm -f "$NOTE_FILE"
 
-    _try=0
-    while [ "$_try" -lt 2 ]; do
-        launch_daemon_once || {
-            _try=$((_try + 1))
-            cleanup_stray_daemons
-            continue
-        }
+    # Two attempts, as before. With a usable TUN the first one runs on the
+    # kernel interface and the second falls back to userspace-networking, so a
+    # TUN that loads but doesn't actually work can never leave the node down.
+    _modes="userspace userspace"
+    if tun_ready; then
+        _modes="tun userspace"
+    else
+        printf 'userspace-networking: %s\n' "$_TUN_WHY" > "$NOTE_FILE"
+        logger -t tailscale "kernel TUN unavailable ($_TUN_WHY); using userspace-networking" 2>/dev/null
+    fi
 
-        if wait_for_daemon_ready; then
+    for _m in $_modes; do
+        if launch_daemon_once "$_m" && wait_for_daemon_ready; then
+            printf '%s\n' "$_m" > "$MODE_FILE"
             return 0
         fi
 
-        echo "tailscaled crashed or hung during startup. Attempting recovery..." >&2
+        echo "tailscaled ($_m mode) crashed or hung during startup. Attempting recovery..." >&2
+        if [ "$_m" = "tun" ]; then
+            printf 'userspace-networking: tailscaled would not start on %s\n' "$TUN_DEV" > "$NOTE_FILE"
+            logger -t tailscale "tailscaled failed to start on kernel TUN; falling back to userspace-networking" 2>/dev/null
+        fi
         cleanup_stray_daemons
-        _try=$((_try + 1))
     done
 
     return 1
@@ -316,6 +410,7 @@ stop_daemon() {
         $BB timeout 3 "$CLI" --socket="$SOCK" down >/dev/null 2>&1
     fi
     cleanup_stray_daemons
+    rm -f "$NOTE_FILE"
 }
 
 ts_up() {
@@ -459,6 +554,8 @@ emit_status() {
     _key_expiry=""
     _version=""
     _health=""
+    _tun_mode=""
+    _tun_note="$(cat "$NOTE_FILE" 2>/dev/null)"
 
     [ "$TS_ENABLED" = "1" ] && _en="true"
     [ "$TS_SSH" = "1" ] && _ssh="true"
@@ -467,6 +564,7 @@ emit_status() {
     [ "$TS_ACCEPT_DNS" = "1" ] && _accept_dns="true"
 
     if daemon_running; then
+        _tun_mode="$(cat "$MODE_FILE" 2>/dev/null)"
         _json="$(query_status_json)"
         if [ -z "$_json" ]; then
             sleep 1
@@ -527,12 +625,12 @@ emit_status() {
         _login=""
     fi
 
-    printf '{"ok":true,"running":%s,"enabled":%s,"ssh":%s,"exit_node":%s,"accept_routes":%s,"accept_dns":%s,"routes":"%s","hostname":"%s","tags":"%s","ip":"%s","ipv6":"%s","backend":"%s","login_url":"%s","email":"%s","username":"%s","profile_pic_url":"%s","device_hostname":"%s","dns_name":"%s","relay":"%s","key_expiry":"%s","version":"%s","health":[%s]}\n' \
+    printf '{"ok":true,"running":%s,"enabled":%s,"ssh":%s,"exit_node":%s,"accept_routes":%s,"accept_dns":%s,"routes":"%s","hostname":"%s","tags":"%s","ip":"%s","ipv6":"%s","backend":"%s","login_url":"%s","email":"%s","username":"%s","profile_pic_url":"%s","device_hostname":"%s","dns_name":"%s","relay":"%s","key_expiry":"%s","version":"%s","tun_mode":"%s","tun_note":"%s","health":[%s]}\n' \
         "$_run" "$_en" "$_ssh" "$_exit_node" "$_accept_routes" "$_accept_dns" \
         "$(json_esc "$TS_ROUTES")" "$(json_esc "$TS_HOSTNAME")" "$(json_esc "$TS_TAGS")" \
         "$(json_esc "$_ip")" "$(json_esc "$_ipv6")" "$(json_esc "$_backend")" "$(json_esc "$_login")" \
         "$(json_esc "$_email")" "$(json_esc "$_username")" "$(json_esc "$_profile_pic")" "$(json_esc "$_device_hostname")" "$(json_esc "$_dns_name")" \
-        "$(json_esc "$_relay")" "$(json_esc "$_key_expiry")" "$(json_esc "$_version")" "$_health"
+        "$(json_esc "$_relay")" "$(json_esc "$_key_expiry")" "$(json_esc "$_version")" "$(json_esc "$_tun_mode")" "$(json_esc "$_tun_note")" "$_health"
 }
 
 do_start() {

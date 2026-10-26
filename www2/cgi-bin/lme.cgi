@@ -258,6 +258,140 @@ get_channel_list() {
     fi
 }
 
+# ---- Site survey helpers (shared by sitesurvey_load / sitesurvey_scan) ----
+
+# ss_mib KEY -> value of `mib get KEY`
+ss_mib() {
+    mib get "$1" 2>/dev/null \
+        | busybox grep "=" \
+        | busybox cut -d'=' -f2- \
+        | busybox tr -d '\r\n' \
+        | busybox sed 's/^[[:space:]]*//;s/[[:space:]]*$//'
+}
+
+# ss_proc FILE LABEL -> value after "LABEL:" on the first matching line
+ss_proc() {
+    [ -f "$1" ] || return
+    busybox grep -m1 "^[[:space:]]*$2:" "$1" 2>/dev/null \
+        | busybox sed "s/^[[:space:]]*$2:[[:space:]]*//" \
+        | busybox tr -d '\r\n'
+}
+
+# ss_host_json IFACE -> JSON for OUR OWN radio as it is running right now:
+# SSID (main AP, idx 0), operating channel, bandwidth and 40 MHz side-band.
+# The channel/bandwidth come from the driver, not the MIB, so this is correct
+# in auto-channel mode too (the MIB channel is 0 there):
+#   /proc/<if>/mib_rf   "dot11channel"  - channel ACS settled on
+#   /proc/<if>/mib_11n  "currBW(op)"    - operating width (20M/40M/80M/160M)
+#   /proc/<if>/mib_11n  "2ndchoffset"   - above | below | dontcare
+# A site survey never lists our own BSS, hence this separate block.
+ss_host_json() {
+    _h_if="$1"
+    case "$_h_if" in
+        wlan0) _h_tbl="WLAN_MBSSIB_TBL";  _h_ack="AUTO_CHANNEL" ;;
+        *)     _h_tbl="WLAN1_MBSSIB_TBL"; _h_ack="WLAN1_AUTO_CHANNEL" ;;
+    esac
+    _h_auto=$(ss_mib "$_h_ack"); [ "$_h_auto" = "1" ] && _h_auto=true || _h_auto=false
+    _h_ssid=$(ss_mib "${_h_tbl}.0.ssid" \
+        | busybox tr -d '\001-\037\177' \
+        | busybox sed 's/\\/\\\\/g; s/"/\\"/g')
+    _h_dis=$(ss_mib "${_h_tbl}.0.wlanDisabled"); [ -z "$_h_dis" ] && _h_dis=1
+    _h_ch=$(ss_proc "/proc/${_h_if}/mib_rf" "dot11channel")
+    case "$_h_ch" in ''|*[!0-9]*) _h_ch=0 ;; esac
+    _h_bw=$(ss_proc "/proc/${_h_if}/mib_11n" "currBW(op)")
+    _h_bw=${_h_bw%%[!0-9]*}                 # "40M" -> 40, "80+80M" -> 80
+    case "$_h_bw" in ''|*[!0-9]*|0) _h_bw=20 ;; esac
+    _h_2nd=$(ss_proc "/proc/${_h_if}/mib_11n" "2ndchoffset")
+    case "$_h_2nd" in above|below) ;; *) _h_2nd="" ;; esac
+    _h_en=false
+    [ "$_h_dis" = "0" ] && [ -d "/proc/${_h_if}" ] && _h_en=true
+    printf '{"enabled":%s,"auto":%s,"ssid":"%s","channel":%s,"bandwidth":%s,"offset":"%s"}' \
+        "$_h_en" "$_h_auto" "$_h_ssid" "$_h_ch" "$_h_bw" "$_h_2nd"
+}
+
+# ss_parse IFACE RAW -> {"iface":..,"aps":[..],"channels":[..]} from SS_Result text
+ss_parse() {
+    printf '%s\n' "$2" | busybox awk -v iface="$1" '
+BEGIN {
+    in_ap = 0; ap_str = ""; ch_str = ""
+    hwaddr = ""; ap_ch = 0; ssid = ""; rssi = 0; enc = ""; net = ""; bw = ""
+}
+function clean(s) {
+    gsub(/[\r\n]+$/, "", s); gsub(/^[ \t]+/, "", s); gsub(/[ \t]+$/, "", s)
+    return s
+}
+function escape_json(s,   out, i, c) {
+    # SSID text comes from OTHER access routers (not ours): any byte is
+    # possible. Raw control characters (tab, 0x01..0x1f, DEL) are illegal inside
+    # a JSON string and made JSON.parse fail, blanking the survey for the admin
+    # -- turn them into spaces first.
+    gsub(/[\001-\037\177]/, " ", s)
+    # Escape char-by-char. gsub(/\\/, "\\\\") is NOT portable: awks differ in how
+    # they read backslashes in a gsub replacement, and some turn "\\\\" into a
+    # single "\", leaving a lone backslash in the JSON and breaking JSON.parse
+    # for the whole survey when a neighbour SSID contains one.
+    out = ""
+    for (i = 1; i <= length(s); i++) {
+        c = substr(s, i, 1)
+        if      (c == "\\") out = out "\\\\"
+        else if (c == "\"") out = out "\\\""
+        else                out = out c
+    }
+    return out
+}
+function flush_ap() {
+    if (hwaddr == "") return
+    if (ap_str != "") ap_str = ap_str ","
+    ap_str = ap_str sprintf("{\"mac\":\"%s\",\"channel\":%d,\"ssid\":\"%s\",\"rssi\":%d,\"encryption\":\"%s\",\"network\":\"%s\",\"bandwidth\":\"%s\"}",
+        clean(hwaddr), ap_ch, escape_json(clean(ssid)), rssi,
+        escape_json(clean(enc)), escape_json(clean(net)), escape_json(clean(bw)))
+    hwaddr = ""; ap_ch = 0; ssid = ""; rssi = 0; enc = ""; net = ""; bw = ""
+}
+/^[ \t]*={4,}/ {
+    flush_ap(); in_ap = 1; next
+}
+/channel utilization/ {
+    flush_ap(); in_ap = 0; next
+}
+in_ap && /^[ \t]*HwAddr:/     { sub(/^[ \t]*HwAddr:[ \t]*/,     ""); hwaddr = $0 }
+in_ap && /^[ \t]*Channel:/    { sub(/^[ \t]*Channel:[ \t]*/,    ""); ap_ch  = $0 + 0 }
+in_ap && /^[ \t]*SSID:/       { sub(/^[ \t]*SSID:[ \t]*/,       ""); ssid   = $0 }
+in_ap && /^[ \t]*RSSI:/       { sub(/^[ \t]*RSSI:[ \t]*/,       ""); rssi   = $0 + 0 }
+in_ap && /^[ \t]*Encryption:/ { sub(/^[ \t]*Encryption:[ \t]*/, ""); enc    = $0 }
+in_ap && /^[ \t]*Network:/    { sub(/^[ \t]*Network:[ \t]*/,    ""); net    = $0 }
+in_ap && /^[ \t]*Bandwidth:/  { sub(/^[ \t]*Bandwidth:[ \t]*/,  ""); bw     = $0 }
+!in_ap && /Channel:[ \t]*[0-9]+/ && /ch_load/ {
+    gsub(/[ \t]+/, "", $0)
+    split($0, arr, ",")
+    c=0; l=0; f=0; i=0; n=0
+    for (idx in arr) {
+        split(arr[idx], kv, ":")
+        if (kv[1] == "Channel")        c = kv[2] + 0
+        if (kv[1] == "ch_load")        l = kv[2] + 0
+        if (kv[1] == "free_time")      f = kv[2] + 0
+        if (kv[1] == "interence_time") i = kv[2] + 0
+        if (kv[1] == "noise_level")    n = kv[2] + 0
+    }
+    if (c > 0) {
+        if (ch_str != "") ch_str = ch_str ","
+        ch_str = ch_str sprintf("{\"ch\":%d,\"load\":%d,\"free\":%d,\"inter\":%d,\"noise\":%d}", c, l, f, i, n)
+    }
+}
+END {
+    flush_ap()
+    printf "{\"iface\":\"%s\",\"aps\":[%s],\"channels\":[%s]}", iface, ap_str, ch_str
+}
+'
+}
+
+# ss_finish IFACE RESULT -> RESULT (or an empty one) with the live "host" block spliced in
+ss_finish() {
+    _f_res="$2"
+    [ -z "$_f_res" ] && _f_res="{\"iface\":\"$1\",\"aps\":[],\"channels\":[]}"
+    _f_cb='}'
+    printf '%s,"host":%s}' "${_f_res%$_f_cb}" "$(ss_host_json "$1")"
+}
+
 # ---- MAC filter helper functions ----
 
 # Returns current mode (0/1/2) for WLAN1
@@ -923,70 +1057,8 @@ if [ "$REQUEST_METHOD" = "GET" ]; then
             busybox sleep 1
             TRIES=$((TRIES + 1))
         done
-        RESULT=$(printf '%s\n' "$RAW" | busybox awk -v iface="$IFACE" '
-BEGIN {
-    in_ap = 0; ap_str = ""; ch_str = ""
-    hwaddr = ""; ap_ch = 0; ssid = ""; rssi = 0; enc = ""; net = ""; bw = ""
-}
-function clean(s) {
-    gsub(/[\r\n]+$/, "", s); gsub(/^[ \t]+/, "", s); gsub(/[ \t]+$/, "", s)
-    return s
-}
-function escape_json(s) {
-    # SSID text comes from OTHER access routers (not ours): any byte is
-    # possible. Raw control characters (tab, 0x01..0x1f, DEL) are illegal inside
-    # a JSON string and made JSON.parse fail, blanking the survey for the admin
-    # -- turn them into spaces first.
-    gsub(/[\001-\037\177]/, " ", s)
-    gsub(/\\/, "\\\\", s); gsub(/"/, "\\\"", s)
-    return s
-}
-function flush_ap() {
-    if (hwaddr == "") return
-    if (ap_str != "") ap_str = ap_str ","
-    ap_str = ap_str sprintf("{\"mac\":\"%s\",\"channel\":%d,\"ssid\":\"%s\",\"rssi\":%d,\"encryption\":\"%s\",\"network\":\"%s\",\"bandwidth\":\"%s\"}",
-        clean(hwaddr), ap_ch, escape_json(clean(ssid)), rssi,
-        escape_json(clean(enc)), escape_json(clean(net)), escape_json(clean(bw)))
-    hwaddr = ""; ap_ch = 0; ssid = ""; rssi = 0; enc = ""; net = ""; bw = ""
-}
-/^[ \t]*={4,}/ {
-    flush_ap(); in_ap = 1; next
-}
-/channel utilization/ {
-    flush_ap(); in_ap = 0; next
-}
-in_ap && /^[ \t]*HwAddr:/     { sub(/^[ \t]*HwAddr:[ \t]*/,     ""); hwaddr = $0 }
-in_ap && /^[ \t]*Channel:/    { sub(/^[ \t]*Channel:[ \t]*/,    ""); ap_ch  = $0 + 0 }
-in_ap && /^[ \t]*SSID:/       { sub(/^[ \t]*SSID:[ \t]*/,       ""); ssid   = $0 }
-in_ap && /^[ \t]*RSSI:/       { sub(/^[ \t]*RSSI:[ \t]*/,       ""); rssi   = $0 + 0 }
-in_ap && /^[ \t]*Encryption:/ { sub(/^[ \t]*Encryption:[ \t]*/, ""); enc    = $0 }
-in_ap && /^[ \t]*Network:/    { sub(/^[ \t]*Network:[ \t]*/,    ""); net    = $0 }
-in_ap && /^[ \t]*Bandwidth:/  { sub(/^[ \t]*Bandwidth:[ \t]*/,  ""); bw     = $0 }
-!in_ap && /Channel:[ \t]*[0-9]+/ && /ch_load/ {
-    gsub(/[ \t]+/, "", $0)
-    split($0, arr, ",")
-    c=0; l=0; f=0; i=0; n=0
-    for (idx in arr) {
-        split(arr[idx], kv, ":")
-        if (kv[1] == "Channel")        c = kv[2] + 0
-        if (kv[1] == "ch_load")        l = kv[2] + 0
-        if (kv[1] == "free_time")      f = kv[2] + 0
-        if (kv[1] == "interence_time") i = kv[2] + 0
-        if (kv[1] == "noise_level")    n = kv[2] + 0
-    }
-    if (c > 0) {
-        if (ch_str != "") ch_str = ch_str ","
-        ch_str = ch_str sprintf("{\"ch\":%d,\"load\":%d,\"free\":%d,\"inter\":%d,\"noise\":%d}", c, l, f, i, n)
-    }
-}
-END {
-    flush_ap()
-    printf "{\"iface\":\"%s\",\"aps\":[%s],\"channels\":[%s]}", iface, ap_str, ch_str
-}
-')
-        if [ -z "$RESULT" ]; then
-            RESULT="{\"iface\":\"$IFACE\",\"aps\":[],\"channels\":[]}"
-        fi
+        RESULT=$(ss_parse "$IFACE" "$RAW")
+        RESULT=$(ss_finish "$IFACE" "$RESULT")
         printf "Status: 200 OK\r\n"
         printf "Content-Type: application/json\r\n\r\n"
         printf '%s' "$RESULT"
@@ -1000,7 +1072,7 @@ END {
             wlan0|wlan1) ;;
             *) IFACE="wlan1" ;;
         esac
-        iwpriv "$IFACE" at_ss /dev/null 2>&1
+        iwpriv "$IFACE" at_ss >/dev/null 2>&1
         # Poll until the kernel removes the "waitting" sentinel (scan complete)
         # or until 20s timeout, whichever comes first
         TRIES=0
@@ -1012,70 +1084,8 @@ END {
             busybox sleep 1
             TRIES=$((TRIES + 1))
         done
-        RESULT=$(printf '%s\n' "$RAW" | busybox awk -v iface="$IFACE" '
-BEGIN {
-    in_ap = 0; ap_str = ""; ch_str = ""
-    hwaddr = ""; ap_ch = 0; ssid = ""; rssi = 0; enc = ""; net = ""; bw = ""
-}
-function clean(s) {
-    gsub(/[\r\n]+$/, "", s); gsub(/^[ \t]+/, "", s); gsub(/[ \t]+$/, "", s)
-    return s
-}
-function escape_json(s) {
-    # SSID text comes from OTHER access routers (not ours): any byte is
-    # possible. Raw control characters (tab, 0x01..0x1f, DEL) are illegal inside
-    # a JSON string and made JSON.parse fail, blanking the survey for the admin
-    # -- turn them into spaces first.
-    gsub(/[\001-\037\177]/, " ", s)
-    gsub(/\\/, "\\\\", s); gsub(/"/, "\\\"", s)
-    return s
-}
-function flush_ap() {
-    if (hwaddr == "") return
-    if (ap_str != "") ap_str = ap_str ","
-    ap_str = ap_str sprintf("{\"mac\":\"%s\",\"channel\":%d,\"ssid\":\"%s\",\"rssi\":%d,\"encryption\":\"%s\",\"network\":\"%s\",\"bandwidth\":\"%s\"}",
-        clean(hwaddr), ap_ch, escape_json(clean(ssid)), rssi,
-        escape_json(clean(enc)), escape_json(clean(net)), escape_json(clean(bw)))
-    hwaddr = ""; ap_ch = 0; ssid = ""; rssi = 0; enc = ""; net = ""; bw = ""
-}
-/^[ \t]*={4,}/ {
-    flush_ap(); in_ap = 1; next
-}
-/channel utilization/ {
-    flush_ap(); in_ap = 0; next
-}
-in_ap && /^[ \t]*HwAddr:/     { sub(/^[ \t]*HwAddr:[ \t]*/,     ""); hwaddr = $0 }
-in_ap && /^[ \t]*Channel:/    { sub(/^[ \t]*Channel:[ \t]*/,    ""); ap_ch  = $0 + 0 }
-in_ap && /^[ \t]*SSID:/       { sub(/^[ \t]*SSID:[ \t]*/,       ""); ssid   = $0 }
-in_ap && /^[ \t]*RSSI:/       { sub(/^[ \t]*RSSI:[ \t]*/,       ""); rssi   = $0 + 0 }
-in_ap && /^[ \t]*Encryption:/ { sub(/^[ \t]*Encryption:[ \t]*/, ""); enc    = $0 }
-in_ap && /^[ \t]*Network:/    { sub(/^[ \t]*Network:[ \t]*/,    ""); net    = $0 }
-in_ap && /^[ \t]*Bandwidth:/  { sub(/^[ \t]*Bandwidth:[ \t]*/,  ""); bw     = $0 }
-!in_ap && /Channel:[ \t]*[0-9]+/ && /ch_load/ {
-    gsub(/[ \t]+/, "", $0)
-    split($0, arr, ",")
-    c=0; l=0; f=0; i=0; n=0
-    for (idx in arr) {
-        split(arr[idx], kv, ":")
-        if (kv[1] == "Channel")        c = kv[2] + 0
-        if (kv[1] == "ch_load")        l = kv[2] + 0
-        if (kv[1] == "free_time")      f = kv[2] + 0
-        if (kv[1] == "interence_time") i = kv[2] + 0
-        if (kv[1] == "noise_level")    n = kv[2] + 0
-    }
-    if (c > 0) {
-        if (ch_str != "") ch_str = ch_str ","
-        ch_str = ch_str sprintf("{\"ch\":%d,\"load\":%d,\"free\":%d,\"inter\":%d,\"noise\":%d}", c, l, f, i, n)
-    }
-}
-END {
-    flush_ap()
-    printf "{\"iface\":\"%s\",\"aps\":[%s],\"channels\":[%s]}", iface, ap_str, ch_str
-}
-')
-        if [ -z "$RESULT" ]; then
-            RESULT="{\"iface\":\"$IFACE\",\"aps\":[],\"channels\":[]}"
-        fi
+        RESULT=$(ss_parse "$IFACE" "$RAW")
+        RESULT=$(ss_finish "$IFACE" "$RESULT")
         printf "Status: 200 OK\r\n"
         printf "Content-Type: application/json\r\n\r\n"
         printf '%s' "$RESULT"

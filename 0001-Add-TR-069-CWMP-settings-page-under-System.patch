@@ -1,0 +1,972 @@
+From b54c72b4c2c9e989b81693525ee5a4bb5b0fcfdb Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Sun, 25 Oct 2026 00:44:14 +0000
+Subject: [PATCH] Add TR-069 (CWMP) settings page under System
+
+New System > TR-069 page to configure the vendor cwmpClient: ACS URL /
+username / password, periodic inform + interval, connection request
+username / password / path / port, the TR-069 daemon (AUTORUN) switch and
+the EnableCWMP switch, plus a live Running/Stopped badge and a manual
+"Restart TR-069 client" button.
+
+Backend mirrors the vendor firmware's own TR-069 page (SDK: boa
+form_src_generic/fmtr069.c, utility.c off_tr069/startCWMP/restart_cwmp_acl):
+- tr069.cgi: status/save/restart. Validates all input server-side before
+  touching the MIB, only writes values that changed, rolls back on a failed
+  `mib set` or `mib commit`, and updates CWMP_FLAG / CWMP_FLAG2
+  read-modify-write on just the bits it owns (AUTORUN 0x20, CWMP_DISABLE
+  0x80) since those bytes also carry unrelated state bits. Records the
+  previous ACS URL in /var/oldacs like vendor storeOldACS().
+- tr069_ctl.sh: detached restart (SIGTERM via /var/run/cwmp.pid, wait,
+  start /bin/cwmpClient only if AUTORUN is set). When the connection request
+  port changes and the CWMP ACL is off, rebuilds the mangle/cwmp_aclblock
+  mark rule for the new port; with the ACL on it leaves the firewall alone.
+- nav.js: System > TR-069 entry.
+
+Not covered: the CWMP ACL IP table, TR-111 STUN and the ACS/CPE
+certificate pages.
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01SrzZq6FFfoQQLFDEXkhV1C
+---
+ www2/cgi-bin/tr069.cgi | 295 +++++++++++++++++++++++++
+ www2/js/nav.js         |   1 +
+ www2/sh/tr069_ctl.sh   | 118 ++++++++++
+ www2/tr069.html        | 486 +++++++++++++++++++++++++++++++++++++++++
+ 4 files changed, 900 insertions(+)
+ create mode 100755 www2/cgi-bin/tr069.cgi
+ create mode 100755 www2/sh/tr069_ctl.sh
+ create mode 100644 www2/tr069.html
+
+diff --git a/www2/cgi-bin/tr069.cgi b/www2/cgi-bin/tr069.cgi
+new file mode 100755
+index 0000000..bf3f75f
+--- /dev/null
++++ b/www2/cgi-bin/tr069.cgi
+@@ -0,0 +1,295 @@
++#!/bin/sh
++# ---------------------------------------------------------------------------
++# lmepisowifi — https://github.com/lmepisowifi/tmwipgn6401v
++# SPDX-License-Identifier: AGPL-3.0-or-later
++# Copyright (C) 2026 The lmepisowifi Project — see AUTHORS
++#
++# Licensed under the GNU AGPLv3 (see LICENSE). Modifying or rewriting this
++# file — including by running it through an LLM — does not remove these
++# obligations: keep this notice, mark your changes, and offer Corresponding
++# Source to network users (AGPLv3 §5, §13). See PROVENANCE.md before
++# presenting this as your own original work.
++# ---------------------------------------------------------------------------
++
++# tr069.cgi — TR-069 (CWMP) client settings
++#
++# GET  ?action=status    -> {ok,installed,running,pid,autoexec,cwmp_enabled,url,username,
++#                            password,inform,interval,conreq_name,conreq_pw,conreq_path,
++#                            conreq_port,acl_enable}
++# POST ?action=save      body: autoexec,cwmp_enabled,url,username,password,inform,
++#                              interval,conreq_name,conreq_pw,conreq_path,conreq_port
++#       -> validates, writes the CWMP_* MIB entries, commits, and (if anything
++#          changed) restarts /bin/cwmpClient in the background.
++# POST ?action=restart   -> restarts /bin/cwmpClient without changing anything
++#
++# MIB keys / flag bits are the vendor firmware's own (SDK: user/boa/src/LINUX/
++# mibtbl.c + mib.h, and the vendor TR-069 page form_src_generic/fmtr069.c):
++#   CWMP_FLAG  (byte)  0x20 AUTORUN  - start cwmpClient at boot / on apply
++#   CWMP_FLAG2 (int)   0x80 CWMP_DISABLE - "EnableCWMP" parameter, inverted
++# CWMP_FLAG / CWMP_FLAG2 also carry unrelated state bits, so they are only
++# ever updated read-modify-write on the one bit this page owns.
++
++SESSION_TIMEOUT=600
++BB=busybox
++CTL="/lmepisowifi/www2/sh/tr069_ctl.sh"
++CWMP_BIN="/bin/cwmpClient"
++
++# ── Auth ──────────────────────────────────────────────────────────────────────
++BROWSER_SESSION=$(echo "$HTTP_COOKIE" \
++    | $BB sed -n 's/.*session=\([^;]*\).*/\1/p' \
++    | $BB tr -d '\r\n')
++BROWSER_SESSION=$(printf '%s' "$BROWSER_SESSION" \
++    | $BB tr -cd 'a-fA-F0-9')
++SESSION_FILE="/tmp/sessions/$BROWSER_SESSION"
++
++if [ -z "$BROWSER_SESSION" ] || [ ! -f "$SESSION_FILE" ]; then
++    printf "Status: 302 Found\r\nLocation: /login.html\r\n\r\n"
++    exit 0
++fi
++
++LAST=$(cat "$SESSION_FILE" 2>/dev/null | $BB tr -d '\r\n')
++NOW=$(date +%s)
++[ -z "$LAST" ] && LAST=$NOW
++if [ $((NOW - LAST)) -gt $SESSION_TIMEOUT ]; then
++    rm -f "$SESSION_FILE"
++    printf "Status: 302 Found\r\nLocation: /login.html\r\n\r\n"
++    exit 0
++fi
++
++_STMP=$(mktemp /tmp/sessions/.tmp.XXXXXX)
++echo "$NOW" > "$_STMP"
++$BB mv "$_STMP" "$SESSION_FILE"
++
++# ── Helpers ───────────────────────────────────────────────────────────────────
++send_json() { printf "Status: 200 OK\r\nContent-Type: application/json\r\nCache-Control: no-store\r\n\r\n%s" "$1"; }
++ok_json()   { send_json "$1"; exit 0; }
++err_json()  { send_json "{\"ok\":false,\"error\":\"$1\"}"; exit 0; }
++
++case "${CONTENT_LENGTH:-0}" in *[!0-9]*|"") CONTENT_LENGTH=0 ;; esac
++[ "$CONTENT_LENGTH" -gt 8192 ] && CONTENT_LENGTH=8192
++
++QS="$QUERY_STRING"
++ACT=$(echo "$QS" | $BB grep -o 'action=[^&]*' | $BB sed 's/action=//' | $BB head -n 1)
++
++# `mib get NAME` prints "NAME=value"; keep the value exactly as stored.
++mib_get() {
++    mib get "$1" 2>/dev/null | $BB sed -n "s/^$1=//p" | $BB head -n 1 | $BB tr -d '\r'
++}
++
++# `mib set` signals failure in its output as well as (sometimes) its exit
++# code, so check both. Output is discarded: it echoes the value being set,
++# which can be a password.
++mib_set_checked() {
++    _o=$(mib set "$1" "$2" 2>&1); _rc=$?
++    case "$_o" in *fail*|*error*) _rc=1 ;; esac
++    return $_rc
++}
++
++jesc() {
++    printf '%s' "$1" | $BB tr -d '\r\n\t' | $BB sed 's/\\/\\\\/g; s/"/\\"/g'
++}
++
++# Unsigned decimal, falling back to $2 if $1 is empty / not a number.
++num_or() {
++    case "$1" in ''|*[!0-9]*) printf '%s' "$2" ;; *) printf '%s' "$1" ;; esac
++}
++
++# Strip leading zeros so "007" == "7" (and never feed user text to $(( )),
++# where a leading 0 means octal).
++norm_num() {
++    printf '%s' "$1" | $BB sed 's/^0*\([0-9]\)/\1/'
++}
++
++# Printable ASCII only (space..~) and at most $2 chars. Anything else is
++# refused rather than stripped: the vendor config writer drops non-UTF-8
++# bytes, and silently altering a password would lock the device out of its
++# ACS with no hint why.
++is_text() {
++    [ "${#1}" -le "$2" ] || return 1
++    case "$1" in *[!\ -~]*) return 1 ;; esac
++    return 0
++}
++
++load_current() {
++    OLD_CWMP_ACS_URL=$(mib_get CWMP_ACS_URL)
++    OLD_CWMP_ACS_USERNAME=$(mib_get CWMP_ACS_USERNAME)
++    OLD_CWMP_ACS_PASSWORD=$(mib_get CWMP_ACS_PASSWORD)
++    OLD_CWMP_INFORM_ENABLE=$(num_or "$(mib_get CWMP_INFORM_ENABLE)" 0)
++    OLD_CWMP_INFORM_INTERVAL=$(num_or "$(mib_get CWMP_INFORM_INTERVAL)" 43200)
++    OLD_CWMP_CONREQ_USERNAME=$(mib_get CWMP_CONREQ_USERNAME)
++    OLD_CWMP_CONREQ_PASSWORD=$(mib_get CWMP_CONREQ_PASSWORD)
++    OLD_CWMP_CONREQ_PATH=$(mib_get CWMP_CONREQ_PATH)
++    OLD_CWMP_CONREQ_PORT=$(num_or "$(mib_get CWMP_CONREQ_PORT)" 7547)
++    OLD_CWMP_FLAG=$(num_or "$(mib_get CWMP_FLAG)" 0)
++    OLD_CWMP_FLAG2=$(num_or "$(mib_get CWMP_FLAG2)" 0)
++    OLD_CWMP_ACL_ENABLE=$(num_or "$(mib_get CWMP_ACL_ENABLE)" 0)
++}
++
++# Run the restart helper detached so it outlives this CGI (same idiom as
++# ota.cgi). $1 = 1 when the Connection Request port changed.
++run_apply() {
++    ( setsid sh "$CTL" apply "$1" >/dev/null 2>&1 </dev/null & ) 2>/dev/null || \
++        ( sh "$CTL" apply "$1" >/dev/null 2>&1 </dev/null & )
++}
++
++[ -f "$CTL" ] || err_json "helper_missing"
++
++# ================================================================
++# GET ?action=status
++# ================================================================
++if [ "$ACT" = "status" ]; then
++    load_current
++    PID=$(sh "$CTL" pid 2>/dev/null | $BB tr -cd '0-9')
++    [ -z "$PID" ] && PID=0
++    RUNNING=false; [ "$PID" -gt 0 ] && RUNNING=true
++    INSTALLED=false; [ -x "$CWMP_BIN" ] && INSTALLED=true
++    AUTOEXEC=$(( (OLD_CWMP_FLAG & 32) != 0 ? 1 : 0 ))
++    CWMP_ENABLED=$(( (OLD_CWMP_FLAG2 & 128) != 0 ? 0 : 1 ))
++
++    ok_json "$(printf '{"ok":true,"installed":%s,"running":%s,"pid":%s,"autoexec":%s,"cwmp_enabled":%s,"url":"%s","username":"%s","password":"%s","inform":%s,"interval":%s,"conreq_name":"%s","conreq_pw":"%s","conreq_path":"%s","conreq_port":%s,"acl_enable":%s}' \
++        "$INSTALLED" "$RUNNING" "$PID" "$AUTOEXEC" "$CWMP_ENABLED" \
++        "$(jesc "$OLD_CWMP_ACS_URL")" "$(jesc "$OLD_CWMP_ACS_USERNAME")" "$(jesc "$OLD_CWMP_ACS_PASSWORD")" \
++        "$OLD_CWMP_INFORM_ENABLE" "$OLD_CWMP_INFORM_INTERVAL" \
++        "$(jesc "$OLD_CWMP_CONREQ_USERNAME")" "$(jesc "$OLD_CWMP_CONREQ_PASSWORD")" \
++        "$(jesc "$OLD_CWMP_CONREQ_PATH")" "$OLD_CWMP_CONREQ_PORT" "$OLD_CWMP_ACL_ENABLE")"
++fi
++
++# Everything below changes state: POST only.
++[ "$REQUEST_METHOD" = "POST" ] || err_json "post_required"
++
++# ================================================================
++# POST ?action=restart
++# ================================================================
++if [ "$ACT" = "restart" ]; then
++    [ -x "$CWMP_BIN" ] || err_json "not_installed"
++    send_json '{"ok":true}'
++    run_apply 0
++    exit 0
++fi
++
++# ================================================================
++# POST ?action=save
++# ================================================================
++if [ "$ACT" = "save" ]; then
++    [ -x "$CWMP_BIN" ] || err_json "not_installed"
++    read -n "$CONTENT_LENGTH" BODY
++
++    # Fetch + percent-decode one form field (single line).
++    form_get() {
++        _raw=$(printf '%s' "$BODY" | $BB tr '&' '\n' | $BB grep "^$1=" | $BB head -n 1 | $BB sed 's/^[^=]*=//')
++        [ -n "$_raw" ] && $BB httpd -d "$_raw" | $BB tr -d '\r\n'
++    }
++
++    load_current
++
++    AUTOEXEC=$(form_get autoexec)
++    CWMP_ENABLED=$(form_get cwmp_enabled)
++    URL=$(form_get url)
++    USERNAME=$(form_get username)
++    PASSWORD=$(form_get password)
++    INFORM=$(form_get inform)
++    INTERVAL=$(form_get interval)
++    CR_NAME=$(form_get conreq_name)
++    CR_PW=$(form_get conreq_pw)
++    CR_PATH=$(form_get conreq_path)
++    CR_PORT=$(form_get conreq_port)
++
++    # ── Validate everything before touching the MIB ──
++    case "$AUTOEXEC"      in 0|1) ;; *) err_json "bad_request" ;; esac
++    case "$CWMP_ENABLED"  in 0|1) ;; *) err_json "bad_request" ;; esac
++    case "$INFORM"        in 0|1) ;; *) err_json "bad_request" ;; esac
++
++    is_text "$URL" 256 || err_json "bad_url"
++    case "$URL" in
++        http://?*|https://?*) ;;
++        *) err_json "bad_url" ;;
++    esac
++    case "$URL" in *\ *) err_json "bad_url" ;; esac
++
++    is_text "$USERNAME" 256 || err_json "bad_username"
++    is_text "$PASSWORD" 256 || err_json "bad_password"
++    is_text "$CR_NAME"  256 || err_json "bad_conreq_name"
++    is_text "$CR_PW"    256 || err_json "bad_conreq_pw"
++
++    # The path array is 32 bytes incl. NUL. Only URL-path-safe characters.
++    [ "${#CR_PATH}" -le 31 ] || err_json "bad_path"
++    case "$CR_PATH" in *[!A-Za-z0-9/_.~%-]*) err_json "bad_path" ;; esac
++
++    case "$CR_PORT" in ''|*[!0-9]*) err_json "bad_port" ;; esac
++    [ "${#CR_PORT}" -le 5 ] || err_json "bad_port"
++    CR_PORT=$(norm_num "$CR_PORT")
++    [ "$CR_PORT" -ge 1 ] && [ "$CR_PORT" -le 65535 ] || err_json "bad_port"
++
++    if [ "$INFORM" = "1" ]; then
++        case "$INTERVAL" in ''|*[!0-9]*) err_json "bad_interval" ;; esac
++        [ "${#INTERVAL}" -le 10 ] || err_json "bad_interval"
++        INTERVAL=$(norm_num "$INTERVAL")
++        [ "$INTERVAL" -ge 1 ] && [ "$INTERVAL" -le 2147483647 ] || err_json "bad_interval"
++    else
++        # Periodic Inform off: the interval field is not edited (vendor
++        # page does the same), keep whatever is stored.
++        INTERVAL="$OLD_CWMP_INFORM_INTERVAL"
++    fi
++
++    # ── Flags: read-modify-write only the bit this page owns ──
++    NEW_FLAG=$(( (OLD_CWMP_FLAG & ~32) | (AUTOEXEC * 32) ))
++    NEW_FLAG2=$(( (OLD_CWMP_FLAG2 & ~128) | ((1 - CWMP_ENABLED) * 128) ))
++
++    # ── Apply only what changed ──
++    CHANGED=0
++    APPLIED=""
++
++    rollback() {
++        for _n in $APPLIED; do
++            eval "_ov=\$OLD_$_n"
++            mib set "$_n" "$_ov" >/dev/null 2>&1
++        done
++    }
++
++    # $1 = MIB name (old value is in $OLD_<name>), $2 = new value
++    set_if_changed() {
++        eval "_old=\$OLD_$1"
++        [ "$_old" = "$2" ] && return 0
++        CHANGED=1
++        APPLIED="$APPLIED $1"
++        mib_set_checked "$1" "$2"
++    }
++
++    # Vendor storeOldACS(): remember the previous ACS URL (the TR-069 client
++    # uses it to tell that the ACS changed) before overwriting it.
++    if [ "$OLD_CWMP_ACS_URL" != "$URL" ] && [ -n "$OLD_CWMP_ACS_URL" ]; then
++        printf '%s' "$OLD_CWMP_ACS_URL" > /var/oldacs 2>/dev/null
++        printf '%s' "$OLD_CWMP_ACS_URL" > /var/oldacs_wan 2>/dev/null
++    fi
++
++    set_if_changed CWMP_ACS_URL          "$URL"       &&
++    set_if_changed CWMP_ACS_USERNAME     "$USERNAME"  &&
++    set_if_changed CWMP_ACS_PASSWORD     "$PASSWORD"  &&
++    set_if_changed CWMP_INFORM_ENABLE    "$INFORM"    &&
++    set_if_changed CWMP_INFORM_INTERVAL  "$INTERVAL"  &&
++    set_if_changed CWMP_CONREQ_USERNAME  "$CR_NAME"   &&
++    set_if_changed CWMP_CONREQ_PASSWORD  "$CR_PW"     &&
++    set_if_changed CWMP_CONREQ_PATH      "$CR_PATH"   &&
++    set_if_changed CWMP_CONREQ_PORT      "$CR_PORT"   &&
++    set_if_changed CWMP_FLAG             "$NEW_FLAG"  &&
++    set_if_changed CWMP_FLAG2            "$NEW_FLAG2" \
++        || { rollback; err_json "set_failed"; }
++
++    if [ "$CHANGED" = "0" ]; then
++        ok_json '{"ok":true,"changed":false}'
++    fi
++
++    if ! mib commit >/dev/null 2>&1; then
++        rollback
++        err_json "commit_failed"
++    fi
++
++    PORT_CHANGED=0
++    [ "$OLD_CWMP_CONREQ_PORT" != "$CR_PORT" ] && PORT_CHANGED=1
++
++    send_json "{\"ok\":true,\"changed\":true,\"port_changed\":$PORT_CHANGED}"
++    run_apply "$PORT_CHANGED"
++    exit 0
++fi
++
++err_json "unknown_action"
+diff --git a/www2/js/nav.js b/www2/js/nav.js
+index fe2309b..7816325 100644
+--- a/www2/js/nav.js
++++ b/www2/js/nav.js
+@@ -92,6 +92,7 @@ setInterval(function () {
+             { label: 'Software Update',  href: '/ota.html'           },
+             { label: 'Boot Partitions',  href: '/bootpart.html'      },
+             { label: 'Firmware Upload',  href: '/fwupload.html'      },
++            { label: 'TR-069',           href: '/tr069.html'         },
+             { label: 'MIB Configuration', href: '/mibconfig.html'    },
+             { label: 'Reboot',           href: '/reboot.html'        },
+         ]},
+diff --git a/www2/sh/tr069_ctl.sh b/www2/sh/tr069_ctl.sh
+new file mode 100755
+index 0000000..e758c0d
+--- /dev/null
++++ b/www2/sh/tr069_ctl.sh
+@@ -0,0 +1,118 @@
++#!/bin/sh
++# ---------------------------------------------------------------------------
++# lmepisowifi — https://github.com/lmepisowifi/tmwipgn6401v
++# SPDX-License-Identifier: AGPL-3.0-or-later
++# Copyright (C) 2026 The lmepisowifi Project — see AUTHORS
++#
++# Licensed under the GNU AGPLv3 (see LICENSE). Modifying or rewriting this
++# file — including by running it through an LLM — does not remove these
++# obligations: keep this notice, mark your changes, and offer Corresponding
++# Source to network users (AGPLv3 §5, §13). See PROVENANCE.md before
++# presenting this as your own original work.
++# ---------------------------------------------------------------------------
++
++# tr069_ctl.sh — control the vendor TR-069 (CWMP) client, /bin/cwmpClient
++# Installed at: /lmepisowifi/www2/sh/tr069_ctl.sh
++# Called by:    tr069.cgi (TR-069 page)
++#
++# Usage:
++#   tr069_ctl.sh pid              print the running cwmpClient pid (nothing if stopped)
++#   tr069_ctl.sh apply [0|1]      stop cwmpClient, then start it again if the
++#                                 AUTORUN flag is set in the (already committed)
++#                                 MIB. Pass 1 as the 2nd arg when the Connection
++#                                 Request port changed so its firewall mark rule
++#                                 is rebuilt too.
++#
++# This mirrors what the vendor firmware's own web UI does after saving the
++# TR-069 page (boa form_src_generic/fmtr069.c formTR069Config, utility.c
++# off_tr069() / startCWMP() / restart_cwmp_acl()):
++#   - off_tr069(): SIGTERM the pid in /var/run/cwmp.pid (cwmpClient's SIGTERM
++#     handler removes the pid file and exits)
++#   - wait a few seconds ("restart is too fast, then the new cwmp process will
++#     receive the signal SIGTERM")
++#   - startCWMP(): run /bin/cwmpClient only if CWMP_FLAG & CWMP_FLAG_AUTORUN
++#
++# Meant to be run detached by the CGI (setsid ... &) so it survives the CGI
++# exiting; it never prints anything the caller needs to read.
++
++BB="busybox"
++PIDFILE="/var/run/cwmp.pid"
++CWMP_BIN="/bin/cwmpClient"
++CWMP_FLAG_AUTORUN=32      # mib.h CWMP_FLAG_AUTORUN 0x20
++RMACC_MARK="0x1000"       # utility.c RMACC_MARK
++CWMP_ACL_CHAIN="cwmp_aclblock"  # utility.c FW_CWMP_ACL (mangle table)
++LANIF="br0"
++
++mib_get() {
++    mib get "$1" 2>/dev/null | $BB sed -n "s/^$1=//p" | $BB head -n 1 | $BB tr -d '\r'
++}
++
++# Echo the pid of the running cwmpClient, or nothing. Trust the pid file
++# only if that process still exists; fall back to pidof for a stale file.
++running_pid() {
++    _p=$($BB cat "$PIDFILE" 2>/dev/null | $BB tr -cd '0-9')
++    if [ -z "$_p" ] || [ ! -d "/proc/$_p" ]; then
++        _p=$($BB pidof cwmpClient 2>/dev/null | $BB cut -d' ' -f1)
++    fi
++    [ -n "$_p" ] && printf '%s' "$_p"
++    return 0
++}
++
++stop_client() {
++    _p=$(running_pid)
++    [ -z "$_p" ] && return 0
++    kill -15 "$_p" 2>/dev/null
++    _i=0
++    while [ "$_i" -lt 10 ] && [ -d "/proc/$_p" ]; do
++        sleep 1
++        _i=$((_i + 1))
++    done
++    # Still alive after ~10 s: it ignored SIGTERM, don't leave two clients.
++    [ -d "/proc/$_p" ] && kill -9 "$_p" 2>/dev/null
++    $BB rm -f "$PIDFILE"
++    return 0
++}
++
++start_client() {
++    [ -x "$CWMP_BIN" ] || return 1
++    [ -n "$(running_pid)" ] && return 0
++    ( "$CWMP_BIN" >/dev/null 2>&1 </dev/null & )
++    return 0
++}
++
++# Rebuild the WAN-side mark rule for the Connection Request port. This is
++# exactly vendor restart_cwmp_acl() for the "CWMP ACL disabled" case: flush
++# mangle/cwmp_aclblock, then mark non-br0 TCP traffic to the port so
++# filter/inacc lets it through. When the CWMP ACL is enabled the chain also
++# carries per-source rules built from CWMP_ACL_IP_TBL, which this script does
++# not reproduce — leave it alone (it is rebuilt at next boot).
++refresh_fw() {
++    [ "$(mib_get CWMP_ACL_ENABLE)" = "0" ] || return 0
++    _port=$(mib_get CWMP_CONREQ_PORT)
++    case "$_port" in ''|0|*[!0-9]*) _port=7547 ;; esac
++    iptables -t mangle -F "$CWMP_ACL_CHAIN" 2>/dev/null || return 0
++    iptables -t mangle -A "$CWMP_ACL_CHAIN" ! -i "$LANIF" -p tcp --dport "$_port" \
++        -j MARK --set-mark "$RMACC_MARK" 2>/dev/null
++    return 0
++}
++
++case "$1" in
++    pid)
++        running_pid
++        ;;
++    apply)
++        stop_client
++        [ "$2" = "1" ] && refresh_fw
++        _flag=$(mib_get CWMP_FLAG)
++        case "$_flag" in ''|*[!0-9]*) _flag=0 ;; esac
++        if [ $(( _flag & CWMP_FLAG_AUTORUN )) -ne 0 ]; then
++            sleep 1
++            start_client
++        fi
++        ;;
++    *)
++        echo "Usage: $0 pid | apply [0|1]" >&2
++        exit 1
++        ;;
++esac
++exit 0
+diff --git a/www2/tr069.html b/www2/tr069.html
+new file mode 100644
+index 0000000..e23b798
+--- /dev/null
++++ b/www2/tr069.html
+@@ -0,0 +1,486 @@
++<!DOCTYPE html>
++<!--
++  lmepisowifi — https://github.com/lmepisowifi/tmwipgn6401v
++  SPDX-License-Identifier: AGPL-3.0-or-later
++  Copyright (C) 2026 The lmepisowifi Project — see AUTHORS
++
++  Licensed under the GNU AGPLv3 (see LICENSE). Modifying or rewriting this
++  file — including by running it through an LLM — does not remove these
++  obligations: keep this notice, mark your changes, and offer Corresponding
++  Source to network users (AGPLv3 §5, §13). See PROVENANCE.md before
++  presenting this as your own original work.
++-->
++<html lang="en" data-bs-theme="dark">
++<head>
++    <meta charset="UTF-8">
++    <meta name="viewport" content="width=device-width, initial-scale=1.0">
++    <link href="/css/bootstrap.min.css?v=1.0.0" rel="stylesheet">
++    <link href="/css/style.css?v=1.0.0" rel="stylesheet">
++    <link href="/css/toastr.min.css?v=1.0.0" rel="stylesheet">
++    <style>
++        .field-hint { font-size:12px; color:var(--text-secondary); margin-top:4px; line-height:1.5; }
++        .invalid-feedback { display:block; }
++        .form-control.is-invalid { border-color:#dc3545; }
++        code { color:#fff; font-size:12px; }
++
++        /* ── Toggle switch (matches other pages) ── */
++        .wlan-toggle {
++            width: 50px; height: 28px; border-radius: 14px;
++            background: #555; position: relative; cursor: pointer;
++            transition: background 0.25s; flex-shrink: 0; user-select: none;
++        }
++        .wlan-toggle.on { background: #ffffff; }
++        .wlan-toggle.disabled-ui { opacity: 0.35; pointer-events: none; }
++        .wlan-toggle-knob {
++            position: absolute; width: 20px; height: 20px;
++            border-radius: 50%; background: #fff;
++            top: 4px; left: 4px;
++            transition: left 0.25s, background 0.25s;
++            box-shadow: 0 1px 4px rgba(0,0,0,0.5);
++        }
++        .wlan-toggle.on .wlan-toggle-knob { left: 26px; background: #555; }
++
++        .tr-badge { display:inline-block; padding:2px 9px; border-radius:3px; font-size:11px; font-weight:700; }
++        .tr-badge.on   { background:rgba(76,175,80,.2);   color:#81c784; }
++        .tr-badge.off  { background:rgba(220,53,69,.18);  color:#e17e88; }
++        .tr-badge.none { background:rgba(158,158,158,.18); color:#aaa; }
++
++        .tr-section { font-size:12px; font-weight:700; letter-spacing:.06em; text-transform:uppercase;
++                      color:var(--text-secondary); margin:18px 0 10px; }
++        .tr-section:first-child { margin-top:0; }
++        .tr-switch-row { display:flex; align-items:flex-start; gap:12px; margin-bottom:12px; }
++        .tr-switch-row .tr-switch-text { min-width:0; }
++        .tr-switch-title { font-size:14px; }
++        .tr-note { font-size:12px; padding:8px 10px; border-radius:6px; margin-top:12px;
++                   background:rgba(255,193,7,.10); border:1px solid rgba(255,193,7,.28); color:#ffd54f; }
++    </style>
++</head>
++<body>
++
++<div id="overlay">
++    <div id="overlay-blur"></div>
++    <div id="overlay-msg"><div id="overlay-spinner"></div><span id="overlay-text"></span></div>
++</div>
++
++<script src="/js/nav.js?v=1.0.0"></script>
++
++<div class="container mt-4 mb-5" style="max-width:640px;">
++
++    <div class="card">
++        <div class="card-header d-flex align-items-center justify-content-between">
++            <span>TR-069 (CWMP)</span>
++            <span id="tr-badge" class="tr-badge none">Loading&hellip;</span>
++        </div>
++        <div class="card-body">
++
++            <p class="field-hint mt-0">
++                TR-069 lets an Auto Configuration Server (ACS) &mdash; normally your ISP's &mdash; manage this
++                device remotely. The client is the vendor's <code>cwmpClient</code>. Point it at your own ACS,
++                or turn it off to stop remote management.
++            </p>
++
++            <div id="tr-notinstalled" class="tr-note" style="display:none;">
++                This firmware has no <code>/bin/cwmpClient</code>, so there is no TR-069 client to configure.
++            </div>
++
++            <!-- ─── Client ─── -->
++            <div class="tr-section">Client</div>
++
++            <div class="tr-switch-row">
++                <div class="wlan-toggle" id="tr-autoexec" onclick="flip('tr-autoexec')" role="switch"
++                     title="Run the TR-069 client"><div class="wlan-toggle-knob"></div></div>
++                <div class="tr-switch-text">
++                    <div class="tr-switch-title">TR-069 daemon</div>
++                    <div class="field-hint mt-0">Runs <code>cwmpClient</code> on boot and after Apply. Off stops it and keeps it from starting.</div>
++                </div>
++            </div>
++
++            <div class="tr-switch-row">
++                <div class="wlan-toggle" id="tr-cwmp-enabled" onclick="flip('tr-cwmp-enabled')" role="switch"
++                     title="EnableCWMP parameter"><div class="wlan-toggle-knob"></div></div>
++                <div class="tr-switch-text">
++                    <div class="tr-switch-title">Enable CWMP</div>
++                    <div class="field-hint mt-0">The device's <code>EnableCWMP</code> parameter. When off the client stays running but does not contact the ACS.</div>
++                </div>
++            </div>
++
++            <!-- ─── ACS ─── -->
++            <div class="tr-section">ACS</div>
++
++            <div class="mb-2">
++                <label for="tr-url" class="form-label">URL</label>
++                <input type="text" class="form-control" id="tr-url" maxlength="256" autocomplete="off"
++                       spellcheck="false" placeholder="http://acs.example.com:9090/">
++                <div class="field-hint">Must start with <code>http://</code> or <code>https://</code>.</div>
++                <div class="invalid-feedback" id="tr-url-err" style="display:none"></div>
++            </div>
++
++            <div class="mb-2">
++                <label for="tr-username" class="form-label">Username</label>
++                <input type="text" class="form-control" id="tr-username" maxlength="256" autocomplete="off" spellcheck="false">
++                <div class="invalid-feedback" id="tr-username-err" style="display:none"></div>
++            </div>
++
++            <div class="mb-2">
++                <label for="tr-password" class="form-label">Password</label>
++                <div class="input-group">
++                    <input type="password" class="form-control" id="tr-password" maxlength="256"
++                           autocomplete="new-password" spellcheck="false">
++                    <button type="button" class="btn btn-outline-secondary" onclick="togglePw('tr-password', this)">Show</button>
++                </div>
++                <div class="invalid-feedback" id="tr-password-err" style="display:none"></div>
++            </div>
++
++            <div class="tr-switch-row mt-3">
++                <div class="wlan-toggle" id="tr-inform" onclick="flip('tr-inform')" role="switch"
++                     title="Periodic Inform"><div class="wlan-toggle-knob"></div></div>
++                <div class="tr-switch-text">
++                    <div class="tr-switch-title">Periodic Inform</div>
++                    <div class="field-hint mt-0">Contact the ACS on a timer, not only when it asks.</div>
++                </div>
++            </div>
++
++            <div class="mb-2">
++                <label for="tr-interval" class="form-label">Inform interval (seconds)</label>
++                <input type="text" class="form-control" id="tr-interval" maxlength="10" inputmode="numeric"
++                       autocomplete="off" placeholder="43200">
++                <div class="invalid-feedback" id="tr-interval-err" style="display:none"></div>
++            </div>
++
++            <!-- ─── Connection Request ─── -->
++            <div class="tr-section">Connection Request</div>
++            <p class="field-hint mt-0">
++                How the ACS reaches this device to start a session. Leave username and password empty if
++                your ACS does not authenticate connection requests.
++            </p>
++
++            <div class="mb-2">
++                <label for="tr-cr-name" class="form-label">Username</label>
++                <input type="text" class="form-control" id="tr-cr-name" maxlength="256" autocomplete="off" spellcheck="false">
++                <div class="invalid-feedback" id="tr-cr-name-err" style="display:none"></div>
++            </div>
++
++            <div class="mb-2">
++                <label for="tr-cr-pw" class="form-label">Password</label>
++                <div class="input-group">
++                    <input type="password" class="form-control" id="tr-cr-pw" maxlength="256"
++                           autocomplete="new-password" spellcheck="false">
++                    <button type="button" class="btn btn-outline-secondary" onclick="togglePw('tr-cr-pw', this)">Show</button>
++                </div>
++                <div class="invalid-feedback" id="tr-cr-pw-err" style="display:none"></div>
++            </div>
++
++            <div class="row g-2">
++                <div class="col-8">
++                    <label for="tr-cr-path" class="form-label">Path</label>
++                    <input type="text" class="form-control" id="tr-cr-path" maxlength="31" autocomplete="off"
++                           spellcheck="false" placeholder="/tr069">
++                    <div class="invalid-feedback" id="tr-cr-path-err" style="display:none"></div>
++                </div>
++                <div class="col-4">
++                    <label for="tr-cr-port" class="form-label">Port</label>
++                    <input type="text" class="form-control" id="tr-cr-port" maxlength="5" inputmode="numeric"
++                           autocomplete="off" placeholder="7547">
++                    <div class="invalid-feedback" id="tr-cr-port-err" style="display:none"></div>
++                </div>
++            </div>
++
++            <div id="tr-acl-note" class="tr-note" style="display:none;">
++                The CWMP WAN ACL is enabled on this device. It limits which source addresses may send
++                Connection Requests; its entries can't be edited from this page.
++            </div>
++
++            <div class="d-grid gap-2 mt-4">
++                <button class="btn btn-primary" id="tr-apply" onclick="applySettings()">Apply</button>
++                <button class="btn btn-outline-secondary" id="tr-restart" onclick="restartClient()">Restart TR-069 client</button>
++            </div>
++        </div>
++    </div>
++
++    <div class="card mt-3">
++        <div class="card-body" style="font-size:0.82em; color:var(--text-secondary)">
++            <strong style="color:var(--bs-body-color)">On Apply:</strong>
++            changed values are written to flash (<code>mib commit</code>) and <code>cwmpClient</code> is
++            restarted (only if something changed). Restarting makes the device open a new session with
++            the ACS. If your ISP's ACS is replaced or the client is turned off, the ISP can no longer
++            manage or provision this device remotely.
++        </div>
++    </div>
++</div>
++
++<script src="/js/bootstrap.bundle.min.js?v=1.0.0"></script>
++<script src="/js/jquery-3.7.1.min.js?v=1.0.0"></script>
++<script src="/js/toastr.min.js?v=1.0.0"></script>
++<script>
++    toastr.options = { closeButton:true, progressBar:true, positionClass:'toast-top-right', timeOut:4000 };
++
++    // ---------------------------------------------------------------
++    // Overlay
++    // ---------------------------------------------------------------
++    var overlay        = document.getElementById('overlay');
++    var overlayTxt     = document.getElementById('overlay-text');
++    var overlaySpinner = document.getElementById('overlay-spinner');
++
++    function showOverlay(msg, spinning) {
++        overlayTxt.textContent = msg;
++        overlaySpinner.style.display = (spinning === false) ? 'none' : '';
++        overlay.classList.add('visible');
++    }
++    function hideOverlay(cb) {
++        overlay.classList.remove('visible');
++        if (cb) setTimeout(cb, 360);
++    }
++
++    // ---------------------------------------------------------------
++    // State
++    // ---------------------------------------------------------------
++    var installed = true;
++    var aclEnabled = false;
++    var TEXT_IDS   = ['tr-url', 'tr-username', 'tr-password', 'tr-interval',
++                      'tr-cr-name', 'tr-cr-pw', 'tr-cr-path', 'tr-cr-port'];
++    var TOGGLE_IDS = ['tr-autoexec', 'tr-cwmp-enabled', 'tr-inform'];
++    var BTN_IDS    = ['tr-apply', 'tr-restart'];
++
++    function byId(id) { return document.getElementById(id); }
++    function getToggle(id) { return byId(id).classList.contains('on') ? 1 : 0; }
++    function setToggle(id, on) { byId(id).classList.toggle('on', !!on); }
++
++    function flip(id) {
++        byId(id).classList.toggle('on');
++        if (id === 'tr-inform') syncInterval();
++    }
++
++    // Interval is only editable while Periodic Inform is on (like the vendor page).
++    function syncInterval() {
++        var on = getToggle('tr-inform') === 1;
++        byId('tr-interval').disabled = !on || !installed;
++    }
++
++    function togglePw(id, btn) {
++        var el = byId(id);
++        var show = el.type === 'password';
++        el.type = show ? 'text' : 'password';
++        btn.textContent = show ? 'Hide' : 'Show';
++    }
++
++    function setFormLocked(locked) {
++        TEXT_IDS.forEach(function (id) { byId(id).disabled = locked; });
++        TOGGLE_IDS.forEach(function (id) { byId(id).classList.toggle('disabled-ui', locked); });
++        BTN_IDS.forEach(function (id) { byId(id).disabled = locked; });
++        if (!locked) syncInterval();
++    }
++
++    function setBadge(d) {
++        var b = byId('tr-badge');
++        if (!d.installed) { b.className = 'tr-badge none'; b.textContent = 'Not installed'; }
++        else if (d.running) { b.className = 'tr-badge on'; b.textContent = 'Running · PID ' + d.pid; }
++        else { b.className = 'tr-badge off'; b.textContent = 'Stopped'; }
++    }
++
++    // ---------------------------------------------------------------
++    // Validation (the CGI re-checks everything; this is for fast feedback)
++    // ---------------------------------------------------------------
++    function setFieldError(inputId, msg) {
++        var inp = byId(inputId), err = byId(inputId + '-err');
++        if (msg) {
++            inp.classList.add('is-invalid');
++            if (err) { err.textContent = msg; err.style.display = 'block'; }
++        } else {
++            inp.classList.remove('is-invalid');
++            if (err) err.style.display = 'none';
++        }
++    }
++    function clearErrors() { TEXT_IDS.forEach(function (id) { setFieldError(id, null); }); }
++
++    var PRINTABLE = /^[\x20-\x7e]*$/;
++
++    function checkText(id, label) {
++        var v = byId(id).value;
++        if (v.length > 256) return label + ' is too long (max 256 characters)';
++        if (!PRINTABLE.test(v)) return label + ' may only contain plain ASCII characters';
++        return null;
++    }
++
++    function validate() {
++        var errs = {};
++        var url = byId('tr-url').value;
++        if (!/^https?:\/\/[^\s]+$/.test(url) || !PRINTABLE.test(url))
++            errs['tr-url'] = 'Enter a URL starting with http:// or https://';
++        else if (url.length > 256)
++            errs['tr-url'] = 'URL is too long (max 256 characters)';
++
++        var e;
++        if ((e = checkText('tr-username', 'Username'))) errs['tr-username'] = e;
++        if ((e = checkText('tr-password', 'Password'))) errs['tr-password'] = e;
++        if ((e = checkText('tr-cr-name', 'Username')))  errs['tr-cr-name'] = e;
++        if ((e = checkText('tr-cr-pw', 'Password')))    errs['tr-cr-pw'] = e;
++
++        if (getToggle('tr-inform') === 1) {
++            var iv = byId('tr-interval').value;
++            if (!/^\d{1,10}$/.test(iv) || +iv < 1 || +iv > 2147483647)
++                errs['tr-interval'] = 'Enter a whole number of seconds (1 or more)';
++        }
++
++        var path = byId('tr-cr-path').value;
++        if (path.length > 31 || !/^[A-Za-z0-9\/_.~%-]*$/.test(path))
++            errs['tr-cr-path'] = 'Up to 31 characters: letters, digits and / _ . ~ % -';
++
++        var port = byId('tr-cr-port').value;
++        if (!/^\d{1,5}$/.test(port) || +port < 1 || +port > 65535)
++            errs['tr-cr-port'] = 'Enter a port from 1 to 65535';
++
++        clearErrors();
++        Object.keys(errs).forEach(function (id) { setFieldError(id, errs[id]); });
++        return Object.keys(errs).length === 0;
++    }
++
++    var ERRORS = {
++        bad_url:         'ACS URL must start with http:// or https:// and contain no spaces.',
++        bad_username:    'ACS username is invalid.',
++        bad_password:    'ACS password is invalid.',
++        bad_conreq_name: 'Connection Request username is invalid.',
++        bad_conreq_pw:   'Connection Request password is invalid.',
++        bad_path:        'Connection Request path is invalid.',
++        bad_port:        'Connection Request port must be 1–65535.',
++        bad_interval:    'Inform interval must be a whole number of seconds (1 or more).',
++        bad_request:     'The request was incomplete.',
++        set_failed:      'Writing a setting failed; nothing was changed.',
++        commit_failed:   'Saving to flash failed; nothing was changed.',
++        not_installed:   'This firmware has no TR-069 client.',
++        helper_missing:  'tr069_ctl.sh is missing on the device. Reinstall the web interface.',
++        post_required:   'Bad request.',
++        unknown_action:  'Bad request.'
++    };
++    function errText(code) { return ERRORS[code] || ('Error: ' + code); }
++
++    // ---------------------------------------------------------------
++    // Load
++    // ---------------------------------------------------------------
++    function fill(d) {
++        installed  = d.installed !== false;
++        aclEnabled = String(d.acl_enable) === '1';
++
++        setBadge(d);
++        byId('tr-notinstalled').style.display = installed ? 'none' : '';
++        byId('tr-acl-note').style.display = aclEnabled ? '' : 'none';
++
++        setToggle('tr-autoexec',     d.autoexec === 1);
++        setToggle('tr-cwmp-enabled', d.cwmp_enabled === 1);
++        setToggle('tr-inform',       d.inform === 1);
++        byId('tr-url').value       = d.url || '';
++        byId('tr-username').value  = d.username || '';
++        byId('tr-password').value  = d.password || '';
++        byId('tr-interval').value  = d.interval;
++        byId('tr-cr-name').value   = d.conreq_name || '';
++        byId('tr-cr-pw').value     = d.conreq_pw || '';
++        byId('tr-cr-path').value   = d.conreq_path || '';
++        byId('tr-cr-port').value   = d.conreq_port;
++    }
++
++    function loadStatus(quiet) {
++        if (!quiet) { setFormLocked(true); showOverlay('Loading…'); }
++        return fetch('/cgi-bin/tr069.cgi?action=status', { cache: 'no-store' })
++            .then(function (r) { return r.json(); })
++            .then(function (d) {
++                if (!d.ok) throw new Error(d.error || 'status');
++                fill(d);
++                clearErrors();
++                hideOverlay(function () { setFormLocked(!installed); });
++            })
++            .catch(function (err) {
++                hideOverlay(function () { setFormLocked(false); });
++                toastr['warning'](err && err.message && ERRORS[err.message] ? errText(err.message) : 'Failed to load TR-069 settings.', 'Error');
++            });
++    }
++
++    // ---------------------------------------------------------------
++    // Apply / restart
++    // ---------------------------------------------------------------
++    function post(action, body) {
++        return fetch('/cgi-bin/tr069.cgi?action=' + action, {
++            method: 'POST',
++            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
++            body: body || ''
++        }).then(function (r) { return r.json(); });
++    }
++
++    function afterRestart(msg, done) {
++        // cwmpClient is restarted in the background a few seconds after the
++        // CGI replies; give it time, then refresh the Running/Stopped badge.
++        showOverlay(msg);
++        setTimeout(function () {
++            loadStatus(true).then(function () { if (done) done(); });
++        }, 6000);
++    }
++
++    function applySettings() {
++        if (!validate()) return;
++
++        var inform = getToggle('tr-inform');
++        var body = 'autoexec='      + getToggle('tr-autoexec')
++                 + '&cwmp_enabled=' + getToggle('tr-cwmp-enabled')
++                 + '&url='          + encodeURIComponent(byId('tr-url').value)
++                 + '&username='     + encodeURIComponent(byId('tr-username').value)
++                 + '&password='     + encodeURIComponent(byId('tr-password').value)
++                 + '&inform='       + inform
++                 + '&interval='     + encodeURIComponent(inform ? byId('tr-interval').value : '')
++                 + '&conreq_name='  + encodeURIComponent(byId('tr-cr-name').value)
++                 + '&conreq_pw='    + encodeURIComponent(byId('tr-cr-pw').value)
++                 + '&conreq_path='  + encodeURIComponent(byId('tr-cr-path').value)
++                 + '&conreq_port='  + encodeURIComponent(byId('tr-cr-port').value);
++
++        setFormLocked(true);
++        showOverlay('Applying TR-069 settings…');
++
++        post('save', body)
++            .then(function (d) {
++                if (!d.ok) {
++                    hideOverlay(function () { setFormLocked(false); });
++                    toastr['warning'](errText(d.error), 'Error');
++                    return;
++                }
++                if (!d.changed) {
++                    hideOverlay(function () { setFormLocked(false); });
++                    toastr['info']('No changes to apply.');
++                    return;
++                }
++                afterRestart('Saved. Restarting the TR-069 client…', function () {
++                    hideOverlay(function () { setFormLocked(false); });
++                    toastr['success']('TR-069 settings applied.');
++                    if (d.port_changed && aclEnabled)
++                        toastr['info']('The Connection Request port changed. Reboot the device so the CWMP ACL firewall rules use the new port.', '', { timeOut: 10000 });
++                });
++            })
++            .catch(function () {
++                hideOverlay(function () { setFormLocked(false); });
++                toastr['warning']('Request failed.', 'Error');
++            });
++    }
++
++    function restartClient() {
++        setFormLocked(true);
++        showOverlay('Restarting the TR-069 client…');
++        post('restart')
++            .then(function (d) {
++                if (!d.ok) {
++                    hideOverlay(function () { setFormLocked(false); });
++                    toastr['warning'](errText(d.error), 'Error');
++                    return;
++                }
++                afterRestart('Restarting the TR-069 client…', function () {
++                    hideOverlay(function () { setFormLocked(false); });
++                });
++            })
++            .catch(function () {
++                hideOverlay(function () { setFormLocked(false); });
++                toastr['warning']('Request failed.', 'Error');
++            });
++    }
++
++    // ---------------------------------------------------------------
++    // Init
++    // ---------------------------------------------------------------
++    loadStatus();
++</script>
++</body>
++</html>
+-- 
+2.43.0
+

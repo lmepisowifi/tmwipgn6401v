@@ -655,6 +655,9 @@ function buildIfaceCards(ifaces) {
     const container = document.getElementById('ifaces-container');
     container.innerHTML = '';
 
+    // BSSID lock UI exists only on firmware that has the LME_BSSID_LOCKING MIB key
+    const bssidLockSupported = !!(currentStatus && currentStatus.bssidLockSupported);
+
     ifaces.forEach(iface => {
         const id      = 'iface-' + iface.idx;
         const isVxd   = iface.type === 'vxd';
@@ -706,8 +709,9 @@ function buildIfaceCards(ifaces) {
                     Live connection status moved to
                     <a href="/sitesurvey.html" style="color:#9fc5ff;">Site Survey</a>.
                 </div>
-                <!-- BSSID locking hidden: driver does not support this feature -->
-                <div style="display:none;">
+                ${bssidLockSupported ? `
+                <!-- Only rendered when the firmware has the LME_BSSID_LOCKING MIB key
+                     (status.bssidLockSupported); stock firmware gets no lock UI at all. -->
                 <label class="form-label mt-2">Lock to BSSID <span style="font-weight:400; color:#888;">(optional)</span></label>
                 <div class="d-flex gap-2">
                     <input type="text" class="form-control" id="${id}-bssid-lock"
@@ -717,10 +721,8 @@ function buildIfaceCards(ifaces) {
                 </div>
                 <div style="font-size:11px; color:#888; margin-top:4px;">
                     Pins this radio to one specific access point instead of any AP broadcasting the SSID.
-                    Not guaranteed during automatic roam scans on some firmware — verify it holds if you
-                    have more than one AP using the same network name nearby.
-                </div>
-                </div>` : ''}
+                    Applies while the repeater is the uplink client; leave blank to join any AP with this SSID.
+                </div>` : ''}` : ''}
             </div>`;
 
         container.appendChild(div);

@@ -48,6 +48,7 @@
  * E404:/path/e404.html # /path/e404.html is the 404 (not found) error page
  * 404to302:index.html # Instead of a 404, send a 302 redirect to index.html
  * I:index.html      # Show index.html when a directory is requested
+ * CacheControl:no-cache  # Send "Cache-Control: <value>" on 200/206/304 responses
  *
  * P:/url:[http://]hostname[:port]/new/path
  *                   # When /urlXXXXXX is requested, reverse proxy
@@ -478,6 +479,9 @@ struct globals {
 	 * instead of returning a 404 Not Found */
 	const char *redirect_404;
 	smallint redirect_404_active; /* set when a 404 is being turned into a 302 */
+	/* "CacheControl:VALUE" config directive: value for a Cache-Control
+	 * header on file responses (200/206/304). NULL = send none. */
+	const char *cache_control;
 #if ENABLE_FEATURE_HTTPD_ACL_IP
 	Htaccess_IP *ip_a_d;    /* config allow/deny lines */
 #endif
@@ -531,6 +535,7 @@ struct globals {
 #define found_moved_temporarily (G.found_moved_temporarily)
 #define redirect_404        (G.redirect_404       )
 #define redirect_404_active (G.redirect_404_active)
+#define cache_control       (G.cache_control      )
 #define last_mod          (G.last_mod         )
 #define g_realm           (G.g_realm          )
 #define remoteuser        (G.remoteuser       )
@@ -896,6 +901,20 @@ static int parse_conf(const char *path, int flag)
 			continue;
 		}
 
+		/* "CacheControl:VALUE" - value sent as "Cache-Control: VALUE"
+		 * on file responses. Root config only. Reject CR/LF so the
+		 * value can't inject extra headers. */
+		if (flag == FIRST_PARSE
+		 && strncmp(buf, "CacheControl", 12) == 0
+		 && buf[12] == ':'
+		) {
+			if (strpbrk(after_colon, "\r\n"))
+				goto config_error;
+			free((char*)cache_control);
+			cache_control = *after_colon ? xstrdup(after_colon) : NULL;
+			continue;
+		}
+
 #if ENABLE_FEATURE_HTTPD_PROXY
 		if (flag == FIRST_PARSE && ch == 'P') {
 			/* P:/url:[http://]hostname[:port]/new/path */
@@ -1170,6 +1189,17 @@ static void send_headers(unsigned responseNum)
 				/* if it's error message, then it's HTML */
 				(responseNum != HTTP_OK ? "text/html" : found_mime_type)
 		);
+	}
+
+	if (cache_control
+	 && (responseNum == HTTP_OK
+	  || responseNum == HTTP_PARTIAL_CONTENT
+	  || responseNum == HTTP_NOT_MODIFIED)
+	) {
+		len += snprintf(iobuf + len, IOBUF_SIZE-3 - len,
+				"Cache-Control: %s\r\n", cache_control);
+		if (len > IOBUF_SIZE-3)
+			len = IOBUF_SIZE-3;
 	}
 
 #if ENABLE_FEATURE_HTTPD_BASIC_AUTH

@@ -124,10 +124,11 @@
 
 
             <p class="field-hint">
-                Runs in userspace-networking mode (this device has no TUN module), so it works as a
-                subnet router and Tailscale SSH target. When the switch is On it starts automatically on
-                boot. State and settings are stored on <code>/config</code>, so they survive reflashes
-                and reinstalling the module.
+                <span id="ts-mode-text">Uses a kernel TUN interface when this device has one (the bundled
+                <code>tun.ko</code> is loaded automatically), otherwise userspace-networking.</span>
+                Either way it works as a subnet router and Tailscale SSH target. When the switch is On it
+                starts automatically on boot. State and settings are stored on <code>/config</code>, so
+                they survive reflashes and reinstalling the module.
             </p>
 
             <div class="setup-box" id="ts-setup" style="display:none;">
@@ -230,6 +231,15 @@ function applyStatus(d){
     document.getElementById('ts-backend').textContent = d.backend ? ('· ' + d.backend) : '';
     document.getElementById('ts-ip').textContent = d.ip || '';
     document.getElementById('ts-ipv6').textContent = d.ipv6 || '';
+
+    // Which networking mode the running daemon actually got (tun_mode is only set while it runs)
+    var modeEl = document.getElementById('ts-mode-text');
+    if (d.tun_mode === 'tun') {
+        modeEl.textContent = 'Running on a kernel TUN interface (tailscale0).';
+    } else if (d.tun_mode === 'userspace') {
+        modeEl.textContent = 'Running in userspace-networking mode' +
+            (d.tun_note ? ' (' + d.tun_note.replace(/^userspace-networking:\s*/, '') + ')' : '') + '.';
+    }
 
     var sw = document.getElementById('ts-switch');
     sw.classList.remove('disabled-ui');

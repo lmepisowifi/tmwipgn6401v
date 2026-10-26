@@ -412,7 +412,19 @@
     // WEP is a separate MIB toggle, not part of this bitmask.
     var WLAN_ENC_SHORT = {0:'Open', 2:'WPA', 4:'WPA2', 6:'WPA/WPA2', 16:'WPA3', 20:'WPA2/WPA3'};
 
-    function _wlanApBadge(elId, iface) {
+    // Live channel label. `d` is the action=status payload: curChannel is what the
+    // driver is actually running (works in auto mode, where the MIB channel is 0);
+    // channel/autoChannel are the saved settings. In auto mode show "(auto)"; if
+    // the driver hasn't picked a channel yet (curChannel 0) show "auto" alone.
+    function _wlanChanLabel(d) {
+        if (!d) return '';
+        var auto = d.autoChannel === 1 || d.channel === 0;
+        var cur  = d.curChannel > 0 ? d.curChannel : (auto ? 0 : d.channel);
+        if (cur > 0) return 'Ch ' + cur + (auto ? ' (auto)' : '');
+        return auto ? 'Ch auto' : '';
+    }
+
+    function _wlanApBadge(elId, iface, d) {
         if (!iface) { set(elId, '—'); return; }
         var up = iface.disabled === 0;
         var badge = up
@@ -420,7 +432,9 @@
             : '<span class="wan-status-badge wan-other"><span class="dot"></span>Off</span>';
         if (!up) { set(elId, badge); return; }
         var secLbl = iface.wep === 1 ? 'WEP' : (WLAN_ENC_SHORT[iface.encrypt] || 'Open');
-        set(elId, badge + '<span class="wan-iface-detail">&nbsp;'+esc(iface.ssid||'—')+' &middot; '+secLbl+'</span>');
+        var chLbl = _wlanChanLabel(d);
+        set(elId, badge + '<span class="wan-iface-detail">&nbsp;'+esc(iface.ssid||'—')+' &middot; '+secLbl+
+            (chLbl ? ' &middot; '+esc(chLbl) : '')+'</span>');
     }
 
     function _wlanRepBadge(elId, vxdIface, band) {
@@ -433,6 +447,7 @@
                     var authOk = vs.authFinished === 1 && vs.authStatus === 0;
                     var badge = '<span class="wan-status-badge wan-up"><span class="dot"></span>Connected</span>';
                     var detail = esc(vs.ssid||'—') + ' &middot; RSSI ' + esc(vs.rssi) + '/100';
+                    if (vs.channel > 0) detail += ' &middot; Ch ' + esc(vs.channel);
                     if (!authOk) detail += ' &middot; <span style="color:#ef9a9a">'+esc(vs.authText)+'</span>';
                     set(elId, badge + '<span class="wan-iface-detail">&nbsp;'+detail+'</span>');
                 } else {
@@ -452,7 +467,7 @@
                     var vxd = ifaces.filter(function(i){ return i.idx === 5; })[0];
                     var apId  = band === '5' ? 'wlan-5-ap'  : 'wlan-24-ap';
                     var repId = band === '5' ? 'wlan-5-rep' : 'wlan-24-rep';
-                    _wlanApBadge(apId, ap);
+                    _wlanApBadge(apId, ap, d);
                     _wlanRepBadge(repId, vxd, band);
                 })
                 .catch(function(){

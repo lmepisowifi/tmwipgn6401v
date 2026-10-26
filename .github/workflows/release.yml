@@ -162,7 +162,7 @@ jobs:
             echo "version=$VER"
             echo "url=$MOD_TS_ASSET_URL"
             echo "sha256=$MOD_TS_SHA"
-            echo "description=Tailscale VPN in userspace mode — advertise subnet routes and Tailscale SSH; configure on the www2 Tailscale page."
+            echo "description=Tailscale VPN (kernel TUN when available, otherwise userspace mode) — advertise subnet routes and Tailscale SSH; configure on the www2 Tailscale page."
           } > modules.txt
           git config user.name  github-actions
           git config user.email github-actions@github.com

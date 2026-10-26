@@ -1,0 +1,177 @@
+diff --git a/www2/cgi-bin/wlanadvanced.cgi b/www2/cgi-bin/wlanadvanced.cgi
+index 88db741..dc5ce5e 100755
+--- a/www2/cgi-bin/wlanadvanced.cgi
++++ b/www2/cgi-bin/wlanadvanced.cgi
+@@ -100,6 +100,12 @@ mib_get() {
+ # is exactly what the Unified SSID feature on wlanbasic does. That state lives
+ # in the same flat-integer JSON wlanbasic.cgi writes; read it here (read-only)
+ # so the advanced page can gate the band-steering control on it.
++#
++# It must be the MAIN APs (idx 0 <-> idx 0) that are paired: the vendor's
++# SSID/security equality check (rtk_wlan_get_band_steering_status) only reads
++# idx 0 of each radio, and the driver's stactrl_init() pairs the root
++# interfaces first. A merge of some other pair (e.g. VAP1 <-> VAP1) says
++# nothing about whether the two main APs match, so it does not qualify.
+ MERGE_FILE="/lmepisowifi/www2/data/merged_ssid.json"
+ merge_get() {
+     if [ ! -f "$MERGE_FILE" ]; then printf '%s' "$2"; return; fi
+@@ -108,8 +114,18 @@ merge_get() {
+     [ -z "$_mv" ] && _mv="$2"
+     printf '%s' "$_mv"
+ }
+-# unified_enabled → prints 1 when Unified SSID is on, else 0
+-unified_enabled() { [ "$(merge_get enabled 0)" = "1" ] && printf '1' || printf '0'; }
++# unified_enabled → prints 1 only when Unified SSID is on AND pairs the two
++# radios' main APs (idx 0 <-> idx 0); otherwise 0. A missing iface key reads
++# as -1, so it fails closed.
++unified_enabled() {
++    if [ "$(merge_get enabled 0)" = "1" ] \
++        && [ "$(merge_get iface24 -1)" = "0" ] \
++        && [ "$(merge_get iface5 -1)" = "0" ]; then
++        printf '1'
++    else
++        printf '0'
++    fi
++}
+ 
+ 
+ # POST field helper: extract an integer field; $1 = field name, $2 = default
+@@ -369,15 +385,16 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
+         case "$FORM_BSTEER" in 0|1|3) ;; *) FORM_BSTEER=0 ;; esac
+ 
+         # Guard: band steering may only be ENABLED (1/3) when Unified SSID is
+-        # on. Without one shared SSID across both radios there is nothing to
+-        # steer clients between, and the per-radio prefer-band values would be
+-        # meaningless. Disabling (0) is always allowed. The UI already locks the
+-        # control, but enforce it here too so a direct POST can't turn it on.
++        # on AND pairs the main AP (idx 0) of each band. Without one shared
++        # SSID across both radios' main APs there is nothing to steer clients
++        # between, and the per-radio prefer-band values would be meaningless.
++        # Disabling (0) is always allowed. The UI already locks the control,
++        # but enforce it here too so a direct POST can't turn it on.
+         if [ "$FORM_BSTEER" != "0" ] && [ "$(unified_enabled)" != "1" ]; then
+-            dbg "save_bandsteer: rejected enable=$FORM_BSTEER — Unified SSID is off"
++            dbg "save_bandsteer: rejected enable=$FORM_BSTEER — Unified SSID is off or not paired on the main APs"
+             printf "Status: 409 Conflict\r\n"
+             printf "Content-Type: text/plain\r\n\r\n"
+-            printf "Band steering requires Unified SSID. Enable Unified SSID on the WiFi (Basic) page first."
++            printf "Band steering requires Unified SSID paired on the Main AP of both bands. Set that on the WiFi (Basic) page first."
+             exit 0
+         fi
+ 
+diff --git a/www2/cgi-bin/wlanbasic.cgi b/www2/cgi-bin/wlanbasic.cgi
+index 739c75d..dd875ad 100755
+--- a/www2/cgi-bin/wlanbasic.cgi
++++ b/www2/cgi-bin/wlanbasic.cgi
+@@ -898,6 +898,29 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
+         busybox mv "$MF_TMP" "$MERGE_FILE"
+         dbg "save_merge: saved enabled=$M_EN iface24=$M_I24 iface5=$M_I5"
+ 
++        # Band steering (WIFI_STA_CONTROL) runs between the two radios' MAIN
++        # APs and is only valid while they share SSID + security. The vendor
++        # switches it off whenever they stop matching
++        # (rtk_wlan_update_band_steering_status), and the driver pairs the
++        # idx 0 interfaces whichever pair is merged here. So steering must be
++        # cleared on every save that isn't "merge ON, main AP <-> main AP":
++        # otherwise it keeps steering clients between two different networks.
++        # Any nonzero value counts as on (the vendor apply path treats a bare
++        # 2 as enabled too). Done after the NodeMCU ACK check above so an
++        # aborted save leaves nothing half-written.
++        BS_CLEARED=0
++        if [ "$M_EN" != "1" ] || [ "$M_I24" != "0" ] || [ "$M_I5" != "0" ]; then
++            _bs=$(mib_field "WIFI_STA_CONTROL")
++            case "$_bs" in
++                ''|*[!0-9]*|0) ;;
++                *)
++                    mib set "WIFI_STA_CONTROL" 0
++                    BS_CLEARED=1
++                    dbg "save_merge: cleared WIFI_STA_CONTROL (was $_bs) — merge off or not paired on main APs"
++                    ;;
++            esac
++        fi
++
+         if [ "$M_EN" = "1" ]; then
+             # Copy 2.4 GHz (master) SSID + security onto the 5 GHz partner
+             mib set "WLAN_MBSSIB_TBL.${M_I5}.ssid"    "$S_SSID"
+@@ -914,6 +937,19 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
+             mib commit
+             dbg "save_merge: mirrored 2.4 idx $M_I24 -> 5 idx $M_I5 (ssid=$S_SSID enc=$S_ENC)"
+             wlan_apply restart
++        elif [ "$BS_CLEARED" = "1" ]; then
++            # Merge turned off while band steering was on. Switching steering
++            # off in the driver needs both radios re-initialised (stactrl_init
++            # runs on bring-up), so restart WLAN — but in the background after
++            # a short delay, so this reply reaches the browser first. "RESTART"
++            # tells the page to show its apply countdown instead of "Saved".
++            mib commit
++            dbg "save_merge: merge off, band steering was on — restarting WLAN in background"
++            ( sleep 1; wlan_apply restart ) >/dev/null 2>&1 </dev/null &
++            printf "Status: 200 OK\r\n"
++            printf "Content-Type: text/plain\r\n\r\n"
++            printf "RESTART"
++            exit 0
+         fi
+ 
+         printf "Status: 200 OK\r\n"
+diff --git a/www2/wlanadvanced.html b/www2/wlanadvanced.html
+index 2f86d1d..73cb452 100644
+--- a/www2/wlanadvanced.html
++++ b/www2/wlanadvanced.html
+@@ -203,10 +203,11 @@
+                         <option value="3">Enabled — 2.4 GHz preferred</option>
+                     </select>
+                 </div>
+-                <!-- Shown only when Unified SSID is OFF: band steering is unavailable -->
++                <!-- Shown only when Unified SSID is OFF or not paired on the main APs: band steering is unavailable -->
+                 <div class="field-note" id="bandsteer-locked-note" style="display:none;">
+                     🔗 Band steering needs one shared network across both radios. Turn on
+-                    <strong>Unified SSID</strong> on the WiFi (Basic) page to enable it.
++                    <strong>Unified SSID</strong> on the WiFi (Basic) page and pair the
++                    <strong>Main AP</strong> of 2.4 GHz with the <strong>Main AP</strong> of 5 GHz to enable it.
+                 </div>
+                 <div class="mt-3">
+                     <button type="button" class="btn btn-primary w-100" id="bandsteer-save-btn"
+@@ -887,7 +888,7 @@
+             const val     = document.getElementById('bandsteer-sel').value;
+             // Guard: enabling (1/3) requires Unified SSID. Mirrors the CGI check.
+             if (val !== '0' && !(currentStatus && currentStatus.unified_ssid === 1)) {
+-                toastr["warning"]('Turn on Unified SSID on the WiFi (Basic) page before enabling band steering.', "Unavailable");
++                toastr["warning"]('Turn on Unified SSID on the WiFi (Basic) page, paired on the Main AP of both bands, before enabling band steering.', "Unavailable");
+                 applyBandSteerGating();
+                 return;
+             }
+diff --git a/www2/wlanbasic.html b/www2/wlanbasic.html
+index ce31c70..0567f57 100644
+--- a/www2/wlanbasic.html
++++ b/www2/wlanbasic.html
+@@ -1176,15 +1176,27 @@ function saveMerge() {
+     setFormEnabled(false);
+ 
+     if (enabled === 0) {
+-        // Turning merge off never restarts the radios — quick save
++        // Turning merge off is a quick save with no radio restart — unless band
++        // steering was on: steering needs the shared network, so it is switched
++        // off together with the merge, which takes a WLAN restart. The CGI
++        // answers "RESTART" (instead of "OK") in that case.
+         showOverlay('Saving…');
+         fetch(CGI + '?action=save_merge', {
+             method: 'POST',
+             headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+             body
+         })
+-        .then(r => { if (!r.ok) return r.text().then(t => { throw new Error(t || ('HTTP ' + r.status)); }); })
+-        .then(() => {
++        .then(r => r.text().then(t => {
++            if (!r.ok) throw new Error(t || ('HTTP ' + r.status));
++            return t;
++        }))
++        .then(t => {
++            if (t.trim() === 'RESTART') {
++                // Radios are restarting in the background (reply was sent first)
++                startCountdown('Applying');
++                setTimeout(() => { loadMergeStatus(); pollUntilBack(); }, 4500);
++                return;
++            }
+             spinner.style.display = 'none';
+             overlayTxt.textContent = 'Saved.';
+             setFormEnabled(true);

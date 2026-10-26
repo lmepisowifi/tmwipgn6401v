@@ -1,0 +1,574 @@
+diff --git a/.github/workflows/release.yml b/.github/workflows/release.yml
+index 70768e7..909e5ac 100644
+--- a/.github/workflows/release.yml
++++ b/.github/workflows/release.yml
+@@ -162,7 +162,7 @@ jobs:
+             echo "version=$VER"
+             echo "url=$MOD_TS_ASSET_URL"
+             echo "sha256=$MOD_TS_SHA"
+-            echo "description=Tailscale VPN in userspace mode — advertise subnet routes and Tailscale SSH; configure on the www2 Tailscale page."
++            echo "description=Tailscale VPN (kernel TUN when available, otherwise userspace mode) — advertise subnet routes and Tailscale SSH; configure on the www2 Tailscale page."
+           } > modules.txt
+           git config user.name  github-actions
+           git config user.email github-actions@github.com
+diff --git a/tailscale/tailscale_ctl.sh b/tailscale/tailscale_ctl.sh
+index 80b7ef0..8eb9c74 100755
+--- a/tailscale/tailscale_ctl.sh
++++ b/tailscale/tailscale_ctl.sh
+@@ -19,7 +19,8 @@ export GOMAXPROCS=2
+ export XDG_CACHE_HOME=/tmp
+ 
+ # ============================================================
+-# tailscale_ctl.sh — Tailscale (userspace) lifecycle for lmepisowifi
++# tailscale_ctl.sh — Tailscale lifecycle for lmepisowifi (kernel TUN when
++# available, userspace-networking otherwise)
+ # ============================================================
+ 
+ ROOT="/lmepisowifi"
+@@ -44,6 +45,17 @@ BB="busybox"
+ 
+ LOCKDIR="/tmp/tailscale_ctl.lock"
+ 
++# Kernel TUN support (added): tun.ko ships next to the daemon. When
++# /dev/net/tun isn't usable, start_daemon() insmods it and, if that works,
++# runs tailscaled on a real kernel interface instead of userspace-networking.
++# Anything that goes wrong along the way just means userspace-networking, i.e.
++# the behaviour this script always had.
++TUN_KO="$TS_DIR/tun.ko"
++TUN_DEV="/dev/net/tun"
++TUN_IFACE="tailscale0"
++MODE_FILE="/tmp/tailscale_tun_mode"    # "tun" | "userspace": mode the running daemon was started in
++NOTE_FILE="/tmp/tailscale_tun_note"    # why userspace is in use (absent while TUN is active)
++
+ TS_ENABLED=0
+ TS_ROUTES=""
+ TS_SSH=0
+@@ -148,20 +160,86 @@ cleanup_stray_daemons() {
+         kill -9 "$_p" 2>/dev/null
+     done
+ 
+-    rm -f "$PIDF" "$UPPIDF" "$SOCK" "$LOGIN_URL_FILE" "$DAEMON_LOG" "$UP_LOG" "$STATUS_CACHE"
++    rm -f "$PIDF" "$UPPIDF" "$SOCK" "$LOGIN_URL_FILE" "$DAEMON_LOG" "$UP_LOG" "$STATUS_CACHE" "$MODE_FILE"
++}
++
++# ── kernel TUN ──────────────────────────────────────────────────────────────
++
++# 0 if the tun driver is present (built into the kernel or module loaded)
++_tun_resident() {
++    [ -d /sys/class/misc/tun ] && return 0
++    $BB grep -q '^tun ' /proc/modules 2>/dev/null
++}
++
++# 0 if $TUN_DEV is a char device that can actually be opened, i.e. the driver
++# is there AND the node has the right major/minor
++_tun_openable() {
++    [ -c "$TUN_DEV" ] || return 1
++    ( exec 3<>"$TUN_DEV" ) 2>/dev/null
++}
++
++# Create $TUN_DEV when the driver is up but nothing (devtmpfs/mdev) made the
++# node. tun is a misc device; take major:minor from sysfs, 10:200 otherwise.
++_tun_make_node() {
++    [ -c "$TUN_DEV" ] && return 0
++    _mm="$(cat /sys/class/misc/tun/dev 2>/dev/null)"
++    case "$_mm" in
++        [0-9]*:[0-9]*) _maj="${_mm%%:*}"; _min="${_mm##*:}" ;;
++        *)             _maj=10; _min=200 ;;
++    esac
++    mkdir -p "$($BB dirname "$TUN_DEV")" 2>/dev/null
++    $BB mknod "$TUN_DEV" c "$_maj" "$_min" 2>/dev/null
++    [ -c "$TUN_DEV" ]
++}
++
++# 0 if kernel TUN is usable, loading $TUN_KO first when it isn't. Checks
++# BEFORE insmod, so a kernel with TUN built in (or the module already loaded)
++# never touches the .ko. On failure the reason is left in $_TUN_WHY.
++tun_ready() {
++    _TUN_WHY=""
++    _tun_openable && return 0
++
++    if ! _tun_resident; then
++        if [ ! -f "$TUN_KO" ]; then
++            _TUN_WHY="no TUN support in the kernel and $TUN_KO not found"
++            return 1
++        fi
++        if command -v insmod >/dev/null 2>&1; then _ins="insmod"; else _ins="$BB insmod"; fi
++        _err="$($_ins "$TUN_KO" 2>&1)"
++        if ! _tun_resident; then
++            # keep just the reason ("Invalid module format", ...)
++            _err="$(printf '%s\n' "$_err" | $BB head -n 1 | $BB sed 's/^.*: //' | $BB tr -d '\r"\\' | $BB cut -c1-80)"
++            _TUN_WHY="could not load tun.ko${_err:+ ($_err)}"
++            return 1
++        fi
++        logger -t tailscale "loaded $TUN_KO" 2>/dev/null
++    fi
++
++    _tun_make_node
++    _tun_openable && return 0
++    _TUN_WHY="tun driver is present but $TUN_DEV cannot be opened"
++    return 1
+ }
+ 
++# $1 = tun | userspace
+ launch_daemon_once() {
+     [ -x "$DAEMON" ] || return 1
+     mkdir -p "$STATE_DIR" 2>/dev/null
+     rm -f "$DAEMON_LOG" "$PIDF"
+ 
++    if [ "$1" = "tun" ]; then
++        # Real kernel interface: local programs reach the tailnet through the
++        # routing table, so the SOCKS5/HTTP proxy listeners userspace mode
++        # needs are not started.
++        _net_args="--tun=$TUN_IFACE"
++    else
++        _net_args="--tun=userspace-networking --socks5-server=127.0.0.1:1055 --outbound-http-proxy-listen=127.0.0.1:1055"
++    fi
++
+     "$DAEMON" \
+         --statedir="$STATE_DIR" \
+         --socket="$SOCK" \
+-        --tun=userspace-networking \
+-        --socks5-server=127.0.0.1:1055 \
+-        --outbound-http-proxy-listen=127.0.0.1:1055 \
++        $_net_args \
+         < /dev/null >"$DAEMON_LOG" 2>&1 &
+     _pid=$!
+     echo "$_pid" > "$PIDF"
+@@ -174,6 +252,13 @@ launch_daemon_once() {
+ wait_for_daemon_ready() {
+     _i=0
+     while [ "$_i" -lt 15 ]; do
++        # daemon already exited (e.g. refused to create the TUN device):
++        # don't sit out the full timeout before the caller can fall back
++        _dp="$(daemon_pid)"
++        if [ -n "$_dp" ] && ! kill -0 "$_dp" 2>/dev/null; then
++            return 1
++        fi
++
+         if ! [ -e "$SOCK" ]; then
+             sleep 1
+             _i=$((_i + 1))
+@@ -199,22 +284,31 @@ start_daemon() {
+     daemon_running && return 0
+ 
+     cleanup_stray_daemons
++    rm -f "$NOTE_FILE"
++
++    # Two attempts, as before. With a usable TUN the first one runs on the
++    # kernel interface and the second falls back to userspace-networking, so a
++    # TUN that loads but doesn't actually work can never leave the node down.
++    _modes="userspace userspace"
++    if tun_ready; then
++        _modes="tun userspace"
++    else
++        printf 'userspace-networking: %s\n' "$_TUN_WHY" > "$NOTE_FILE"
++        logger -t tailscale "kernel TUN unavailable ($_TUN_WHY); using userspace-networking" 2>/dev/null
++    fi
+ 
+-    _try=0
+-    while [ "$_try" -lt 2 ]; do
+-        launch_daemon_once || {
+-            _try=$((_try + 1))
+-            cleanup_stray_daemons
+-            continue
+-        }
+-
+-        if wait_for_daemon_ready; then
++    for _m in $_modes; do
++        if launch_daemon_once "$_m" && wait_for_daemon_ready; then
++            printf '%s\n' "$_m" > "$MODE_FILE"
+             return 0
+         fi
+ 
+-        echo "tailscaled crashed or hung during startup. Attempting recovery..." >&2
++        echo "tailscaled ($_m mode) crashed or hung during startup. Attempting recovery..." >&2
++        if [ "$_m" = "tun" ]; then
++            printf 'userspace-networking: tailscaled would not start on %s\n' "$TUN_DEV" > "$NOTE_FILE"
++            logger -t tailscale "tailscaled failed to start on kernel TUN; falling back to userspace-networking" 2>/dev/null
++        fi
+         cleanup_stray_daemons
+-        _try=$((_try + 1))
+     done
+ 
+     return 1
+@@ -316,6 +410,7 @@ stop_daemon() {
+         $BB timeout 3 "$CLI" --socket="$SOCK" down >/dev/null 2>&1
+     fi
+     cleanup_stray_daemons
++    rm -f "$NOTE_FILE"
+ }
+ 
+ ts_up() {
+@@ -459,6 +554,8 @@ emit_status() {
+     _key_expiry=""
+     _version=""
+     _health=""
++    _tun_mode=""
++    _tun_note="$(cat "$NOTE_FILE" 2>/dev/null)"
+ 
+     [ "$TS_ENABLED" = "1" ] && _en="true"
+     [ "$TS_SSH" = "1" ] && _ssh="true"
+@@ -467,6 +564,7 @@ emit_status() {
+     [ "$TS_ACCEPT_DNS" = "1" ] && _accept_dns="true"
+ 
+     if daemon_running; then
++        _tun_mode="$(cat "$MODE_FILE" 2>/dev/null)"
+         _json="$(query_status_json)"
+         if [ -z "$_json" ]; then
+             sleep 1
+@@ -527,12 +625,12 @@ emit_status() {
+         _login=""
+     fi
+ 
+-    printf '{"ok":true,"running":%s,"enabled":%s,"ssh":%s,"exit_node":%s,"accept_routes":%s,"accept_dns":%s,"routes":"%s","hostname":"%s","tags":"%s","ip":"%s","ipv6":"%s","backend":"%s","login_url":"%s","email":"%s","username":"%s","profile_pic_url":"%s","device_hostname":"%s","dns_name":"%s","relay":"%s","key_expiry":"%s","version":"%s","health":[%s]}\n' \
++    printf '{"ok":true,"running":%s,"enabled":%s,"ssh":%s,"exit_node":%s,"accept_routes":%s,"accept_dns":%s,"routes":"%s","hostname":"%s","tags":"%s","ip":"%s","ipv6":"%s","backend":"%s","login_url":"%s","email":"%s","username":"%s","profile_pic_url":"%s","device_hostname":"%s","dns_name":"%s","relay":"%s","key_expiry":"%s","version":"%s","tun_mode":"%s","tun_note":"%s","health":[%s]}\n' \
+         "$_run" "$_en" "$_ssh" "$_exit_node" "$_accept_routes" "$_accept_dns" \
+         "$(json_esc "$TS_ROUTES")" "$(json_esc "$TS_HOSTNAME")" "$(json_esc "$TS_TAGS")" \
+         "$(json_esc "$_ip")" "$(json_esc "$_ipv6")" "$(json_esc "$_backend")" "$(json_esc "$_login")" \
+         "$(json_esc "$_email")" "$(json_esc "$_username")" "$(json_esc "$_profile_pic")" "$(json_esc "$_device_hostname")" "$(json_esc "$_dns_name")" \
+-        "$(json_esc "$_relay")" "$(json_esc "$_key_expiry")" "$(json_esc "$_version")" "$_health"
++        "$(json_esc "$_relay")" "$(json_esc "$_key_expiry")" "$(json_esc "$_version")" "$(json_esc "$_tun_mode")" "$(json_esc "$_tun_note")" "$_health"
+ }
+ 
+ do_start() {
+diff --git a/tailscale/tun.ko b/tailscale/tun.ko
+new file mode 100644
+index 0000000000000000000000000000000000000000..7b9f15604d9d8e61bce07d2ed43d03e55f4a598e
+GIT binary patch
+literal 32448
+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
+M16v^z^Ap7X4<4%q^Z)<=
+
+literal 0
+HcmV?d00001
+
+diff --git a/www2/tailscale.html b/www2/tailscale.html
+index ec12f01..ddad4c9 100644
+--- a/www2/tailscale.html
++++ b/www2/tailscale.html
+@@ -124,10 +124,11 @@
+ 
+ 
+             <p class="field-hint">
+-                Runs in userspace-networking mode (this device has no TUN module), so it works as a
+-                subnet router and Tailscale SSH target. When the switch is On it starts automatically on
+-                boot. State and settings are stored on <code>/config</code>, so they survive reflashes
+-                and reinstalling the module.
++                <span id="ts-mode-text">Uses a kernel TUN interface when this device has one (the bundled
++                <code>tun.ko</code> is loaded automatically), otherwise userspace-networking.</span>
++                Either way it works as a subnet router and Tailscale SSH target. When the switch is On it
++                starts automatically on boot. State and settings are stored on <code>/config</code>, so
++                they survive reflashes and reinstalling the module.
+             </p>
+ 
+             <div class="setup-box" id="ts-setup" style="display:none;">
+@@ -231,6 +232,15 @@ function applyStatus(d){
+     document.getElementById('ts-ip').textContent = d.ip || '';
+     document.getElementById('ts-ipv6').textContent = d.ipv6 || '';
+ 
++    // Which networking mode the running daemon actually got (tun_mode is only set while it runs)
++    var modeEl = document.getElementById('ts-mode-text');
++    if (d.tun_mode === 'tun') {
++        modeEl.textContent = 'Running on a kernel TUN interface (tailscale0).';
++    } else if (d.tun_mode === 'userspace') {
++        modeEl.textContent = 'Running in userspace-networking mode' +
++            (d.tun_note ? ' (' + d.tun_note.replace(/^userspace-networking:\s*/, '') + ')' : '') + '.';
++    }
++
+     var sw = document.getElementById('ts-switch');
+     sw.classList.remove('disabled-ui');
+     if (d.enabled) sw.classList.add('on'); else sw.classList.remove('on');
