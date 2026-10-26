@@ -186,6 +186,47 @@ wl_restart_scoped() {
     wlan_apply restart
 }
 
+# wl_restart_bands "5 24" -> whole-band restart of each listed radio (5 = wlan0,
+# 24 = wlan1), one wlanapply call per radio. For the global settings that cannot
+# be applied live and have no narrower scope than a radio (band steering,
+# regulatory domain). If the helper is missing or any call fails, ONE stock
+# `wlan_apply restart` (everything) is run instead, so a half-applied state is
+# never left behind.
+wl_restart_bands() {
+    if wl_helper_ok; then
+        _rb_ok=1
+        for _rb_band in $1; do
+            if [ "$_rb_band" = "5" ]; then _rb_bn=5g; else _rb_bn=2g; fi
+            "$WLANAPPLY" restart "$_rb_bn" all >> "$DBG_LOG" 2>&1
+            _rb_rc=$?
+            if [ "$_rb_rc" != "0" ]; then
+                dbg "wl_restart_bands: wlanapply restart $_rb_bn all failed (rc=$_rb_rc), falling back to wlan_apply restart"
+                _rb_ok=0
+                break
+            fi
+            dbg "wl_restart_bands: wlanapply restart $_rb_bn all ok"
+        done
+        [ "$_rb_ok" = "1" ] && return 0
+    else
+        dbg "wl_restart_bands: wlanapply unavailable, falling back to wlan_apply restart"
+    fi
+    wlan_apply restart
+}
+
+# wl_set_sgi VALUE -> short GI (20/40/80 MHz) on this radio's root AND on every
+# VAP/VXD netdev. The driver gives each VAP its own pmib (dot11nConfigEntry is
+# per interface), and the vendor setupWLan() pushes shortGI20M/40M/80M to the
+# root and to each VAP/VXD in turn - so poking the root alone would leave VAP/VXD
+# clients, and 80 MHz links on 5 GHz, on the old value until the next restart.
+# Interfaces that don't exist are skipped by wl_set.
+wl_set_sgi() {
+    for _sg_if in "$WLAN_IF" "$WLAN_IF-vap0" "$WLAN_IF-vap1" "$WLAN_IF-vap2" "$WLAN_IF-vap3" "$WLAN_IF-vxd"; do
+        wl_set "$_sg_if" shortGI20M "$1"
+        wl_set "$_sg_if" shortGI40M "$1"
+        wl_set "$_sg_if" shortGI80M "$1"
+    done
+}
+
 # Per-interface getters (idx 0-5). MIMO/TXBF/MC2U/rate-limits/PMF/SHA-256/
 # rate-adaptive/fixed-rate are assumed to exist per MBSSIB_TBL entry, the same
 # way dotIEEE80211W (PMF) is already confirmed per-idx in wlansecurity —
@@ -324,11 +365,15 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
     # HW_WLAN1_REG_DOMAIN (2.4GHz, wlan1). The vendor config_WLAN() passes the
     # value to the driver as `iwpriv <if> set_mib regdomain=N` every time WLAN
     # (re)starts, so this does what the vendor web UI does (mib set + commit
-    # into the hardware-settings area) and then restarts both radios. Both
-    # entries are written together so the radios can never end up on different
-    # domains - this build does not remap the HW entry per radio. The accepted
-    # range (1-15) mirrors the vendor dropdown. A valid value cannot lock the
-    # admin out, so no per-interface revert timer is needed.
+    # into the hardware-settings area) and then restarts the radio(s). The
+    # driver builds its channel list and TX power limits when an interface
+    # opens, so this cannot be applied live - but only a radio whose domain
+    # actually changes is restarted (one wlanapply call per radio), and
+    # re-applying the current domain restarts nothing. Both entries are written
+    # together so the radios can never end up on different domains - this build
+    # does not remap the HW entry per radio. The accepted range (1-15) mirrors
+    # the vendor dropdown. A valid value cannot lock the admin out, so no
+    # per-interface revert timer is needed.
     if echo "$QUERY_STRING" | busybox grep -q "action=save_regdomain"; then
         __CL="${CONTENT_LENGTH:-0}"; case "$__CL" in *[!0-9]*|"") __CL=0 ;; esac
         [ "$__CL" -gt 65536 ] && __CL=65536
@@ -343,11 +388,28 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
             exit 0
         fi
 
+        # HW_WLAN0 = 5 GHz (wlan0), HW_WLAN1 = 2.4 GHz (wlan1). Read what each
+        # radio is on BEFORE writing (mib get reports the running value - see
+        # mib_get). An unreadable value counts as "changed", so it restarts.
+        CUR_REG5=$(mib_get "HW_WLAN0_REG_DOMAIN")
+        CUR_REG24=$(mib_get "HW_WLAN1_REG_DOMAIN")
+        RESTART_BANDS=""
+        [ "$CUR_REG5"  != "$FORM_REGDOM" ] && RESTART_BANDS="5"
+        [ "$CUR_REG24" != "$FORM_REGDOM" ] && RESTART_BANDS="$RESTART_BANDS 24"
+
         mib set "HW_WLAN0_REG_DOMAIN" "$FORM_REGDOM"
         mib set "HW_WLAN1_REG_DOMAIN" "$FORM_REGDOM"
         mib commit
-        dbg "save_regdomain: applied HW_WLAN0_REG_DOMAIN=HW_WLAN1_REG_DOMAIN=$FORM_REGDOM"
-        wlan_apply restart
+        dbg "save_regdomain: applied HW_WLAN0_REG_DOMAIN=HW_WLAN1_REG_DOMAIN=$FORM_REGDOM (was 5GHz='$CUR_REG5' 2.4GHz='$CUR_REG24')"
+
+        if [ -z "$RESTART_BANDS" ]; then
+            dbg "save_regdomain: both radios already on $FORM_REGDOM, nothing to restart"
+            printf "Status: 200 OK\r\n"
+            printf "Content-Type: text/plain\r\n\r\n"
+            printf "NOCHANGE"
+            exit 0
+        fi
+        wl_restart_bands "$RESTART_BANDS"
 
         printf "Status: 200 OK\r\n"
         printf "Content-Type: text/plain\r\n\r\n"
@@ -356,10 +418,15 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
     fi
 
     # --- action=save_bandsteer: global band steering (WIFI_STA_CONTROL) -------
-    # This is a single radio-wide key (no band / no idx). Applying it restarts
-    # WiFi on both radios, so the page uses its loading overlay + poll-until-back
-    # around this request. A valid enum (0/1/3) cannot lock the admin out, so no
-    # per-interface revert timer is needed here.
+    # This is a single radio-wide key (no band / no idx). It cannot be applied
+    # live: the driver pairs the two radios in stactrl_init() when an interface
+    # opens (the sibling must already be open, enabled and unpaired) and a plain
+    # `iwpriv set_mib stactrl_*` has no hook that re-runs it. So both radios are
+    # restarted - one wlanapply call per radio; whichever comes up second
+    # completes the pairing, the same end state as the stock both-radio restart -
+    # but only when the value actually changes. The page uses its loading overlay
+    # + poll-until-back around this request. A valid enum (0/1/3) cannot lock the
+    # admin out, so no per-interface revert timer is needed here.
     if echo "$QUERY_STRING" | busybox grep -q "action=save_bandsteer"; then
         __CL="${CONTENT_LENGTH:-0}"; case "$__CL" in *[!0-9]*|"") __CL=0 ;; esac
         [ "$__CL" -gt 65536 ] && __CL=65536
@@ -381,15 +448,28 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
             exit 0
         fi
 
+        # Raw compare with the running value (mib get - see mib_get), read
+        # BEFORE writing: re-saving the current setting restarts nothing.
+        CUR_BSTEER_RAW=$(mib_get "WIFI_STA_CONTROL")
+
         mib set "WIFI_STA_CONTROL" "$FORM_BSTEER"
         mib commit
-        dbg "save_bandsteer: applied WIFI_STA_CONTROL=$FORM_BSTEER"
-        # wlan_apply restart brings both interfaces down then up, which triggers
-        # stactrl_init() on each radio. stactrl_init() reads stactrl_prefer_band
-        # from pmib and derives the correct asymmetric runtime state
-        # (stactrl_prefer=1 on the preferred radio, 0 on the non-preferred).
-        # libmib.so sets these MIBs correctly, so the restart alone is sufficient.
-        wlan_apply restart
+        dbg "save_bandsteer: applied WIFI_STA_CONTROL=$FORM_BSTEER (was '$CUR_BSTEER_RAW')"
+
+        if [ "$CUR_BSTEER_RAW" = "$FORM_BSTEER" ]; then
+            dbg "save_bandsteer: already $FORM_BSTEER, nothing to restart"
+            printf "Status: 200 OK\r\n"
+            printf "Content-Type: text/plain\r\n\r\n"
+            printf "NOCHANGE"
+            exit 0
+        fi
+
+        # Restarting each radio re-runs stactrl_init(), which reads
+        # stactrl_prefer_band from pmib and derives the correct asymmetric
+        # runtime state (stactrl_prefer=1 on the preferred radio, 0 on the
+        # non-preferred). libmib.so sets these MIBs correctly on start, so the
+        # restart alone is sufficient.
+        wl_restart_bands "5 24"
 
         printf "Status: 200 OK\r\n"
         printf "Content-Type: text/plain\r\n\r\n"
@@ -541,11 +621,10 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
         iwpriv "$IWPRIV_IF" set_mib "txbf_mu=$FORM_MIMO"
         if [ "$FORM_LIVE" = "1" ]; then
             # mc2u_disable is read per packet; short GI is radio-wide and is
-            # picked up by clients as they (re)associate (vendor sets 20M+40M).
+            # picked up by clients as they (re)associate (see wl_set_sgi).
             [ "$FORM_MC2U" != "$OLD_MC2U" ] && wl_set "$IWPRIV_IF" mc2u_disable "$FORM_MC2U"
             if [ "$IDX" = "0" ] && [ "$FORM_SGI" != "$OLD_SGI" ]; then
-                wl_set "$WLAN_IF" shortGI20M "$FORM_SGI"
-                wl_set "$WLAN_IF" shortGI40M "$FORM_SGI"
+                wl_set_sgi "$FORM_SGI"
             fi
         fi
         printf "Status: 200 OK\r\n"

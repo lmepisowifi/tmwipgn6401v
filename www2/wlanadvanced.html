@@ -195,7 +195,7 @@
                 <div class="setting-row" style="align-items:flex-start;">
                     <div style="flex:1; margin-right:8px;">
                         <div class="setting-label">Preferred band</div>
-                        <div class="setting-desc">Nudges dual-band clients toward one radio. Global — applies to 2.4 GHz and 5 GHz together.</div>
+                        <div class="setting-desc">Nudges dual-band clients toward one radio. Global — applies to 2.4 GHz and 5 GHz together. Applying restarts both radios, and only if the setting changed.</div>
                     </div>
                     <select id="bandsteer-sel" class="form-select form-select-sm" style="max-width:190px;">
                         <option value="0">Disabled</option>
@@ -210,7 +210,7 @@
                 </div>
                 <div class="mt-3">
                     <button type="button" class="btn btn-primary w-100" id="bandsteer-save-btn"
-                            onclick="saveBandSteering()">Save</button>
+                            onclick="saveBandSteering()">Apply</button>
                 </div>
             </div>
         </div>
@@ -225,7 +225,7 @@
                 <div class="setting-row" style="align-items:flex-start;">
                     <div style="flex:1; margin-right:8px;">
                         <div class="setting-label">Domain</div>
-                        <div class="setting-desc">Sets the allowed channels and TX power limits for 2.4 GHz and 5 GHz together. Pick the domain that matches where this router is used. Applying restarts WiFi on both radios.</div>
+                        <div class="setting-desc">Sets the allowed channels and TX power limits for 2.4 GHz and 5 GHz together. Pick the domain that matches where this router is used. Applying restarts only the radio(s) whose domain changes.</div>
                     </div>
                     <select id="regdomain-sel" class="form-select form-select-sm" style="max-width:190px;">
                         <option value="" disabled hidden>Unknown</option>
@@ -881,6 +881,49 @@
         }
 
         // --------------------------------------------------------
+        // Apply a global (both-radio) setting: band steering, regulatory domain.
+        // Neither can be applied live, so the CGI restarts only what changed via
+        // wlanapply. It answers "NOCHANGE" (nothing restarted) when the value is
+        // already set, and a 4xx before touching anything for an invalid value;
+        // both skip the poll. There is no revert timer for these (a valid value
+        // cannot lock the admin out), so no countdown overlay either.
+        // --------------------------------------------------------
+        function applyGlobal(postUrl, body) {
+            setFormEnabled(false);
+            showOverlay('Applying.');
+            let aborted  = false;
+            let noChange = false;
+            fetch(postUrl, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                body: body
+            })
+            .then(r => {
+                if (r && !r.ok) { aborted = true; return r.text().then(t => { throw new Error(t || ('HTTP ' + r.status)); }); }
+                return r.text().then(t => { noChange = (t || '').trim() === 'NOCHANGE'; });
+            })
+            .then(() => {
+                if (noChange) {
+                    hideOverlay();
+                    setFormEnabled(true);
+                    toastr["info"]('Already set. Nothing was restarted.', "No change");
+                } else {
+                    setTimeout(() => pollUntilBack(), 1500);
+                }
+            })
+            .catch(err => {
+                if (aborted) {
+                    hideOverlay();
+                    setFormEnabled(true);
+                    toastr["warning"](err.message || 'Apply failed', "Error");
+                } else {
+                    // expected connection drop while the radio restarts
+                    setTimeout(() => pollUntilBack(), 3000);
+                }
+            });
+        }
+
+        // --------------------------------------------------------
         // Save global band steering (WIFI_STA_CONTROL — both radios)
         // --------------------------------------------------------
         function saveBandSteering() {
@@ -893,17 +936,7 @@
             }
             const body    = 'band_steering=' + encodeURIComponent(val);
             const postUrl = CGI + '?band=' + currentBand + '&action=save_bandsteer';
-
-            setFormEnabled(false);
-            // Applying band steering restarts WiFi on both radios, so reuse the
-            // same countdown + poll-until-back flow as a live per-interface save.
-            startCountdown();
-            fetch(postUrl, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-                body: body
-            }).catch(() => {});
-            setTimeout(() => pollUntilBack(), 4000);
+            applyGlobal(postUrl, body);
         }
 
         // --------------------------------------------------------
@@ -918,36 +951,13 @@
             }
             const label = sel.options[sel.selectedIndex].textContent;
             if (!confirm('Set the regulatory domain to ' + label + '?\n\n' +
-                         'WiFi restarts on both radios, and the allowed channels and TX power ' +
-                         'follow the new domain. Use the domain that matches where this router operates.')) {
+                         'WiFi restarts on the radio(s) whose domain changes, and the allowed channels ' +
+                         'and TX power follow the new domain. Use the domain that matches where this router operates.')) {
                 return;
             }
             const body    = 'regdomain=' + encodeURIComponent(val);
             const postUrl = CGI + '?band=' + currentBand + '&action=save_regdomain';
-
-            setFormEnabled(false);
-            // Applying restarts WiFi on both radios: same countdown + poll-until-back
-            // flow as band steering. A fast 4xx (invalid value) returns before any
-            // restart, so surface it and skip the poll.
-            let aborted = false;
-            startCountdown();
-            fetch(postUrl, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-                body: body
-            })
-            .then(r => {
-                if (r && !r.ok) { aborted = true; return r.text().then(t => { throw new Error(t || ('HTTP ' + r.status)); }); }
-            })
-            .catch(err => {
-                if (aborted) {
-                    hideOverlay();
-                    setFormEnabled(true);
-                    toastr["warning"](err.message || 'Apply failed', "Error");
-                }
-                // else: expected connection drop during restart — ignore
-            });
-            setTimeout(() => { if (!aborted) pollUntilBack(); }, 4000);
+            applyGlobal(postUrl, body);
         }
 
         // --------------------------------------------------------
