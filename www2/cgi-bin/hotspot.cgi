@@ -522,7 +522,7 @@ cfg_val_ok() {
             [ "$2" = "0" ] || [ "$2" = "1" ] ;;
         QOS_QDISC)
             # Strict enum: this lands in lmehspt.sh / globals.env / coin_config.env.
-            [ "$2" = "auto" ] || [ "$2" = "fq_codel" ] || [ "$2" = "sfq" ] ;;
+            [ "$2" = "auto" ] || [ "$2" = "cake" ] || [ "$2" = "fq_codel" ] || [ "$2" = "sfq" ] ;;
         NODEMCU_IP|PORTAL_IP)
             _valid_ipv4 "$2" ;;
         NODEMCU_MAC)
@@ -693,7 +693,7 @@ if echo "$QS" | $BB grep -q "action=config_get"; then
     ES="${EQUAL_SHARING_ENABLED:-$(read_lmehspt_var EQUAL_SHARING_ENABLED)}"
     ES_BOOL="false"; [ "${ES:-0}" = "1" ] && ES_BOOL="true"
     QD="${QOS_QDISC:-$(read_lmehspt_var QOS_QDISC)}"
-    case "$QD" in auto|fq_codel|sfq) ;; *) QD="auto" ;; esac
+    case "$QD" in auto|cake|fq_codel|sfq) ;; *) QD="auto" ;; esac
     # What lmehspt.sh's setup_qos() actually settled on (and why), published to
     # a tmpfs file on every QoS rebuild; empty until the first rebuild after boot.
     QDS="${QOS_QDISC_STATUS:-/tmp/hotspot_qdisc_status}"

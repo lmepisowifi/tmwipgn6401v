@@ -56,6 +56,7 @@ PID_FILE="/tmp/repurpose_${TARGET_IFACE}.pid"
 UDHCPC_PID="/var/run/udhcpc.${TARGET_IFACE}.pid"
 LOG="/tmp/repurpose_${TARGET_IFACE}.log"
 WATCHDOG_INTERVAL=15
+SDK_STARTUP_WAIT_MAX=300   # hard cap (s) on waiting for the SDK's `startup` to finish
 
 # ── Helper: true if TARGET_IFACE currently has its own line in STATE_FILE ────
 _in_state_registry() {
@@ -331,27 +332,67 @@ _kick_udhcpc() {
         "$(busybox date)" "$TARGET_IFACE" >> "$LOG"
 }
 
-# ── Helper: wait for target interface to be ready ────────────────────────────
+# ── Helper: true if the Realtek SDK's `startup` program is still running ─────
+# `startup` ("startup&" from /etc/init.d/rc22 or rc32, before rc35 where this
+# script is launched from) applies the MIB at boot: LAN ports -> WAN -> each
+# radio (set_mib, ifconfig up, `brctl addif br0 X`) -> everything else, and its
+# main() ends with pthread_exit(), so the process is gone exactly when all of
+# that has finished. It is also the thing that puts TARGET_IFACE into br0, so
+# pulling the interface out (`nomaster`) while it is still running races it —
+# it can simply re-enslave the port right after. Wait on the process itself,
+# not a proxy like "is it in br0 yet". Not running (finished, or this is a
+# runtime re-launch from the web UI) simply means there is nothing to wait for.
+# Keep in sync with wait_for_sdk_startup() in lmehspt.sh.
+_sdk_startup_running() {
+    busybox pidof startup >/dev/null 2>&1
+}
+
+# ── Helper: true while TARGET_IFACE is an UP netdev the SDK has not yet put in br0
+# i.e. the SDK is between `ifconfig X up` and `brctl addif br0 X`. A down
+# interface (e.g. a disabled wlan*-vxd) never joins br0, so it isn't awaited.
+_target_awaiting_br0() {
+    local _fl
+    [ -d "/sys/class/net/$TARGET_IFACE" ] || return 1
+    [ -d "/sys/class/net/br0/brif/$TARGET_IFACE" ] && return 1
+    read -r _fl < "/sys/class/net/$TARGET_IFACE/flags" 2>/dev/null || return 1
+    [ $((_fl & 1)) -eq 1 ]      # IFF_UP
+}
+
+# ── Helper: wait for the SDK to finish setting up, then for the interface ─────
 _wait_for_interface_ready() {
-    local max_wait=90 waited=0
-    # Stage 2: Wait for it to be bound to the bridge
-    waited=0
-    while [ $waited -lt $max_wait ]; do
-        # Replaced hardcoded wlan0 with $TARGET_IFACE
-        [ -e "/sys/class/net/br0/brif/$TARGET_IFACE" ] && break
+    local max_wait=20 waited=0 sdk_waited=0
 
-        # System has been up over 60s and TARGET_IFACE still isn't in the
-        # bridge — no longer a mid-boot timing race, so assume it's
-        # already in its final state rather than waiting out max_wait.
-        _uptime_now=$(busybox cut -d. -f1 /proc/uptime 2>/dev/null)
-        if [ -n "$_uptime_now" ] && [ "$_uptime_now" -gt 60 ]; then
-            break
-        fi
+    # Stage 1: SDK startup gate — nothing below happens until the SDK has
+    # finished applying the MIB and setting up every interface.
+    if _sdk_startup_running; then
+        printf '[%s] SDK startup (MIB + interface setup) still running - holding off on %s\n' \
+            "$(busybox date)" "$TARGET_IFACE" >> "$LOG"
+        while _sdk_startup_running; do
+            if [ "$sdk_waited" -ge "$SDK_STARTUP_WAIT_MAX" ]; then
+                printf '[%s] SDK startup still running after %ss - continuing anyway\n' \
+                    "$(busybox date)" "$SDK_STARTUP_WAIT_MAX" >> "$LOG"
+                max_wait=90     # SDK hung past the cap: give stragglers longer
+                break
+            fi
+            busybox sleep 1
+            sdk_waited=$((sdk_waited + 1))
+        done
+        printf '[%s] SDK startup wait over after %ss\n' \
+            "$(busybox date)" "$sdk_waited" >> "$LOG"
+    fi
 
-        busybox sleep 1
-        waited=$((waited + 1))
-    done
-    
+    # Stage 2: belt and braces, only if we actually had to wait on the SDK (so
+    # its interface setup JUST ended): confirm TARGET_IFACE landed in br0,
+    # bounded so a port that never joins can't stall boot. When startup was
+    # already done before we looked (or this is a runtime re-launch, where the
+    # interface is legitimately out of br0 already) there is nothing to race.
+    if [ "$sdk_waited" -gt 0 ]; then
+        while [ "$waited" -lt "$max_wait" ] && _target_awaiting_br0; do
+            busybox sleep 1
+            waited=$((waited + 1))
+        done
+    fi
+
     # Settle delay
     busybox sleep 3
 }

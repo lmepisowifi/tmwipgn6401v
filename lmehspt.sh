@@ -100,6 +100,9 @@ QOS_BULK_TARGET_MS="80"
 #   auto     - cake when it can be used (already in the kernel, else insmod'ed
 #              from QOS_CAKE_KO), else fq_codel when it can use it, else sfq
 #              (default)
+#   cake     - always cake. If it cannot be used the leaves are left on the
+#              kernel's plain FIFO (NO fq_codel / sfq substitution) and the
+#              admin page says so - forcing means forcing.
 #   fq_codel - always fq_codel. If it cannot be used the leaves are left on the
 #              kernel's plain FIFO (NO sfq substitution) and the admin page
 #              says so - forcing means forcing.
@@ -111,7 +114,7 @@ QOS_BULK_TARGET_MS="80"
 # already does the per-host fairness that emulation was faking.
 QOS_QDISC="auto"
 QOS_FQ_CODEL_KO="/lmepisowifi/sch/sch_fq_codel.ko"
-# Options for cake when it is the active leaf qdisc (auto mode only). cake sits
+# Options for cake when it is the active leaf qdisc (auto or forced cake). cake sits
 # UNDER the HTB classes, which do all the rate shaping, so it runs "unlimited"
 # and only does queue management. triple-isolate = per-flow fairness inside
 # per-host fairness; nat = resolve the real inside address via conntrack (WAN
@@ -731,54 +734,112 @@ wanprofile_default_iface() {
     return 0
 }
 
-wait_for_wlan_ready() {
-    local max_wait=90 waited=0
+# ── SDK startup gate ─────────────────────────────────────────────────────────
+# The Realtek SDK's `startup` program ("startup&", launched from
+# /etc/init.d/rc22 or rc32 — i.e. BEFORE rc35, where this project's boot
+# scripts are invoked) is what applies the MIB at boot. It runs strictly in
+# sequence: LAN ports (eth0.N.0) -> WAN -> each radio (iwpriv set_mib for
+# SSID/auth/crypto, `ifconfig wlanX up`, then `brctl addif br0 wlanX`) ->
+# everything else (firewall, daemons, IPv6, ...), and its main() ends with
+# pthread_exit(), so the process is gone exactly when ALL of that is done.
+# Because the SDK itself is what puts the LAN ports and radios into br0, moving
+# anything between bridges while it is still running races it: it can
+# re-enslave a port we just moved, or we move a radio that is about to be
+# configured. That is why we wait on the process itself — not on a proxy such
+# as "is X in br0 yet", "has monitord started" or "has wlan0-vap0 appeared",
+# each of which turns true well before the setup is really finished.
+#
+# If `startup` is not running (already finished, or never present) this is a
+# no-op, so a runtime hotspot restart never waits.
+#
+# NOTE: www2/sh/repurposeaswan.sh carries its own copy of this gate (it is a
+# standalone daemon and cannot source this file) — keep the two in sync.
+SDK_STARTUP_WAIT_MAX=300   # hard cap in seconds; we proceed anyway after this
+SDK_STARTUP_WAITED=0       # seconds the last wait_for_sdk_startup() spent waiting
 
+sdk_startup_running() {
+    $BB pidof startup >/dev/null 2>&1
+}
+
+# Returns 0 once `startup` is not running (it already was, or it finished while
+# we waited); 1 if it was still running when the cap expired — we then proceed
+# anyway rather than leave the hotspot dead behind a hung SDK.
+wait_for_sdk_startup() {
+    SDK_STARTUP_WAITED=0
+    sdk_startup_running || return 0
+    logger -t lmehspt "SDK startup (MIB + interface setup) still running - waiting before touching bridge membership" 2>/dev/null
+    while sdk_startup_running; do
+        if [ "$SDK_STARTUP_WAITED" -ge "$SDK_STARTUP_WAIT_MAX" ]; then
+            logger -t lmehspt "SDK startup still running after ${SDK_STARTUP_WAIT_MAX}s - continuing anyway" 2>/dev/null
+            return 1
+        fi
+        sleep 1
+        SDK_STARTUP_WAITED=$((SDK_STARTUP_WAITED + 1))
+    done
+    logger -t lmehspt "SDK startup finished after ${SDK_STARTUP_WAITED}s" 2>/dev/null
+    return 0
+}
+
+# True while <iface> is a real, administratively-UP netdev that has not been
+# enslaved yet: i.e. the SDK is somewhere between `ifconfig X up` and
+# `brctl addif br0 X`. Deliberately NOT "awaiting": an interface already in br0
+# or in the hotspot bridge, one that is down (a disabled radio/SSID never joins
+# br0), one that does not exist, and a port repurposeaswan.sh has taken out of
+# br0 as a routed WAN.
+iface_awaiting_bridge() {
+    local _if="$1" _fl
+    [ -d "/sys/class/net/$_if" ] || return 1
+    [ -d "/sys/class/net/br0/brif/$_if" ] && return 1
+    [ -d "/sys/class/net/$HOTSPOT_BR/brif/$_if" ] && return 1
+    read -r _fl < "/sys/class/net/$_if/flags" 2>/dev/null || return 1
+    [ $((_fl & 1)) -eq 1 ] || return 1      # IFF_UP
+    $BB grep -qx "$_if" /tmp/repurpose_active 2>/dev/null && return 1
+    return 0
+}
+
+wait_for_wlan_ready() {
+    local max_wait waited=0 pending=0 _if
+
+    # 1. Wait for the SDK to finish applying the MIB and setting up every
+    #    interface. Everything below (and everything after this function —
+    #    cleanup_old_hotspot / setup_network move ports between br0 and the
+    #    hotspot bridge) only runs once that is true.
+    if wait_for_sdk_startup; then
+        max_wait=20
+    else
+        max_wait=90     # SDK hung past the cap: give stragglers longer
+    fi
+
+    # 2. Read the vendor-WAN port claim only now: PON_MODE / WAN_PHY_PORT are
+    #    MIB values that decide which port is left out of the hotspot bridge.
     refresh_wan_claim force
 
     # No interfaces configured (or every one is the vendor's RJ45 WAN port) —
     # nothing to wait for.
     [ -z "$(hotspot_ifaces)" ] && return
 
-    # Wait for every interface in HOTSPOT_INTERFACES to be added to br0
-    # by the vendor init — not just wlan*. eth0.2.0 (and any other eth
-    # VLAN sub-if) joins br0 within ~12s of boot, well before wlan even
-    # starts its MIB setup, so including it here costs nothing (it's
-    # already satisfied on the very first check); it just means this
-    # loop stays correct if HOTSPOT_INTERFACES ever changes shape,
-    # instead of hardcoding a wlan-only assumption.
-    #
-    # The wlan side is still the real gate: the full iwpriv set_mib
-    # sequence (SSID, auth, crypto) for wlanX always completes before
-    # brctl addif br0 wlanX on all Realtek SDK builds, regardless of
-    # where in rc35 monitord happens to be launched.
-    #
-    # Do NOT use monitord: on (PGN6401V) it launches at
-    # the START of rc35 (~10s), 13+ seconds before WLAN MIB is written.
-    # Do NOT use wlan0-vap0 existence: that's just MAC setup in rc32.
-    while [ "$waited" -lt "$max_wait" ]; do
-        local all_ready=1 uptime_now _if
-        uptime_now="$(cut -d. -f1 /proc/uptime 2>/dev/null)"
-
-        for _if in $(hotspot_ifaces); do
-            [ -d "/sys/class/net/br0/brif/$_if" ] && continue
-
-            # System has been up over 60s and this interface still isn't
-            # in br0 — this is no longer a mid-boot timing race (that
-            # window is well within 60s on both firmwares), so assume
-            # it's already ready rather than waiting out the rest of
-            # max_wait.
-            if [ -n "$uptime_now" ] && [ "$uptime_now" -gt 60 ]; then
-                continue
-            fi
-
-            all_ready=0
+    # 3. Belt and braces, only if we actually had to wait on the SDK (so its
+    #    interface setup JUST ended): confirm each hotspot interface that came
+    #    up has landed in a bridge, bounded so a port that never joins can't
+    #    stall boot. When startup was already done before we looked there is
+    #    nothing to race, so this is skipped.
+    if [ "$SDK_STARTUP_WAITED" -gt 0 ]; then
+        while [ "$waited" -lt "$max_wait" ]; do
+            pending=0
+            for _if in $(hotspot_ifaces); do
+                if iface_awaiting_bridge "$_if"; then
+                    pending=1
+                    break
+                fi
+            done
+            [ "$pending" -eq 0 ] && break
+            sleep 1
+            waited=$((waited + 1))
         done
-
-        [ "$all_ready" -eq 1 ] && break
-        sleep 1
-        waited=$((waited + 1))
-    done
+        if [ "$pending" -eq 1 ]; then
+            logger -t lmehspt "hotspot interface(s) still not in br0 ${max_wait}s after SDK startup ended - continuing" 2>/dev/null
+        fi
+    fi
 
     # Settle: VAP MIBs and ebtables portmapping rules finish shortly
     # after the radios join br0 (~1-2s on both firmwares).
@@ -791,7 +852,6 @@ wait_for_wlan_ready() {
         ip route add default via "$(resolve_br0_gateway)" dev br0 2>/dev/null
     fi
 }
-
 
 # ── Extra NodeMCU coin-acceptor firewall isolation ─────────────────────────
 # Applies the same "unreachable except via the router's own proxy scripts"
@@ -1320,7 +1380,7 @@ _qos_sfq_limit() {
 }
 
 # ------------------------------------------------------------------
-# Leaf qdisc selection - QOS_QDISC = auto | fq_codel | sfq
+# Leaf qdisc selection - QOS_QDISC = auto | cake | fq_codel | sfq
 # ------------------------------------------------------------------
 _QOS_FQ_WHY=""
 
@@ -1453,18 +1513,29 @@ _qos_cake_ready() {
 # Decide which qdisc add_user_qos() will use and publish it for the admin page.
 # Runs at the top of setup_qos(), i.e. at boot and on every QoS rebuild, so a
 # change of the dropdown takes effect on the next Save & Apply.
-#   QOS_QDISC_EFFECTIVE = cake | fq_codel | sfq | none (forced fq_codel, unusable)
-# cake is only ever chosen in auto mode; a forced fq_codel / sfq is honoured as is.
+#   QOS_QDISC_EFFECTIVE = cake | fq_codel | sfq | none (forced cake / fq_codel, unusable)
+# A forced cake / fq_codel / sfq is honoured as is: a forced cake or fq_codel that
+# cannot be used is NOT replaced by another qdisc (the leaves stay plain FIFO and
+# the admin page says why). Only auto falls back: cake -> fq_codel -> sfq.
 qos_qdisc_resolve() {
     local want="${QOS_QDISC:-auto}" note="" tmp="${QOS_QDISC_STATUS}.tmp"
     _QOS_CAKE_WHY=""
     case "$want" in
-        auto|fq_codel|sfq) ;;
+        auto|cake|fq_codel|sfq) ;;
         *) note="unknown QOS_QDISC value, treated as auto"; want=auto ;;
     esac
     case "$want" in
         sfq)
             QOS_QDISC_EFFECTIVE="sfq" ;;
+        cake)
+            if _qos_cake_ready; then
+                # No note - the admin page renders any note as a warning.
+                QOS_QDISC_EFFECTIVE="cake"
+            else
+                QOS_QDISC_EFFECTIVE="none"
+                note="cake is forced but unusable ($_QOS_CAKE_WHY) - client queues are plain FIFO; choose Auto, fq_codel or sfq"
+                logger -t lmehspt "qos: $note" 2>/dev/null
+            fi ;;
         *)
             if [ "$want" = "auto" ] && _qos_cake_ready; then
                 # cake replaces fq_codel/sfq (not stacked on them). No note -
@@ -1523,9 +1594,13 @@ _qos_add_leaf() {
         cake)
             # $QOS_CAKE_ARGS is deliberately unquoted: it is several tc words.
             "$QOS_CAKE_TC" qdisc add dev "$1" parent "$2" handle "$3" cake $QOS_CAKE_ARGS 2>/dev/null && return 0
-            # Only reachable in auto mode (cake is never chosen when forced), so
-            # a per-queue failure (e.g. out of memory) degrades to sfq like
-            # fq_codel's does.
+            # Forced cake never substitutes another qdisc.
+            if [ "${QOS_QDISC:-auto}" = "cake" ]; then
+                logger -t lmehspt "qos: cake add failed on $1 parent $2 - forced, no fallback" 2>/dev/null
+                return 1
+            fi
+            # Auto mode: a per-queue failure (e.g. out of memory) degrades to
+            # sfq like fq_codel's does.
             logger -t lmehspt "qos: cake add failed on $1 parent $2 - using sfq for this queue" 2>/dev/null
             ;;
         fq_codel)
@@ -1999,7 +2074,9 @@ teardown_anti_tether() {
 #   otherwise   -> SFQ with a low packet limit (12) to drop early and trigger
 #                  TCP backoff, plus PCQ emulation: a flow classifier forcing
 #                  SFQ to hash strictly by $4 (per-IP, not per-connection).
-# If cake cannot be attached it falls through to the SFQ path.
+# If cake cannot be attached it falls through to the SFQ path (also when cake is
+# forced: this is the shared unauthenticated bucket, not a client queue, and it
+# must never be left unshaped).
 _qos_add_unauth_leaf() {
     if [ "$QOS_QDISC_EFFECTIVE" = "cake" ] && \
        "$QOS_CAKE_TC" qdisc add dev "$1" parent "$2" handle "$3" cake $QOS_CAKE_ARGS 2>/dev/null; then

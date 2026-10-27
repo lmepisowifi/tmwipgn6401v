@@ -1,0 +1,1100 @@
+From 9186d70126cd8b62ad50b1f744fe7adf8cb498e3 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Sat, 24 Oct 2026 10:09:33 +0800
+Subject: [PATCH] Add firmware OTA: install a Realtek firmware tar(.gz) into
+ the other A/B slot
+
+ota.sh gets fw_check / fw_apply [stage|next|default|once|keep] / fw_status / fw_log, driven
+by a firmware.txt manifest (model-pinned, sha256-verified, URL pinned to this repo) and
+written through the existing www2/sh/fwboot.sh, so every flash-safety rule stays in
+one place. Never automatic: cron only notifies, once per version.
+
+- fw_apply next (preselected): write the slot and arm a trial boot that is kept if it
+  comes up cleanly (fwboot.sh bootonce N 1), but DO NOT reboot. The device tries the new
+  slot at its next restart (power cut, crash, manual), fw_loaded.sh makes it the default
+  if it starts cleanly, and U-Boot's watchdog falls back to the current slot if not.
+- fw_apply default: write the slot and make it the default boot slot (fwboot.sh
+  setdefault), no reboot, no automatic fall-back. Only once/keep reboot, as before.
+- fw_check reports "pending":true once the firmware is written and set to boot at the
+  next restart; the page shows "Waiting for restart" and cron stops notifying
+- fwboot.sh: accept .tar.gz (magic-byte detection, unpacked once in place, capped at
+  64 MiB); new `info` command reporting the one flashable slot and why not
+- ota.cgi / ota.html: Firmware card on Software Update (check, five install modes,
+  progress, reboot wait); fwupload/bootpart pages accept .tar.gz
+- fwpublish.sh: builds firmware.txt from a fwu tar and prints the release steps
+- FIRMWARE_OTA.md: how it works and what is and is not tested
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_0117RV74XPg4w5e5X4pMiTLg
+---
+ FIRMWARE_OTA.md      |  89 +++++++++++++
+ fwpublish.sh         | 115 +++++++++++++++++
+ ota.sh               | 298 ++++++++++++++++++++++++++++++++++++++++++-
+ www2/bootpart.html   |   4 +-
+ www2/cgi-bin/ota.cgi |  37 ++++++
+ www2/fwupload.html   |   9 +-
+ www2/ota.html        | 248 ++++++++++++++++++++++++++++++++++-
+ www2/sh/fwboot.sh    |  68 +++++++++-
+ 8 files changed, 858 insertions(+), 10 deletions(-)
+ create mode 100644 FIRMWARE_OTA.md
+ create mode 100755 fwpublish.sh
+
+diff --git a/FIRMWARE_OTA.md b/FIRMWARE_OTA.md
+new file mode 100644
+index 0000000..10147d3
+--- /dev/null
++++ b/FIRMWARE_OTA.md
+@@ -0,0 +1,89 @@
++# Firmware OTA (Realtek Luna firmware → the other flash slot)
++
++The normal OTA (`ota.sh check` / `apply`) only swaps app files under `/lmepisowifi`. This is
++the other half: it installs a **vendor-format firmware tar** (`uImage` + `rootfs` + `md5.txt` +
++`fwu.sh` + `fwu_ver`, as `.tar` or `.tar.gz`) into the **inactive A/B flash slot**.
++
++Admin page: **Software Update → Firmware (other slot)**. It is never automatic. Cron only sends
++a notification (once per version) that a firmware is waiting.
++
++## Publishing a firmware (on your computer)
++
++```sh
++./fwpublish.sh path/to/PGN6401V_fwu_img.tar PGN6401V fw-v8.1.2 "what changed"
++```
++
++It checks the tar against its own `md5.txt`, gzips it if needed, and writes `firmware.txt`
++(version, model, URL, sha256, size). Then it prints the three steps left:
++
++1. attach the `.tar.gz` to a GitHub Release with that tag,
++2. commit and push `firmware.txt` to `main`,
++3. purge jsDelivr's cached copy so devices see it now:
++   `curl -sL https://purge.jsdelivr.net/gh/OWNER/REPO@main/firmware.txt`
++
++`firmware.txt` fields: `fw_version`, `fw_model`, `fw_url`, `fw_sha256`, optional `fw_size`,
++`fw_notes`, `fw_url_mirror`.
++
++**Give every build a new `fwu_ver` string.** `fw_version` is the tar's own `fwu_ver` (the part
++before ` -- `), and the device decides "is there an update?" by comparing it with the version it
++is running. The vendor `fwu.sh` refuses an equal version for the same reason.
++
++## What the device does
++
++| Step | Rule |
++|---|---|
++| Manifest | `firmware.txt` must carry `fw_model` equal to `FW_MODEL` in this repo's `ota.sh`, a 64-hex sha256, and a URL inside this repo's Releases (or its jsDelivr tree). Anything else is refused. |
++| Slot | Only the slot that is **neither running nor the default**. If there is none (for example a trial boot is pending) it says why and writes nothing. |
++| Download | To RAM (`/tmp/ota`), sha256 checked against the manifest. A mismatch deletes it. |
++| Write | `www2/sh/fwboot.sh flash`: re-checks `md5.txt`, sizes against the slot's UBI volumes, writes `uImage` then `rootfs`, reads both back, and only then records the slot's version. An interrupted write leaves the slot marked empty. |
++| RAM | A `.tar.gz` is unpacked once; peak is about twice its size, plus the `rootfs` while writing. Limit 64 MiB. |
++
++After writing you pick one of five options. Only the last two reboot the device; the first three
++never do, so nobody is interrupted.
++
++- **Just write it**: nothing else changes; boot it later from *Boot Partitions*.
++- **Write it and try it at the next restart** (preselected): arms the same trial boot as the
++  last option (`fwboot.sh bootonce N 1`) but does not reboot. The device keeps running as it is. The
++  next time it restarts for any reason (power cut, crash, manual reboot) it boots the new slot once.
++  If that comes up cleanly `fw_loaded.sh` keeps it as the default; if it hangs, U-Boot's watchdog
++  drops back to the current slot. Cancel it before then with *Boot Partitions*.
++- **Write it and make it the default boot slot**: runs `fwboot.sh setdefault` on the
++  new slot and stops. The device keeps running as it is and comes up on the new firmware the next
++  time it restarts for any reason (power cut, crash, manual reboot). This is a plain default
++  switch, not a trial boot: nothing is set up to fall back automatically if the new firmware fails
++  to start. To undo it, make the old slot the default again on *Boot Partitions*.
++- **Reboot into it once to test**: reboots now; the reboot after that returns to the current
++  firmware unless you make the new one the default.
++- **Reboot into it and keep it if it starts cleanly**: reboots now; becomes the default once
++  `fw_loaded.sh` runs at the end of a good boot. If it never gets there, U-Boot's watchdog falls
++  back to the old slot.
++
++Once a firmware is written and set to boot at the next restart, `fw_check` reports it as
++`"pending":true` (with `pending_slot`) and the page shows *Waiting for restart* instead of offering
++it again. Cron does not nag about it.
++
++`/lmepisowifi` is its own UBIFS volume, so vouchers, income and settings are in neither slot.
++
++`.tar.gz` also works on **Firmware Upload** and **Boot Partitions → download from URL**.
++
++## Command line (on the device)
++
++```sh
++sh /lmepisowifi/ota.sh fw_check              # JSON: running / latest / target slot
++sh /lmepisowifi/ota.sh fw_apply stage|next|default|once|keep   # only once/keep reboot
++sh /lmepisowifi/ota.sh fw_status             # JSON: status + message
++sh /lmepisowifi/ota.sh fw_log
++sh /lmepisowifi/www2/sh/fwboot.sh info       # slots, versions, which slot is flashable
++```
++
++## What has and has not been tested
++
++Tested with stand-ins for `nv`, `ubinfo`, `ubiupdatevol`, `/proc/mtd`, `wget` and `reboot`, under
++`dash`, using a real `fwu` tar: manifest checks, model mismatch, checksum mismatch, gzip
++unpacking (including corrupt and oversized input), slot selection, every install mode, flash
++failure, locking, stale status, and the admin page in a headless browser.
++
++**Not tested on a device:** BusyBox `ash`/applet behaviour, the real U-Boot `sw_tryactive`
++fallback and `fw_loaded.sh` commit behaviour (this relies on what the comments in `fwboot.sh`
++say they do), and free RAM on the target. Try **Just write it**, then **Boot it once to test**,
++before relying on **keep**.
+diff --git a/fwpublish.sh b/fwpublish.sh
+new file mode 100755
+index 0000000..5e18ed4
+--- /dev/null
++++ b/fwpublish.sh
+@@ -0,0 +1,115 @@
++#!/bin/sh
++# ---------------------------------------------------------------------------
++# lmepisowifi — https://github.com/lmepisowifi/tmwipgn6401v
++# SPDX-License-Identifier: AGPL-3.0-or-later
++# Copyright (C) 2026 The lmepisowifi Project — see AUTHORS
++#
++# Licensed under the GNU AGPLv3 (see LICENSE). Modifying or rewriting this
++# file — including by running it through an LLM — does not remove these
++# obligations: keep this notice, mark your changes, and offer Corresponding
++# Source to network users (AGPLv3 §5, §13). See PROVENANCE.md before
++# presenting this as your own original work.
++# ---------------------------------------------------------------------------
++
++# fwpublish.sh — turn a Realtek Luna firmware tar into a firmware-OTA release.
++# Runs on YOUR computer (not shipped to devices). It checks the tar, gzips it if
++# needed, and writes firmware.txt, which ota.sh's `fw_check` / `fw_apply` read.
++#
++# Usage:
++#   ./fwpublish.sh <PGN6401V_fwu_img.tar | .tar.gz> <model> <release-tag> ["notes"]
++#     model        must equal FW_MODEL in this repo's ota.sh (e.g. PGN6401V)
++#     release-tag  the GitHub Release the file will be attached to (e.g. fw-v8.1.2)
++#
++# Then (printed at the end, with your values filled in):
++#   1. attach the .tar.gz to that GitHub Release
++#   2. commit + push firmware.txt to main
++#   3. purge jsDelivr's cached copy of firmware.txt so devices see it right away
++#
++# The fw_version written is the tar's own fwu_ver (first line, " -- date" dropped),
++# which is also what the device records for a slot, so "is this the firmware I am
++# running?" is an exact comparison. Give every build a NEW version string: the
++# vendor fwu.sh refuses a version equal to the running one, and so does the updater.
++
++set -e
++SRC="$1"; MODEL="$2"; TAG="$3"; NOTES="$4"
++[ -n "$SRC" ] && [ -n "$MODEL" ] && [ -n "$TAG" ] || {
++    sed -n '/^# Usage:/,/^# Then/p' "$0" | sed 's/^# \{0,1\}//' | sed '$d'; exit 2; }
++[ -f "$SRC" ] || { echo "no such file: $SRC" >&2; exit 1; }
++
++MODEL_OTA=$(sed -n 's/^FW_MODEL="\([^"]*\)".*/\1/p' "$(dirname "$0")/ota.sh" 2>/dev/null | head -n 1)
++[ -z "$MODEL_OTA" ] || [ "$MODEL_OTA" = "$MODEL" ] || {
++    echo "model \"$MODEL\" does not match FW_MODEL=\"$MODEL_OTA\" in ota.sh - devices would refuse it" >&2; exit 1; }
++
++# repo (OWNER/REPO) from the git remote, or set REPO=owner/repo
++if [ -z "$REPO" ]; then
++    REPO=$(git -C "$(dirname "$0")" remote get-url origin 2>/dev/null | sed -e 's#^.*github\.com[:/]##' -e 's#\.git$##')
++fi
++[ -n "$REPO" ] || { echo "cannot tell the GitHub repo; run with REPO=owner/repo" >&2; exit 1; }
++
++WORK=$(mktemp -d); trap 'rm -rf "$WORK"' EXIT
++
++# ---- plain tar to inspect ----
++if [ "$(head -c 2 "$SRC" | od -An -tx1 | tr -d ' \n')" = "1f8b" ]; then
++    gzip -dc "$SRC" > "$WORK/fw.tar"; GZSRC="$SRC"
++else
++    cp "$SRC" "$WORK/fw.tar"; GZSRC=""
++fi
++
++echo "Checking the tar ..."
++LST=$(tar -tf "$WORK/fw.tar") || { echo "not a valid tar archive" >&2; exit 1; }
++for f in uImage rootfs md5.txt fwu_ver; do
++    echo "$LST" | grep -qx "$f" || { echo "missing $f - not a Luna firmware tar" >&2; exit 1; }
++done
++echo "$LST" | grep -qx fwu.sh || echo "warning: no fwu.sh in the tar (the vendor updater would not accept it)" >&2
++
++( cd "$WORK" && mkdir x && tar -xf fw.tar -C x )
++for f in uImage rootfs; do
++    want=$(awk -v n="$f" '$2==n{print $1; exit}' "$WORK/x/md5.txt")
++    got=$(md5sum "$WORK/x/$f" | awk '{print $1}')
++    [ -n "$want" ] && [ "$want" = "$got" ] || { echo "$f does not match md5.txt" >&2; exit 1; }
++    echo "  $f ok ($(wc -c < "$WORK/x/$f") bytes)"
++done
++
++# same cleaning fwboot.sh applies before recording a slot's version
++VER=$(head -n 1 "$WORK/x/fwu_ver" | tr -d '\r' | sed 's/ *--.*$//' | tr -cd 'A-Za-z0-9._+:/ ()-' | cut -c1-64)
++[ -n "$VER" ] || { echo "fwu_ver is empty" >&2; exit 1; }
++
++# ---- the file that gets published ----
++BASE=$(basename "$SRC"); BASE=${BASE%.gz}; BASE=${BASE%.tar}; BASE=${BASE%.tgz}
++OUT_DIR=$(dirname "$SRC")
++if [ -n "$GZSRC" ]; then
++    ASSET="$GZSRC"
++else
++    ASSET="$OUT_DIR/$BASE.tar.gz"
++    gzip -9 -c "$SRC" > "$ASSET"
++    echo "  wrote $ASSET"
++fi
++SUM=$(sha256sum "$ASSET" | awk '{print $1}')
++SIZE=$(wc -c < "$ASSET" | tr -d ' ')
++[ "$SIZE" -le 67108864 ] || { echo "the .tar.gz is $SIZE bytes; devices refuse anything over 64 MiB" >&2; exit 1; }
++NAME=$(basename "$ASSET")
++URL="https://github.com/$REPO/releases/download/$TAG/$NAME"
++
++OUT="$(dirname "$0")/firmware.txt"
++{
++    echo "# firmware.txt - Luna A/B firmware OTA manifest (written by fwpublish.sh; read by ota.sh fw_check/fw_apply)"
++    echo "fw_version=$VER"
++    echo "fw_model=$MODEL"
++    echo "fw_url=$URL"
++    echo "fw_sha256=$SUM"
++    echo "fw_size=$SIZE"
++    [ -z "$NOTES" ] || echo "fw_notes=$(printf '%s' "$NOTES" | tr -d '\r\n')"
++} > "$OUT"
++
++echo
++echo "Wrote $OUT:"; sed 's/^/  /' "$OUT"
++cat <<EOF
++
++Next:
++  1. gh release create $TAG "$ASSET" --repo $REPO --title "Firmware $VER" --notes "Firmware $VER for $MODEL"
++       (or attach $NAME to the $TAG release by hand)
++  2. git add firmware.txt && git commit -m "firmware $VER" && git push
++  3. curl -sL https://purge.jsdelivr.net/gh/$REPO@main/firmware.txt
++
++Devices then show it under Software Update > Firmware. They never install it on their own.
++EOF
+diff --git a/ota.sh b/ota.sh
+index c0c5f31..e57614e 100755
+--- a/ota.sh
++++ b/ota.sh
+@@ -32,6 +32,10 @@
+ #   ota.sh cron            # scheduled check; notify, and apply if OTA_AUTO=1
+ #   ota.sh status          # print the current status token
+ #   ota.sh get_insecure_tls | set_insecure_tls 0|1   # HTTPS cert check off/on (OTA_INSECURE_TLS)
++#   ota.sh fw_check | fw_apply [stage|next|default|once|keep] | fw_status
++#                          # Realtek firmware .tar.gz -> the OTHER A/B flash slot
++#                          # (a separate path from the file-sync above; see
++#                          # "Firmware OTA" near the end of this file)
+ #
+ # Only uses tools present on the device: wget(GNU), sha256sum, tar, gzip,
+ # sed, awk, grep, mv, cp, rm, mkdir.
+@@ -113,6 +117,14 @@ OTA_NODEMCU="1"                    # 1 = also push firmware to the coin-slot Nod
+ # manifest AND a matching tarball and get root code execution via OTA.
+ [ -f "$OTA_CACERT" ] || OTA_CACERT="$ROOT/www2/sh/cacert.pem"
+ 
++# ---- firmware OTA (see "Firmware OTA" below) --------------------------------
++FW_MODEL="PGN6401V"                      # per repo: firmware.txt's fw_model must equal this, or nothing is flashed
++FWBOOT="$ROOT/www2/sh/fwboot.sh"         # owns every flash-safety rule
++FW_WORK="${FWBOOT_WORK:-/tmp/fwboot}"    # fwboot.sh's own state dir (same default as fwboot.sh)
++FW_STATUS_FILE="/tmp/ota_fw_status"
++FW_MSG_FILE="/tmp/ota_fw_msg"
++FW_LOG="/tmp/ota_fw.log"
++
+ # ---- helpers ---------------------------------------------------------------
+ log() { printf '[%s] %s\n' "$(date '+%H:%M:%S')" "$*" >> "$LOG"; }
+ set_status() { printf '%s' "$1" > "$STATUS_FILE"; }
+@@ -1240,6 +1252,10 @@ do_cron() {
+     # this very script — see self_heal() for the full explanation.
+     self_heal
+ 
++    # Firmware (A/B slot) updates are NEVER applied from cron: this only tells
++    # the admin one is waiting. Never fails, never blocks the checks below.
++    fw_cron_notice
++
+     _json=$(do_check)
+ 
+     if echo "$_json" | grep -q '"update_available":true'; then
+@@ -1495,6 +1511,281 @@ sync_nodemcu() {
+     return $_fail
+ }
+ 
++# ===========================================================================
++# Firmware OTA — Realtek Luna firmware tar(.gz) -> the OTHER A/B flash slot
++# ===========================================================================
++# The file-sync OTA above only swaps app files under /lmepisowifi. This is the
++# other half: it fetches a vendor-format firmware tar (uImage + rootfs + md5.txt
++# + fwu.sh + fwu_ver, optionally gzipped) and writes it into the inactive flash
++# slot through www2/sh/fwboot.sh, which owns every flash-safety rule: never the
++# running or default slot, md5 + size checks, read-back after writing, and the
++# slot's version is recorded only once it is complete.
++#
++# Safety model of this layer:
++#   * Never automatic. Cron only notifies (fw_cron_notice); a person starts it.
++#   * firmware.txt must name this device's model (FW_MODEL), carry a sha256, and
++#     point at this repo's Releases (or its jsDelivr tree) - same pin as above.
++#   * fw_apply MODE: stage = write the slot, change nothing else;
++#     next = write the slot and arm a trial boot that is kept if it comes up
++#     cleanly (same as keep), but do NOT reboot: the next restart for any reason
++#     (power cut, crash, manual reboot) tries the new slot, fw_loaded.sh makes it
++#     the default if it starts cleanly, and U-Boot's watchdog falls back to the
++#     current slot if it does not;
++#     default = write the slot and make it the default boot slot, but do NOT
++#     reboot: the device switches over the next time it restarts for any reason.
++#     No trial boot, so no automatic fall-back;
++#     once = also boot it a single time (the next reboot returns to the old
++#     slot, U-Boot's watchdog falls back if it hangs); keep = trial boot that
++#     becomes the default if it comes up cleanly (fw_loaded.sh commits it).
++#     Only once and keep reboot the device (they start the reboot themselves);
++#     stage, next and default never do.
++#   * /lmepisowifi is its own UBIFS volume, so settings/vouchers/income are not
++#     part of either slot and carry across.
++#
++# firmware.txt (next to manifest.txt, written by fwpublish.sh):
++#   fw_version=lmepisowifi_V8.1.2   must equal the tar's fwu_ver (cleaned)
++#   fw_model=PGN6401V
++#   fw_url=https://github.com/OWNER/REPO/releases/download/TAG/NAME.tar.gz
++#   fw_sha256=<64 hex of the file at fw_url>
++#   fw_size=<bytes of that file>            (optional, sizes the RAM check)
++#   fw_notes=<one line>                     (optional)
++#   fw_url_mirror=<jsDelivr url>            (optional, tried first)
++
++fw_manifest_url() {
++    if [ -n "$OTA_MANIFEST_URL" ]; then
++        echo "$OTA_MANIFEST_URL" | sed 's#/manifest\.txt#/firmware.txt#'
++    else
++        echo "https://cdn.jsdelivr.net/gh/${OTA_REPO}@${OTA_BRANCH}/firmware.txt"
++    fi
++}
++fwval() { sed -n "s/^$1=//p" "$DL/firmware.txt" | tr -d '\r' | head -1; }
++fw_set() { printf '%s' "$1" > "$FW_STATUS_FILE"; printf '%s' "$2" > "$FW_MSG_FILE"; log "[$1] $2"; }
++fw_fail() { fw_set failed "$1"; return 1; }
++
++# `fwboot.sh info` -> key=value lines (supported, running, ver0/ver1, target, why...).
++fw_load_info() { _FW_INFO=""; [ -f "$FWBOOT" ] && _FW_INFO=$(sh "$FWBOOT" info 2>/dev/null); return 0; }
++fw_info() { printf '%s\n' "$_FW_INFO" | sed -n "s/^$1=//p" | head -n 1; }
++
++# The slot the NEXT restart will switch to: a pending trial boot, else a default
++# slot that is not the one running. Empty when the device will come back on the
++# slot it runs now. (fw_load_info must have run.)
++fw_pending_slot() {
++    _pa=$(fw_info active); _pc=$(fw_info commit); _pt=$(fw_info tryactive)
++    case "$_pa" in 0|1) ;; *) return 0 ;; esac
++    case "$_pt" in 0|1) [ "$_pt" != "$_pa" ] && { echo "$_pt"; return 0; } ;; esac
++    case "$_pc" in 0|1) [ "$_pc" != "$_pa" ] && echo "$_pc" ;; esac
++    return 0
++}
++
++# Fetch + validate firmware.txt. Sets FW_VER FW_URL FW_SUM FW_SIZE FW_NOTES FW_MURL;
++# on failure sets FW_ERR and returns 1.
++fw_load_manifest() {
++    FW_ERR=""; mkdir -p "$DL"
++    fetch "$(fw_manifest_url)" "$DL/firmware.txt"; _fwrc=$?
++    if [ "$_fwrc" -ne 0 ]; then
++        case "$_fwrc" in
++            5) FW_ERR="HTTPS certificate check failed - the device clock is probably wrong. Fix the time, or turn on Skip certificate check" ;;
++            8) FW_ERR="no firmware has been published for this device yet" ;;
++            *) FW_ERR="could not reach update server (jsDelivr/GitHub)" ;;
++        esac
++        return 1
++    fi
++    if grep -Eqi 'rate.limit|Too Many Requests|terms.*service' "$DL/firmware.txt" 2>/dev/null; then
++        FW_ERR="update server rate limited - wait a few minutes and try again"; return 1
++    fi
++    # Same character set fwboot.sh records for a slot, so the comparison is exact.
++    FW_VER=$(fwval fw_version | tr -cd 'A-Za-z0-9._+:/ ()-' | cut -c1-64)
++    FW_URL=$(fwval fw_url);   FW_SUM=$(fwval fw_sha256); FW_SIZE=$(fwval fw_size)
++    FW_NOTES=$(fwval fw_notes); FW_MURL=$(fwval fw_url_mirror); FW_MDL=$(fwval fw_model)
++    if [ -z "$FW_VER" ] || [ -z "$FW_URL" ] || [ -z "$FW_SUM" ] || [ -z "$FW_MDL" ]; then
++        FW_ERR="firmware manifest incomplete (need fw_version, fw_model, fw_url, fw_sha256)"; return 1
++    fi
++    if [ "$FW_MDL" != "$FW_MODEL" ]; then
++        FW_ERR="firmware manifest is for \"$FW_MDL\", this device is \"$FW_MODEL\" - refusing"; return 1
++    fi
++    case "$FW_SUM" in *[!0-9a-f]*) FW_ERR="firmware manifest has a malformed sha256"; return 1 ;; esac
++    [ "${#FW_SUM}" -eq 64 ] || { FW_ERR="firmware manifest has a malformed sha256"; return 1; }
++    _url_ok "$FW_URL" || { FW_ERR="refusing firmware url outside this repo (Releases or jsDelivr)"; return 1; }
++    case "$FW_SIZE" in ""|*[!0-9]*) FW_SIZE=0 ;; esac
++    [ "$FW_SIZE" -le 67108864 ] || { FW_ERR="firmware is larger than the 64 MiB limit"; return 1; }
++    return 0
++}
++
++# Prints JSON, always returns 0 (errors are inside the JSON, like do_check).
++do_fw_check() {
++    fw_load_info; _run=$(fw_info running)
++    if [ "$(fw_info supported)" != "1" ]; then
++        printf '{"error":"this device does not expose a dual-image (A/B) firmware layout","running":"%s"}\n' "$(json_esc "$_run")"
++        return 0
++    fi
++    if ! fw_load_manifest; then
++        printf '{"error":"%s","running":"%s"}\n' "$(json_esc "$FW_ERR")" "$(json_esc "$_run")"
++        return 0
++    fi
++    _tgt=$(fw_info target); _why=$(fw_info why); _tver=""
++    [ -n "$_tgt" ] && _tver=$(fw_info "ver$_tgt")
++    _upd=false; _staged=false; _pend=false; _pslot=$(fw_pending_slot)
++    if [ "$FW_VER" != "$_run" ]; then
++        if [ -n "$_pslot" ] && [ "$(fw_info "ver$_pslot")" = "$FW_VER" ]; then
++            # pending = already written AND the next restart will boot it; nothing left to do
++            _pend=true
++        elif [ -n "$_tgt" ] && [ "$_tver" = "$FW_VER" ]; then
++            # staged = the slot a flash would use already holds exactly this version
++            _staged=true
++        else
++            _upd=true
++        fi
++    fi
++    # a pending firmware needs nothing more from the admin; the slot-overwrite reason is noise then
++    [ "$_pend" = true ] && _why=""
++    printf '{"running":"%s","latest":"%s","update_available":%s,"staged":%s,"pending":%s,"pending_slot":"%s","target":"%s","why":"%s","size":%s,"notes":"%s"}\n' \
++        "$(json_esc "$_run")" "$(json_esc "$FW_VER")" "$_upd" "$_staged" "$_pend" "$_pslot" "$_tgt" "$(json_esc "$_why")" "$FW_SIZE" "$(json_esc "$FW_NOTES")"
++    return 0
++}
++
++do_fw_apply() {
++    _mode="${1:-stage}"
++    case "$_mode" in stage|next|default|once|keep) ;; *) log "fw_apply: unknown mode '$_mode'"; return 1 ;; esac
++    # Same lock as do_apply(): a file-sync update and a flash never overlap.
++    if ! ( set -C; : > "$LOCK" ) 2>/dev/null; then
++        fw_set failed "another update is already running"; return 1
++    fi
++    trap 'rm -f "$LOCK" "$DL/fw.tar.gz"' EXIT
++    : > "$LOG"; mkdir -p "$DL"
++    fw_set checking "Checking the firmware manifest"
++    fw_load_info
++    [ "$(fw_info supported)" = "1" ] || { fw_fail "this device does not expose a dual-image (A/B) firmware layout"; return 1; }
++    fw_load_manifest || { fw_fail "$FW_ERR"; return 1; }
++    _run=$(fw_info running); _slot=$(fw_info target)
++    # Already written and set to boot at the next restart (mode default, or a pending trial boot):
++    # say so, rather than the "no slot can be overwritten" reason that follows from it.
++    _pslot=$(fw_pending_slot)
++    if [ "$FW_VER" != "$_run" ] && [ -n "$_pslot" ] && [ "$(fw_info "ver$_pslot")" = "$FW_VER" ]; then
++        fw_fail "firmware $FW_VER is already in slot $_pslot and will boot at the next restart"; return 1
++    fi
++    [ -n "$_slot" ] || { fw_fail "$(fw_info why)"; return 1; }
++    case "$_slot" in 0|1) ;; *) fw_fail "bad target slot '$_slot'"; return 1 ;; esac
++    [ "$FW_VER" != "$_run" ] || { fw_fail "already running $FW_VER"; return 1; }
++    _have=0; [ "$(fw_info "ver$_slot")" = "$FW_VER" ] && _have=1
++    if [ "$_have" = 1 ] && [ "$_mode" = stage ]; then
++        fw_fail "slot $_slot already holds $FW_VER - choose a boot option instead"; return 1
++    fi
++    log "firmware $FW_VER: running=$_run target-slot=$_slot mode=$_mode already-in-slot=$_have"
++
++    if [ "$_have" = 0 ]; then
++        # Peak RAM is the .gz plus its unpacked tar (fwboot.sh unpacks once, in place).
++        _kb=$(( FW_SIZE / 1024 )); [ "$_kb" -gt 0 ] || _kb=16384
++        _need=$(( _kb * 2 + 4096 ))
++        _avail=$(df -k "$DL" 2>/dev/null | tail -n 1 | awk '{print $(NF-2)}')
++        case "$_avail" in ""|*[!0-9]*|0) ;; *)
++            [ "$_avail" -ge "$_need" ] || { fw_fail "not enough free memory to download: need ${_need} KB, have ${_avail} KB"; return 1; } ;;
++        esac
++
++        fw_set downloading "Downloading $FW_VER"
++        _dl_ok=1
++        if [ -n "$FW_MURL" ] && _url_ok "$FW_MURL"; then
++            log "downloading via mirror"
++            if fetch "$FW_MURL" "$DL/fw.tar.gz"; then _dl_ok=0; else log "mirror download failed - falling back to $FW_URL"; fi
++        fi
++        if [ "$_dl_ok" -ne 0 ] && ! fetch "$FW_URL" "$DL/fw.tar.gz"; then
++            notify "OTA: firmware $FW_VER download failed"
++            fw_fail "download failed"; return 1
++        fi
++
++        fw_set verifying "Verifying the checksum"
++        _got=$(sha256sum "$DL/fw.tar.gz" 2>/dev/null | awk '{print $1}')
++        if [ -z "$_got" ] || [ "$_got" != "$FW_SUM" ]; then
++            log "ERROR: sha256 MISMATCH - want=$FW_SUM got=${_got:-<empty>} - discarding download"
++            notify "OTA: firmware $FW_VER FAILED checksum (rejected)"
++            fw_fail "checksum mismatch - download discarded"; return 1
++        fi
++
++        fw_set flashing "Writing $FW_VER to slot $_slot"
++        sh "$FWBOOT" flash "$_slot" "$DL/fw.tar.gz" >>"$LOG" 2>&1; _rc=$?
++        rm -f "$DL/fw.tar.gz"
++        if [ "$_rc" -ne 0 ]; then
++            _m=$(cat "$FW_WORK/msg" 2>/dev/null)
++            notify "OTA: firmware flash to slot $_slot failed: ${_m:-see the log}"
++            fw_fail "${_m:-flash failed}"; return 1
++        fi
++        _rec=$(sh "$FWBOOT" info 2>/dev/null | sed -n "s/^ver$_slot=//p")
++        [ "$_rec" = "$FW_VER" ] || log "WARNING: slot $_slot recorded \"$_rec\" but firmware.txt says \"$FW_VER\" (fwu_ver inside the tar differs from fw_version)"
++    fi
++
++    case "$_mode" in
++        stage)
++            fw_set done "Slot $_slot now holds $FW_VER. Open Boot Partitions to boot it."
++            notify "OTA: firmware $FW_VER written to slot $_slot (not booted yet)"
++            ;;
++        default)
++            # Make it the default boot slot and leave the running system alone: no reboot
++            # here. Whenever the device next restarts (power cut, crash, manual) it comes up on it.
++            _r=$(sh "$FWBOOT" setdefault "$_slot" 2>&1)
++            case "$_r" in
++                *'"ok":true'*) ;;
++                *) _e=$(printf '%s' "$_r" | sed -n 's/.*"error":"\([^"]*\)".*/\1/p')
++                   log "setdefault failed: $_r"
++                   fw_fail "written to slot $_slot, but could not make it the default: ${_e:-unknown error}"; return 1 ;;
++            esac
++            fw_set done "Slot $_slot holds $FW_VER and is now the default boot slot. The device was NOT rebooted: it switches over the next time it restarts."
++            notify "OTA: firmware $FW_VER written to slot $_slot and set as the default; it boots at the next restart (no reboot was done)"
++            ;;
++        once|keep|next)
++            # next = keep (trial boot, committed if it comes up cleanly) minus the reboot
++            _keep=0; [ "$_mode" != once ] && _keep=1
++            _r=$(sh "$FWBOOT" bootonce "$_slot" "$_keep" 2>&1)
++            case "$_r" in
++                *'"ok":true'*) ;;
++                *) _e=$(printf '%s' "$_r" | sed -n 's/.*"error":"\([^"]*\)".*/\1/p')
++                   log "bootonce failed: $_r"
++                   fw_fail "written to slot $_slot, but could not schedule the boot: ${_e:-unknown error}"; return 1 ;;
++            esac
++            if [ "$_mode" = next ]; then
++                # No reboot: whenever the device next restarts it tries slot $_slot; if that comes
++                # up cleanly fw_loaded.sh keeps it as the default, otherwise the watchdog drops back.
++                fw_set done "Slot $_slot holds $FW_VER and will be tried at the next restart: kept as the default if it starts cleanly, otherwise the device falls back to the current firmware. The device was NOT rebooted."
++                notify "OTA: firmware $FW_VER written to slot $_slot; it is tried at the next restart (no reboot was done)"
++                return 0
++            fi
++            fw_set booting "Rebooting into slot $_slot"
++            notify "OTA: firmware $FW_VER written to slot $_slot; rebooting into it ($_mode)"
++            sh "$FWBOOT" reboot >/dev/null 2>&1
++            ;;
++    esac
++    return 0
++}
++
++do_fw_status() {
++    _s=$(cat "$FW_STATUS_FILE" 2>/dev/null); [ -n "$_s" ] || _s=idle
++    _m=$(cat "$FW_MSG_FILE" 2>/dev/null)
++    case "$_s" in
++        checking|downloading|verifying|flashing)
++            # A run that died (killed, power) leaves its stage behind; the lock is what says it is alive.
++            [ -f "$LOCK" ] || { _s=failed; _m="the update was interrupted"; } ;;
++    esac
++    if [ "$_s" = flashing ]; then
++        _fm=$(cat "$FW_WORK/msg" 2>/dev/null); [ -n "$_fm" ] && _m="$_fm"
++    fi
++    printf '{"status":"%s","message":"%s"}\n' "$(json_esc "$_s")" "$(json_esc "$_m")"
++}
++
++# Cron: tell the admin once per firmware version, only when it could be installed now.
++fw_cron_notice() {
++    [ "$OTA_NOTIFY" = "1" ] || return 0
++    _fj=$(do_fw_check 2>/dev/null)
++    echo "$_fj" | grep -q '"update_available":true' || return 0
++    echo "$_fj" | grep -q '"target":"[01]"' || return 0
++    _fv=$(printf '%s' "$_fj" | sed -n 's/.*"latest":"\([^"]*\)".*/\1/p')
++    _fseen_file="$ROOT/hotspot_data/.fw_notified"
++    _fseen=$(cat "$_fseen_file" 2>/dev/null | tr -d '\r\n')
++    if [ "$_fseen" != "$_fv" ]; then
++        log "cron: firmware $_fv available - notifying"
++        notify "OTA: firmware $_fv is available. Open Admin > System > Software Update > Firmware to install it to the other slot."
++        printf '%s' "$_fv" > "$_fseen_file" 2>/dev/null
++    fi
++    return 0
++}
++
+ # ---- dispatch ----
+ case "$1" in
+     check)    do_check ;;
+@@ -1513,7 +1804,12 @@ case "$1" in
+     get_insecure_tls) do_get_insecure_tls ;;
+     set_insecure_tls) do_set_insecure_tls "$2" ;;
+     nodemcu)  mkdir -p "$DL"; fetch "$OTA_MANIFEST_URL" "$DL/manifest.txt" && sync_nodemcu ;;
++    # Firmware OTA writes its own log so it never clobbers the file-sync log.
++    fw_check)  LOG="$FW_LOG"; do_fw_check ;;
++    fw_apply)  LOG="$FW_LOG"; do_fw_apply "$2" ;;
++    fw_status) do_fw_status ;;
++    fw_log)    cat "$FW_LOG" 2>/dev/null ;;
+     status)   cat "$STATUS_FILE" 2>/dev/null || echo "idle" ;;
+     log)      cat "$LOG" 2>/dev/null ;;
+-    *) echo "usage: $0 {check|apply [version]|rollback|cron|changelog|get_auto|set_auto 0|1|get_insecure_tls|set_insecure_tls 0|1|nodemcu|status|log}" ; exit 2 ;;
++    *) echo "usage: $0 {check|apply [version]|rollback|cron|changelog|get_auto|set_auto 0|1|get_insecure_tls|set_insecure_tls 0|1|nodemcu|fw_check|fw_apply [stage|next|default|once|keep]|fw_status|fw_log|status|log}" ; exit 2 ;;
+ esac
+diff --git a/www2/bootpart.html b/www2/bootpart.html
+index c939b53..bc5dad6 100644
+--- a/www2/bootpart.html
++++ b/www2/bootpart.html
+@@ -79,11 +79,11 @@
+                     <div class="card-header">Download firmware from a URL</div>
+                     <div class="card-body">
+                         <div class="field-hint" style="margin:0 0 8px">
+-                            Fetches a Realtek Luna firmware <code>.tar</code> (uImage + rootfs + md5.txt) over HTTPS onto
++                            Fetches a Realtek Luna firmware <code>.tar</code> or <code>.tar.gz</code> (uImage + rootfs + md5.txt) over HTTPS onto
+                             the device, verifies it, then writes it to the inactive slot. To use a file from your
+                             computer instead, use <a href="/fwupload.html">Firmware Upload</a>.
+                         </div>
+-                        <input type="text" class="form-control" id="fw-url" placeholder="https://github.com/…/PGN6401V_fwu_img.tar" autocomplete="off" spellcheck="false">
++                        <input type="text" class="form-control" id="fw-url" placeholder="https://github.com/…/PGN6401V_fwu_img.tar.gz" autocomplete="off" spellcheck="false">
+                         <div class="d-grid mt-2">
+                             <button class="btn btn-secondary" id="fetch-btn" onclick="doFetch()">Download &amp; verify</button>
+                         </div>
+diff --git a/www2/cgi-bin/ota.cgi b/www2/cgi-bin/ota.cgi
+index 374847c..1c9537a 100755
+--- a/www2/cgi-bin/ota.cgi
++++ b/www2/cgi-bin/ota.cgi
+@@ -44,9 +44,31 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
+ fi
+ qs_has() { echo "$QUERY_STRING" | busybox grep -q "$1"; }
+ 
++# Firmware (other A/B slot) verbs. An ota.sh from before the firmware OTA prints
++# its usage line for an unknown verb, so anything that is not JSON becomes a clean
++# error instead of garbage in the page.
++fw_json() { # fw_json <fallback-json> <ota.sh args...>
++    _fb="$1"; shift
++    _o=$(sh "$OTA" "$@" 2>/dev/null)
++    case "$_o" in "{"*) printf '%s\n' "$_o" ;; *) printf '%s\n' "$_fb" ;; esac
++}
++FW_OLD='{"error":"firmware updates are not available in the installed ota.sh yet - run Software Update first"}'
++
+ # ---- dispatch --------------------------------------------------------------
+ if [ "$REQUEST_METHOD" = "GET" ]; then
+ 
++    if qs_has "action=fwcheck"; then
++        json_hdr; fw_json "$FW_OLD" fw_check; exit 0
++    fi
++
++    if qs_has "action=fwstatus"; then
++        json_hdr; fw_json '{"status":"idle","message":""}' fw_status; exit 0
++    fi
++
++    if qs_has "action=fwlog"; then
++        text_hdr; sh "$OTA" fw_log 2>/dev/null | busybox tail -c 8000; exit 0
++    fi
++
+     if qs_has "action=check"; then
+         json_hdr
+         sh "$OTA" check 2>/dev/null
+@@ -90,6 +112,21 @@ fi
+ 
+ if [ "$REQUEST_METHOD" = "POST" ]; then
+ 
++    if echo "$QUERY_STRING $POST" | busybox grep -q "action=fwapply"; then
++        # mode=stage (write only) | next (write + trial-boot it at the next restart, keep if clean, NO reboot)
++        #      | default (write + make it the default boot slot, NO reboot)
++        #      | once (reboot into it once) | keep (reboot into it, keep if clean).
++        # Anything else - missing, malformed - falls back to stage, the mode that
++        # changes nothing but the inactive slot.
++        MODE=$(echo "$POST" | busybox sed -n 's/.*mode=\([a-z]*\).*/\1/p')
++        case "$MODE" in stage|next|default|once|keep) ;; *) MODE=stage ;; esac
++        printf 'checking' > /tmp/ota_fw_status; printf 'Starting' > /tmp/ota_fw_msg
++        # detach: it outlives this request, and in once/keep mode it reboots the device (stage/next/default never do)
++        ( setsid sh "$OTA" fw_apply "$MODE" >/dev/null 2>&1 & ) 2>/dev/null || \
++            ( sh "$OTA" fw_apply "$MODE" >/dev/null 2>&1 & )
++        text_hdr; printf 'OK'; exit 0
++    fi
++
+     if echo "$QUERY_STRING $POST" | busybox grep -q "action=apply"; then
+         # optional explicit version: version=1.2.3
+         VER=$(echo "$POST" | busybox sed -n 's/.*version=\([0-9.][0-9.]*\).*/\1/p')
+diff --git a/www2/fwupload.html b/www2/fwupload.html
+index 914e9f9..8275036 100644
+--- a/www2/fwupload.html
++++ b/www2/fwupload.html
+@@ -57,10 +57,10 @@
+                         </div>
+ 
+                         <div class="drop" id="drop" onclick="document.getElementById('file').click()">
+-                            <div id="drop-text">Drop a Realtek Luna firmware <code>.tar</code> here, or click to choose</div>
++                            <div id="drop-text">Drop a Realtek Luna firmware <code>.tar</code> or <code>.tar.gz</code> here, or click to choose</div>
+                             <div class="fname" id="fname"></div>
+                         </div>
+-                        <input type="file" id="file" accept=".tar,application/x-tar" style="display:none">
++                        <input type="file" id="file" accept=".tar,.gz,.tgz,application/x-tar,application/gzip,application/x-gzip" style="display:none">
+ 
+                         <div class="progress mt-3" id="prog-wrap" style="display:none;height:10px">
+                             <div class="progress-bar" id="prog" style="width:0%"></div>
+@@ -94,7 +94,8 @@
+                             the <b>inactive</b> slot only, and read back to confirm it. The slot you are running and the default
+                             slot are never overwritten, so a failed or interrupted flash cannot stop the device booting. Afterwards,
+                             choose how to boot the new slot on <a href="/bootpart.html">Boot Partitions</a>. The tar needs RAM
+-                            for itself plus its largest image while flashing; very large files may be refused.
++                            for itself plus its largest image while flashing; very large files may be refused. A <code>.tar.gz</code>
++                            is unpacked first, so it needs roughly twice its size in free RAM at that moment.
+                         </div>
+                     </div>
+                 </div>
+@@ -186,7 +187,7 @@
+         chosen = f;
+         document.getElementById('fname').textContent = f.name + '  (' + mib(f.size) + ')';
+         document.getElementById('upload-btn').disabled = !st || !st.supported || !!st.busy;
+-        if (!/\.tar$/i.test(f.name)) toastr.warning('That does not look like a .tar file.', 'Check the file');
++        if (!/\.(tar|tar\.gz|tgz)$/i.test(f.name)) toastr.warning('That does not look like a .tar or .tar.gz file.', 'Check the file');
+     }
+ 
+     function doUpload() {
+diff --git a/www2/ota.html b/www2/ota.html
+index 075f379..991792f 100644
+--- a/www2/ota.html
++++ b/www2/ota.html
+@@ -36,7 +36,7 @@
+         .badge-new  { background: rgba(255,193,7,.18);   color:#ffd666; }
+         .badge-busy { background: rgba(13,110,253,.18);  color:#8ab6ff; }
+         .badge-err  { background: rgba(220,53,69,.18);   color:#f1a1a9; }
+-        #ota-log { background: var(--bg-input, #111); border:1px solid var(--border-color,#333);
++        #ota-log, #fw-log { background: var(--bg-input, #111); border:1px solid var(--border-color,#333);
+             border-radius:6px; padding:10px; font-family:monospace; font-size:12px;
+             white-space:pre-wrap; max-height:240px; overflow:auto; display:none; margin-top:12px; }
+         .notes-box { font-size:12.5px; color:var(--text-secondary); border-left:3px solid var(--accent-color,#0d6efd);
+@@ -124,6 +124,66 @@
+                     </div>
+                 </div>
+ 
++                <div class="card mt-4" id="fw-card">
++                    <div class="card-header d-flex justify-content-between align-items-center">
++                        <span>Firmware (other slot)</span>
++                        <span id="fw-badge" class="status-badge badge-ok">
++                            <span id="fw-badge-txt">Idle</span>
++                        </span>
++                    </div>
++                    <div class="card-body">
++                        <div class="kv"><span class="k">Running firmware</span><span class="v" id="fw-run">—</span></div>
++                        <div class="kv"><span class="k">Latest on GitHub</span><span class="v" id="fw-lat">—</span></div>
++                        <div class="kv"><span class="k">Will be written to</span><span class="v" id="fw-slot">—</span></div>
++                        <div class="notes-box" id="fw-notes"></div>
++                        <div class="field-hint" id="fw-why" style="color:#ffd666;display:none"></div>
++
++                        <div id="fw-opts" style="display:none" class="mt-3">
++                            <div class="field-hint" style="margin-bottom:6px">After it is written:</div>
++                            <div class="form-check mb-1">
++                                <input class="form-check-input" type="radio" name="fw-mode" id="fw-m-stage" value="stage">
++                                <label class="form-check-label" for="fw-m-stage" style="font-size:13px">Just write it
++                                    <span style="color:var(--text-secondary)">— nothing else changes; boot it later from Boot Partitions</span></label>
++                            </div>
++                            <div class="form-check mb-1">
++                                <input class="form-check-input" type="radio" name="fw-mode" id="fw-m-next" value="next" checked>
++                                <label class="form-check-label" for="fw-m-next" style="font-size:13px">Write it and try it at the next restart
++                                    <span style="color:var(--text-secondary)">— no reboot now; at the next restart it boots the new firmware and keeps it if it starts cleanly, otherwise falls back to the current one</span></label>
++                            </div>
++                            <div class="form-check mb-1">
++                                <input class="form-check-input" type="radio" name="fw-mode" id="fw-m-default" value="default">
++                                <label class="form-check-label" for="fw-m-default" style="font-size:13px">Write it and make it the default boot slot
++                                    <span style="color:var(--text-secondary)">— no reboot now; switches over at the next restart, with no automatic fall-back</span></label>
++                            </div>
++                            <div class="form-check mb-1">
++                                <input class="form-check-input" type="radio" name="fw-mode" id="fw-m-once" value="once">
++                                <label class="form-check-label" for="fw-m-once" style="font-size:13px">Write it, then reboot into it once to test
++                                    <span style="color:var(--text-secondary)">— reboots now; the reboot after that returns to the current firmware</span></label>
++                            </div>
++                            <div class="form-check">
++                                <input class="form-check-input" type="radio" name="fw-mode" id="fw-m-keep" value="keep">
++                                <label class="form-check-label" for="fw-m-keep" style="font-size:13px">Write it, reboot into it and keep it if it starts cleanly
++                                    <span style="color:var(--text-secondary)">— reboots now; becomes the default boot slot if it starts cleanly, else falls back</span></label>
++                            </div>
++                        </div>
++
++                        <div class="d-grid gap-2 mt-3">
++                            <button class="btn btn-secondary" id="fw-check-btn" onclick="fwCheck()">Check for firmware</button>
++                            <button class="btn btn-primary" id="fw-install-btn" onclick="fwInstall()" style="display:none">Install firmware</button>
++                        </div>
++
++                        <div id="fw-log"></div>
++
++                        <div class="field-hint mt-3">
++                            Downloads a Realtek firmware <code>.tar.gz</code>, verifies its SHA-256, and writes it to the
++                            <b>inactive</b> flash slot only. The slot you are running and the default slot are never
++                            overwritten, so a failed or interrupted write cannot stop the device booting. This is never
++                            automatic. Your users, vouchers, income and settings live outside both slots and carry over.
++                            If a test boot does not come up, the device falls back to the previous slot by itself.
++                        </div>
++                    </div>
++                </div>
++
+                 <div class="card mt-4">
+                     <div class="card-header d-flex justify-content-between align-items-center">
+                         <span>Changelog</span>
+@@ -322,9 +382,195 @@
+             .catch(function(){ el.textContent = 'Could not load changelog.'; });
+     }
+ 
++    // ---- Firmware (other A/B slot) ---------------------------------------------
++    var fwTimer = null, fwInfo = null, fwWasDown = false, fwBootSince = 0;
++
++    function fwBadge(text, cls) {
++        document.getElementById('fw-badge').className = 'status-badge ' + cls;
++        document.getElementById('fw-badge-txt').textContent = text;
++    }
++    function fwMode() {
++        var r = document.querySelector('input[name="fw-mode"]:checked');
++        return r ? r.value : 'stage';
++    }
++    function fwShowInstall(show, label) {
++        var b = document.getElementById('fw-install-btn');
++        b.style.display = show ? '' : 'none';
++        if (label) b.textContent = label;
++        document.getElementById('fw-opts').style.display = show ? '' : 'none';
++    }
++
++    function fwCheck() {
++        var btn = document.getElementById('fw-check-btn');
++        btn.disabled = true; btn.textContent = 'Checking…';
++        document.getElementById('fw-why').style.display = 'none';
++        fetch('/cgi-bin/ota.cgi?action=fwcheck', { cache:'no-store' })
++            .then(function(r){ return r.json(); })
++            .then(function(j){
++                btn.disabled = false; btn.textContent = 'Check for firmware';
++                fwInfo = j;
++                if (j.running) document.getElementById('fw-run').textContent = j.running;
++                if (j.error) {
++                    fwShowInstall(false);
++                    fwBadge('Error', 'badge-err');
++                    toastr.error(j.error, 'Firmware check failed');
++                    return;
++                }
++                document.getElementById('fw-lat').textContent = j.latest || '—';
++                document.getElementById('fw-slot').textContent = (j.target !== '' && j.target != null) ? ('Slot ' + j.target) : '—';
++                var notes = document.getElementById('fw-notes');
++                if (j.notes) { notes.textContent = j.notes; notes.style.display = 'block'; } else notes.style.display = 'none';
++                if (j.pending) {
++                    // written and set to boot at the next restart: nothing left to install
++                    fwShowInstall(false);
++                    fwBadge('Waiting for restart', 'badge-new');
++                    var wp = document.getElementById('fw-why');
++                    wp.textContent = 'Firmware ' + j.latest + ' is already in slot ' + j.pending_slot +
++                        ' and will boot the next time the device restarts. Nothing was rebooted.';
++                    wp.style.display = '';
++                    return;
++                }
++                if (!j.update_available && !j.staged) {
++                    fwShowInstall(false);
++                    fwBadge('Up to date', 'badge-ok');
++                    toastr.success('You are on the latest firmware.', 'Up to date');
++                    return;
++                }
++                if (j.target === '' || j.target == null) {
++                    // an update exists but no slot may be overwritten right now
++                    fwShowInstall(false);
++                    fwBadge('Update available', 'badge-new');
++                    var w = document.getElementById('fw-why');
++                    w.textContent = j.why || 'No slot can be overwritten right now.'; w.style.display = '';
++                    return;
++                }
++                fwBadge(j.staged ? 'Already written' : 'Update available', 'badge-new');
++                // staged: the slot already holds it, so "just write it" makes no sense
++                document.getElementById('fw-m-stage').disabled = !!j.staged;
++                if (j.staged && fwMode() === 'stage') document.getElementById('fw-m-next').checked = true;
++                if (j.staged) {
++                    var w2 = document.getElementById('fw-why');
++                    w2.textContent = 'Slot ' + j.target + ' already holds this firmware. Choose how to boot it.'; w2.style.display = '';
++                }
++                fwShowInstall(true, j.staged ? ('Boot slot ' + j.target) : 'Install firmware');
++                toastr.info('Firmware ' + j.latest + ' is available.', 'Update available');
++            })
++            .catch(function(){
++                btn.disabled = false; btn.textContent = 'Check for firmware';
++                toastr.error('Could not reach the device.', 'Error');
++            });
++    }
++
++    function fwInstall() {
++        if (!fwInfo || fwInfo.target === '' || fwInfo.target == null) return;
++        var mode = fwMode(), slot = fwInfo.target;
++        var msg = (fwInfo.staged ? 'Boot slot ' + slot + ' (firmware ' + fwInfo.latest + ')?\n\n'
++                                 : 'Download firmware ' + fwInfo.latest + ' and write it to slot ' + slot + '?\n\n');
++        if (mode === 'stage') {
++            msg += 'The device keeps running the current firmware; nothing else changes. You choose when to boot the new slot.';
++        } else if (mode === 'next') {
++            msg += 'The device is NOT rebooted: it keeps running now. The next time it restarts for any reason (for example a power cut) it ' +
++                   'boots the new firmware once. If that starts cleanly it becomes the default; if not, the device falls back to the current firmware.';
++        } else if (mode === 'default') {
++            msg += 'Slot ' + slot + ' then becomes the default boot slot. The device is NOT rebooted: it keeps running now and ' +
++                   'switches to the new firmware the next time it restarts for any reason (for example a power cut). ' +
++                   'Unlike a test boot, nothing is arranged to fall back automatically if the new firmware fails to start; ' +
++                   'to undo, make the old slot the default again on Boot Partitions.';
++        } else if (mode === 'once') {
++            msg += 'The device will then REBOOT into the new firmware once (about 2 minutes offline; coin sessions are interrupted). ' +
++                   'The reboot after that returns to the current firmware unless you make the new one the default.';
++        } else {
++            msg += 'The device will then REBOOT into the new firmware (about 2 minutes offline; coin sessions are interrupted). ' +
++                   'If it starts cleanly it becomes the default boot slot; if not, the device falls back to the current firmware.';
++        }
++        if (!confirm(msg)) return;
++        document.getElementById('fw-install-btn').disabled = true;
++        document.getElementById('fw-check-btn').disabled = true;
++        fwBadge('Working: starting', 'badge-busy');
++        fetch('/cgi-bin/ota.cgi?action=fwapply', {
++            method:'POST', headers:{'Content-Type':'application/x-www-form-urlencoded'}, body:'mode=' + encodeURIComponent(mode)
++        })
++        .then(function(r){ return r.text(); })
++        .then(function(t){
++            if (t.trim() === 'OK') { fwPoll(); }
++            else { toastr.error(t, 'Error'); fwIdleButtons(); }
++        })
++        .catch(function(){ fwPoll(); });
++    }
++
++    function fwIdleButtons() {
++        document.getElementById('fw-install-btn').disabled = false;
++        document.getElementById('fw-check-btn').disabled = false;
++    }
++
++    function fwPoll() {
++        var logEl = document.getElementById('fw-log');
++        logEl.style.display = 'block';
++        fwWasDown = false;
++        if (fwTimer) clearInterval(fwTimer);
++        fwTimer = setInterval(function() {
++            fetch('/cgi-bin/ota.cgi?action=fwlog', { cache:'no-store' })
++                .then(function(r){ return r.text(); })
++                .then(function(t){ if (t.trim().charAt(0) !== '<') { logEl.textContent = t; logEl.scrollTop = logEl.scrollHeight; } })
++                .catch(function(){});
++            fetch('/cgi-bin/ota.cgi?action=fwstatus', { cache:'no-store' })
++                .then(function(r){
++                    // A device that has rebooted has lost its login session: a 401 means it is back.
++                    if (r.status === 401) { if (fwWasDown) { location.href = '/login.html'; } return null; }
++                    return r.json();
++                })
++                .then(function(j){
++                    if (!j) return;
++                    if (fwWasDown && fwBootSince) {
++                        // came back after the reboot we asked for
++                        clearInterval(fwTimer); fwTimer = null; fwWasDown = false; fwBootSince = 0;
++                        toastr.success('The device is back online.', 'Rebooted');
++                        setTimeout(function(){ location.reload(); }, 1500);
++                        return;
++                    }
++                    var st = j.status || 'idle', m = j.message || '';
++                    if (st === 'done') {
++                        clearInterval(fwTimer); fwTimer = null; fwIdleButtons();
++                        fwBadge('Written', 'badge-ok'); toastr.success(m, 'Firmware written');
++                        document.getElementById('fw-install-btn').style.display = 'none';
++                        document.getElementById('fw-opts').style.display = 'none';
++                    } else if (st === 'failed') {
++                        clearInterval(fwTimer); fwTimer = null; fwIdleButtons();
++                        fwBadge('Failed', 'badge-err'); toastr.error(m, 'Firmware update failed');
++                    } else if (st === 'booting') {
++                        if (!fwBootSince) fwBootSince = Date.now();
++                        fwBadge('Rebooting…', 'badge-busy');
++                    } else if (st === 'idle') {
++                        clearInterval(fwTimer); fwTimer = null; fwIdleButtons(); fwBadge('Idle', 'badge-ok');
++                    } else {
++                        fwBadge('Working: ' + (m || st), 'badge-busy');
++                    }
++                })
++                .catch(function(){
++                    // no answer: expected while the device reboots
++                    if (fwBootSince) {
++                        fwWasDown = true;
++                        var waited = Math.round((Date.now() - fwBootSince) / 1000);
++                        fwBadge('Rebooting… ' + waited + 's', 'badge-busy');
++                        if (waited > 360) toastr.warning('Still offline. If it does not return, power-cycle it: it falls back to the previous firmware.', 'Taking long', { timeOut:8000 });
++                    }
++                });
++        }, 2000);
++    }
++
+     // initial paint
+     loadConfig();
+     loadChangelog();
++    fetch('/cgi-bin/ota.cgi?action=fwstatus', { cache:'no-store' })
++        .then(function(r){ return r.json(); })
++        .then(function(j){
++            var st = j.status || 'idle';
++            if (st === 'checking' || st === 'downloading' || st === 'verifying' || st === 'flashing' || st === 'booting') {
++                document.getElementById('fw-install-btn').disabled = true;
++                document.getElementById('fw-check-btn').disabled = true;
++                fwPoll();
++            }
++        }).catch(function(){});
+     loadStatus().then(function(st){
+         if (st && st !== 'idle' && st !== 'success') { startPolling(); }
+     });
+diff --git a/www2/sh/fwboot.sh b/www2/sh/fwboot.sh
+index eba448a..75be3ff 100755
+--- a/www2/sh/fwboot.sh
++++ b/www2/sh/fwboot.sh
+@@ -34,10 +34,16 @@
+ #   fwboot.sh check [tar]                 validate a Luna fwu tar (default: staged upload)
+ #   fwboot.sh fetch <https-url>           download a tar into the staging area, then check it
+ #   fwboot.sh flash <0|1> [tar]           write uImage+rootfs into slot N (never the running/default slot)
++#   fwboot.sh info                        key=value lines for ota.sh: supported, active, commit, tryactive,
++#                                         running, ver0, ver1, target (the one slot flash would accept), why
++#
+ #   fwboot.sh devpath <0|1> <kernel|rootfs>   print the volume device (for downloads)
+ #   fwboot.sh avail                       free staging space in KB (RAM-aware; /tmp is a ramfs)
+ #   fwboot.sh state | log | discard | reboot
+ #
++# A firmware tar may also be gzipped (.tar.gz / .tgz): it is detected by its magic
++# bytes and unpacked once, in place, before it is checked (see gunzip_inplace).
++#
+ # Test hooks: FWBOOT_NV, FWBOOT_UBINFO, FWBOOT_UBIUPDATE, FWBOOT_PROCMTD,
+ # FWBOOT_DEVDIR, FWBOOT_WORK, FWBOOT_ETCVER, FWBOOT_FLASH, FWBOOT_OTA.
+ 
+@@ -107,13 +113,47 @@ ram_avail_kb() {
+     fi
+ }
+ 
++# ---- gzip support -----------------------------------------------------------
++# Detect by magic bytes (1f 8b), never by file name. Needs only printf, head and
++# md5sum: the md5 of the two magic bytes is computed once rather than using od.
++GZ_MAGIC=$(printf '\037\213' | md5sum | awk '{print $1}')
++is_gz() { [ "$(head -c 2 "$1" 2>/dev/null | md5sum | awk '{print $1}')" = "$GZ_MAGIC" ]; }
++
++# Replace a gzip file with its contents, so the many tar passes below read a
++# plain tar instead of re-inflating the archive every time. Peak RAM use is the
++# .gz plus the unpacked tar. Output is capped at MAX_DL_BYTES, which also bounds a
++# gzip bomb. Sets CK_ERR and returns 1 on failure; the original file is untouched.
++gunzip_inplace() {   # $1=file
++    _gz="$1"; _gzo="$1.unz"
++    _gzsz=$(wc -c < "$_gz" 2>/dev/null | tr -d ' ')
++    _gzavail=$(df -k "$(dirname "$_gz")" 2>/dev/null | tail -n 1 | awk '{print $(NF-2)}')
++    case "$_gzavail" in ""|*[!0-9]*|0) ;; *)
++        _gzneed=$(( _gzsz / 1024 * 2 + 2048 ))
++        [ "$_gzavail" -ge "$_gzneed" ] \
++            || { CK_ERR="not enough free memory to unpack the .tar.gz: need ${_gzneed} KB, have ${_gzavail} KB"; return 1; } ;;
++    esac
++    gzip -dc "$_gz" 2>/dev/null | head -c $((MAX_DL_BYTES + 1)) > "$_gzo"
++    _unz=$(wc -c < "$_gzo" 2>/dev/null | tr -d ' ')
++    case "$_unz" in ""|0) rm -f "$_gzo"; CK_ERR="could not unpack the gzip file (corrupt, or not really gzip)"; return 1 ;; esac
++    if [ "$_unz" -gt "$MAX_DL_BYTES" ]; then
++        rm -f "$_gzo"; CK_ERR="unpacked firmware is larger than $((MAX_DL_BYTES / 1048576)) MiB"; return 1
++    fi
++    mv "$_gzo" "$_gz" || { rm -f "$_gzo"; CK_ERR="could not replace the gzip file with its contents"; return 1; }
++    logm "unpacked gzip firmware: $_gzsz -> $_unz bytes"
++}
++
+ # ---- tar validation ---------------------------------------------------------
+ # Sets CK_ERR (non-empty = rejected), CK_WARN, CK_VER, CK_HW, CK_KSZ, CK_RSZ, CK_SIZE.
+ do_check() {
+     _t="$1"; CK_ERR=""; CK_WARN=""; CK_VER=""; CK_HW=""; CK_KSZ=0; CK_RSZ=0; CK_SIZE=0
+     [ -s "$_t" ] || { CK_ERR="no firmware file is staged"; return 1; }
++    _wasgz=""
++    if is_gz "$_t"; then gunzip_inplace "$_t" || return 1; _wasgz=1; fi
+     CK_SIZE=$(wc -c < "$_t" | tr -d ' ')
+-    _lst=$(tar -tvf "$_t" 2>/dev/null) || { CK_ERR="not a valid tar archive"; return 1; }
++    _lst=$(tar -tvf "$_t" 2>/dev/null) || {
++        CK_ERR="not a valid tar archive"
++        [ -n "$_wasgz" ] && CK_ERR="not a valid tar archive inside the gzip file (it may be truncated or corrupt)"
++        return 1; }
+     for _f in uImage rootfs md5.txt; do
+         printf '%s\n' "$_lst" | awk -v n="$_f" '$NF==n{f=1} END{exit !f}' \
+             || { CK_ERR="not a Luna firmware tar: $_f is missing"; return 1; }
+@@ -291,6 +331,29 @@ cmd_flash() {
+     setstate done "Slot $_slot now holds $CK_VER. Use Boot Partitions to boot it."
+ }
+ 
++# ---- info (machine-readable, for ota.sh) ------------------------------------
++# One slot is flashable at a time: the one that is neither running nor the default
++# boot slot (see preflight). target is empty, with a reason in why, when none is.
++kv() { printf '%s=%s\n' "$1" "$(printf '%s' "$2" | tr -d '\r\n')"; }
++cmd_info() {
++    _act=$(nvget sw_active); _com=$(nvget sw_commit); _try=$(nvget sw_tryactive)
++    if supported; then kv supported 1; else kv supported 0; fi
++    kv active "$_act"; kv commit "$_com"; kv tryactive "$_try"
++    kv running "$(head -n 1 "$ETCVER" 2>/dev/null | clean_ver)"
++    kv ver0 "$(nvget sw_version0 | clean_ver)"; kv ver1 "$(nvget sw_version1 | clean_ver)"
++    # NB: not _s - preflight() calls supported(), which loops on _s and would clobber it.
++    _tgt=""; _why=""
++    for _cand in 0 1; do
++        if preflight "$_cand"; then _tgt="$_cand"; break; fi
++        _why="$PF_ERR"
++    done
++    if [ -z "$_tgt" ] && is_slot "$_act" && is_slot "$_com" && [ "$_act" != "$_com" ]; then
++        _why="the running slot ($_act) is not the default slot ($_com); on Boot Partitions make one of them the default first"
++    fi
++    [ -n "$_tgt" ] && _why=""
++    kv target "$_tgt"; kv why "$_why"
++}
++
+ # ---- download from URL ------------------------------------------------------
+ cmd_fetch() {
+     _u="$1"
+@@ -332,6 +395,7 @@ case "$1" in
+     check)      cmd_check "$2" ;;
+     fetch)      cmd_fetch "$2" ;;
+     flash)      cmd_flash "$2" "$3" ;;
++    info)       cmd_info ;;
+     devpath)    is_slot "$2" || exit 1
+                 case "$3" in kernel) vol_dev k "$2" ;; rootfs) vol_dev r "$2" ;; *) exit 1 ;; esac ;;
+     avail)      ram_avail_kb ;;
+@@ -340,5 +404,5 @@ case "$1" in
+     discard)    busy && { res_err "an operation is running"; exit 0; }
+                 rm -f "$TAR" "$WORK/meta" "$WORK/uImage" "$WORK/rootfs"; setstate idle ""; res_ok "Staged firmware discarded" ;;
+     reboot)     ( sleep 3; sync; reboot ) >/dev/null 2>&1 & res_ok "Rebooting" ;;
+-    *)          echo "usage: $0 status|setdefault N|bootonce N KEEP|cancel|check [tar]|fetch URL|flash N [tar]|devpath N kernel|rootfs|avail|state|log|discard|reboot" >&2; exit 2 ;;
++    *)          echo "usage: $0 status|setdefault N|bootonce N KEEP|cancel|check [tar]|fetch URL|flash N [tar]|info|devpath N kernel|rootfs|avail|state|log|discard|reboot" >&2; exit 2 ;;
+ esac
+-- 
+2.43.0
+
