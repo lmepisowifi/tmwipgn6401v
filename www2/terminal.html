@@ -147,9 +147,8 @@
         }
 
         // 2. All your configuration, globals, and the initTerminal function
-        const TTYD_PORT    = 7681;          
         const RECONNECT_MS = 4000;          
-        const WS_URL       = `ws://${location.hostname}:${TTYD_PORT}/ws`;
+        const WS_URL       = (location.protocol === 'https:' ? 'wss://' : 'ws://') + location.host + '/ws';
 
         let term, fitAddon, ws, reconnectTimer;
 
@@ -274,7 +273,7 @@
             updateSize();
             detectMobile();
 
-            // Send keystrokes to ttyd
+            // Send keystrokes to the shell
             term.onData(data => {
                 if (ws && ws.readyState === WebSocket.OPEN) ws.send('0' + data);
             });

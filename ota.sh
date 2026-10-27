@@ -57,7 +57,9 @@ BB="busybox"
 # it is preserved; lmehspt.sh's seed_globals() merges any new default keys into
 # it on boot after the swap.
 # sch, iptables = kernel modules insmod'ed by lmehspt.sh (sch/sch_fq_codel.ko
-# for the QoS qdisc, iptables/xt_hl.ko for anti-tether's `-m ttl` match).
+# and sch/sch_cake.ko for the QoS qdisc, iptables/xt_hl.ko for anti-tether's
+# `-m ttl` match). sch/ also holds a bundled iproute2 `tc` (sch/tc) that
+# lmehspt.sh runs only when the firmware's own tc cannot create a cake qdisc.
 # Swapped like any other component; a bundle that predates one simply logs
 # "skip <name> (not in bundle)", and rollback only restores components that
 # have a .ota_old backup. A device whose OLD ota.sh doesn't list "iptables"
@@ -1191,8 +1193,15 @@ restart_services() {
     for pid in $($BB ps w 2>/dev/null | grep "httpd" | grep -v grep | grep -F "/lmepisowifi/www2" | awk '{print $1}'); do
         kill "$pid" 2>/dev/null
     done
-    ( setsid $BB httpd -h "$ROOT/www2" -p 8080 >/dev/null 2>&1 & ) 2>/dev/null || \
-        ( $BB httpd -h "$ROOT/www2" -p 8080 >/dev/null 2>&1 & )
+    # Same flags as startup.sh. Without -c, httpd only finds www2/httpd.conf
+    # through its fallback lookup, which doesn't count as the root config, so
+    # the root-only directives (WebTerm, CacheControl) are ignored until the
+    # next reboot and /ws answers 404. "-c" on a missing file makes httpd
+    # exit, so only pass it when the file is there.
+    _wconf=""
+    [ -f "$ROOT/www2/httpd.conf" ] && _wconf="-c $ROOT/www2/httpd.conf"
+    ( setsid $BB httpd -h "$ROOT/www2" -p 8080 $_wconf >/dev/null 2>&1 & ) 2>/dev/null || \
+        ( $BB httpd -h "$ROOT/www2" -p 8080 $_wconf >/dev/null 2>&1 & )
 
     # portal + hotspot watchdog + firewall: lmehspt.sh tears down and
     # rebuilds. Kill any instance still running from before this update

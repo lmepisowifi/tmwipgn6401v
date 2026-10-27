@@ -17,6 +17,10 @@ in README.md, THIRD_PARTY_NOTICES.md and in each file's own header:
   - tailscale/*-small   — Tailscale Inc. and contributors (BSD-3-Clause)
   - sch/sch_fq_codel.ko — Eric Dumazet and Linux kernel contributors; CoDel
     by Kathleen Nichols, Van Jacobson, Michael D. Taht (GPL-2.0-or-later)
+  - sch/sch_cake.ko    — Jonathan Morton and the CAKE contributors
+    (BSD-3-Clause OR GPL-2.0-only, used under GPL-2.0)
+  - sch/tc             — Alexey Kuznetsov, Stephen Hemminger and iproute2
+    contributors (GPL-2.0)
   - iptables/xt_hl.ko, xt_HL.ko — Harald Welte, Maciej Soltysiak and Linux
     kernel contributors (GPL-2.0-only)
   - hotspot/firmware/coin_nodemcu.bin — also contains the ESP8266 Arduino

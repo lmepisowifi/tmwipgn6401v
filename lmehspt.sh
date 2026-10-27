@@ -97,17 +97,37 @@ QOS_VIP_TARGET_MS="40"
 QOS_BULK_TARGET_MS="80"
 # Queue discipline under every per-user Band 1 / Band 2 HTB class (see
 # _qos_add_leaf()). Set from www2 > Hotspot > Bandwidth & QoS.
-#   auto     - fq_codel when this kernel can use it, otherwise sfq (default)
+#   auto     - cake when it can be used (already in the kernel, else insmod'ed
+#              from QOS_CAKE_KO), else fq_codel when it can use it, else sfq
+#              (default)
 #   fq_codel - always fq_codel. If it cannot be used the leaves are left on the
 #              kernel's plain FIFO (NO sfq substitution) and the admin page
 #              says so - forcing means forcing.
 #   sfq      - always sfq (how it worked before this option existed)
 # fq_codel is a loadable module on this platform; qos_qdisc_resolve() insmods
 # QOS_FQ_CODEL_KO on demand. The unauthenticated-client buckets (990:, 299:)
-# deliberately stay on sfq: they rely on its tiny hard limit and the "flow
-# hash" per-IP emulation, not on AQM.
+# stay on sfq (tiny hard limit + "flow hash" per-IP emulation, not AQM) UNLESS
+# cake is the active qdisc: then they become cake too, because triple-isolate
+# already does the per-host fairness that emulation was faking.
 QOS_QDISC="auto"
 QOS_FQ_CODEL_KO="/lmepisowifi/sch/sch_fq_codel.ko"
+# Options for cake when it is the active leaf qdisc (auto mode only). cake sits
+# UNDER the HTB classes, which do all the rate shaping, so it runs "unlimited"
+# and only does queue management. triple-isolate = per-flow fairness inside
+# per-host fairness; nat = resolve the real inside address via conntrack (WAN
+# egress is post-MASQUERADE, so without it every client looks like the WAN IP).
+# Retune here, e.g. append "besteffort".
+QOS_CAKE_ARGS="unlimited triple-isolate nat"
+# cake is a loadable module on this platform too: qos_qdisc_resolve() insmods
+# QOS_CAKE_KO if the kernel does not already have cake. The firmware's own tc
+# may predate cake (it then fails to parse "cake" or its options even with the
+# module loaded), so a newer tc is bundled next to the module. It is used ONLY
+# for the cake qdisc adds - and only when the system tc cannot do them; every
+# other tc call keeps using the system tc.
+QOS_CAKE_KO="/lmepisowifi/sch/sch_cake.ko"
+QOS_CAKE_TC_BUNDLED="/lmepisowifi/sch/tc"
+# The tc that cake qdisc adds run through; set by _qos_cake_ready().
+QOS_CAKE_TC="tc"
 # Anti-tether's TTL pieces are loadable modules here too. setup_anti_tether()
 # insmods them on demand (see _at_ko_ready) and, if that fails for ANY reason,
 # drops to the next tier - the original mark+choke / tc / TOS chain.
@@ -1351,12 +1371,93 @@ _qos_fq_codel_ready() {
     return 1
 }
 
+_QOS_CAKE_WHY=""
+
+# Can a cake qdisc with the exact option string the leaves use be created right
+# now, using the tc binary $1? Same attach-to-lo-and-remove trick as
+# _qos_fq_codel_probe(). It fails for either reason: the kernel has no cake, or
+# that tc cannot parse "cake" / its options.
+_qos_cake_probe() {
+    # $QOS_CAKE_ARGS is deliberately unquoted: it is several tc words.
+    "$1" qdisc add dev lo root cake $QOS_CAKE_ARGS 2>/dev/null || return 1
+    "$1" qdisc del dev lo root 2>/dev/null
+    return 0
+}
+
+# Find a tc that can create cake, trying the system tc first and the bundled
+# one second, and record it in $QOS_CAKE_TC. 0 if one works, else 1.
+_qos_cake_pick_tc() {
+    if _qos_cake_probe tc; then
+        QOS_CAKE_TC="tc"
+        return 0
+    fi
+    if [ -f "$QOS_CAKE_TC_BUNDLED" ]; then
+        # OTA/tar extraction normally keeps the mode, but don't depend on it.
+        [ -x "$QOS_CAKE_TC_BUNDLED" ] || chmod +x "$QOS_CAKE_TC_BUNDLED" 2>/dev/null
+        if _qos_cake_probe "$QOS_CAKE_TC_BUNDLED"; then
+            QOS_CAKE_TC="$QOS_CAKE_TC_BUNDLED"
+            return 0
+        fi
+    fi
+    QOS_CAKE_TC="tc"
+    return 1
+}
+
+# 0 if cake is usable right now (with $QOS_CAKE_TC set to the tc that can drive
+# it), else 1 with the reason in $_QOS_CAKE_WHY. Same shape as
+# _qos_fq_codel_ready(): checks BEFORE insmod, so a kernel with cake built in,
+# or a module that is already loaded, never touches the .ko; and one insmod,
+# never retried.
+#   1. cake already in the kernel + system tc can drive it  -> system tc
+#   2. cake already in the kernel + only the bundled tc can  -> bundled tc
+#   3. cake not in the kernel -> insmod QOS_CAKE_KO, then 1/2 again
+_qos_cake_ready() {
+    local err="" ins nofile=0
+    _QOS_CAKE_WHY=""
+    if _qos_cake_pick_tc; then
+        [ "$QOS_CAKE_TC" = "tc" ] || logger -t lmehspt "qos: system tc cannot drive cake - using $QOS_CAKE_TC" 2>/dev/null
+        return 0
+    fi
+    # A module that is already loaded is not insmod'ed again (it would only
+    # fail with "File exists"); then the only thing left to blame is tc.
+    if ! $BB grep -q '^sch_cake ' /proc/modules 2>/dev/null; then
+        if [ -f "$QOS_CAKE_KO" ]; then
+            # Same insmod choice as _qos_fq_codel_ready(): a failing insmod must
+            # not be retried through busybox (that only repeats the same error).
+            if command -v insmod >/dev/null 2>&1; then ins="insmod"; else ins="$BB insmod"; fi
+            err=$($ins "$QOS_CAKE_KO" 2>&1)
+            if _qos_cake_pick_tc; then
+                logger -t lmehspt "qos: loaded $QOS_CAKE_KO" 2>/dev/null
+                [ "$QOS_CAKE_TC" = "tc" ] || logger -t lmehspt "qos: system tc cannot drive cake - using $QOS_CAKE_TC" 2>/dev/null
+                return 0
+            fi
+        else
+            nofile=1
+        fi
+    fi
+    # Still no. If sch_cake is in the kernel the module is fine and it is a tc /
+    # option problem; otherwise the kernel can't have it.
+    if $BB grep -q '^sch_cake ' /proc/modules 2>/dev/null; then
+        _QOS_CAKE_WHY="sch_cake is loaded but no tc can create it with the configured options (QOS_CAKE_ARGS invalid, or $QOS_CAKE_TC_BUNDLED missing/unusable)"
+    elif [ "$nofile" = "1" ]; then
+        _QOS_CAKE_WHY="cake unavailable - $QOS_CAKE_KO not found"
+    else
+        # Keep just the reason ("Invalid module format", "No such file"...), the
+        # same sanitising as fq_codel's: it ends up in the status file / JSON.
+        err=$(printf '%s\n' "$err" | $BB head -n 1 | $BB sed 's/^.*: //' | $BB tr -d '\r"|\\$\140' | $BB cut -c1-80)
+        _QOS_CAKE_WHY="kernel has no cake${err:+ - insmod: $err}"
+    fi
+    return 1
+}
+
 # Decide which qdisc add_user_qos() will use and publish it for the admin page.
 # Runs at the top of setup_qos(), i.e. at boot and on every QoS rebuild, so a
 # change of the dropdown takes effect on the next Save & Apply.
-#   QOS_QDISC_EFFECTIVE = fq_codel | sfq | none (forced fq_codel, unusable)
+#   QOS_QDISC_EFFECTIVE = cake | fq_codel | sfq | none (forced fq_codel, unusable)
+# cake is only ever chosen in auto mode; a forced fq_codel / sfq is honoured as is.
 qos_qdisc_resolve() {
     local want="${QOS_QDISC:-auto}" note="" tmp="${QOS_QDISC_STATUS}.tmp"
+    _QOS_CAKE_WHY=""
     case "$want" in
         auto|fq_codel|sfq) ;;
         *) note="unknown QOS_QDISC value, treated as auto"; want=auto ;;
@@ -1365,15 +1466,23 @@ qos_qdisc_resolve() {
         sfq)
             QOS_QDISC_EFFECTIVE="sfq" ;;
         *)
-            if _qos_fq_codel_ready; then
+            if [ "$want" = "auto" ] && _qos_cake_ready; then
+                # cake replaces fq_codel/sfq (not stacked on them). No note -
+                # the admin page renders any note as a warning.
+                QOS_QDISC_EFFECTIVE="cake"
+            elif _qos_fq_codel_ready; then
                 QOS_QDISC_EFFECTIVE="fq_codel"
+                if [ -n "$_QOS_CAKE_WHY" ]; then
+                    note="$_QOS_CAKE_WHY - using fq_codel"
+                    logger -t lmehspt "qos: $note" 2>/dev/null
+                fi
             elif [ "$want" = "fq_codel" ]; then
                 QOS_QDISC_EFFECTIVE="none"
                 note="fq_codel is forced but unusable ($_QOS_FQ_WHY) - client queues are plain FIFO; choose Auto or sfq"
                 logger -t lmehspt "qos: $note" 2>/dev/null
             else
                 QOS_QDISC_EFFECTIVE="sfq"
-                note="fq_codel unavailable, using sfq ($_QOS_FQ_WHY)"
+                note="fq_codel unavailable, using sfq ($_QOS_FQ_WHY)${_QOS_CAKE_WHY:+; $_QOS_CAKE_WHY}"
                 logger -t lmehspt "qos: $note" 2>/dev/null
             fi ;;
     esac
@@ -1406,10 +1515,19 @@ _qos_fq_codel_args() {
 }
 
 # Attach one leaf queue.  $1 dev  $2 parent  $3 handle  $4 sfq limit  $5 fq_codel options
+# (cake needs neither: it takes $QOS_CAKE_ARGS and does its own sizing.)
 _qos_add_leaf() {
     [ -n "$QOS_QDISC_EFFECTIVE" ] || qos_qdisc_resolve
     case "$QOS_QDISC_EFFECTIVE" in
         none) return 0 ;;
+        cake)
+            # $QOS_CAKE_ARGS is deliberately unquoted: it is several tc words.
+            "$QOS_CAKE_TC" qdisc add dev "$1" parent "$2" handle "$3" cake $QOS_CAKE_ARGS 2>/dev/null && return 0
+            # Only reachable in auto mode (cake is never chosen when forced), so
+            # a per-queue failure (e.g. out of memory) degrades to sfq like
+            # fq_codel's does.
+            logger -t lmehspt "qos: cake add failed on $1 parent $2 - using sfq for this queue" 2>/dev/null
+            ;;
         fq_codel)
             # $5 is deliberately unquoted: it is several tc words.
             tc qdisc add dev "$1" parent "$2" handle "$3" fq_codel $5 2>/dev/null && return 0
@@ -1525,6 +1643,7 @@ add_user_qos() {
     # instead of ballooning on slower (e.g. LTE) links. When fq_codel is the
     # active qdisc (QOS_QDISC, resolved by qos_qdisc_resolve() in setup_qos)
     # its options are scaled to the same rate instead - see _qos_fq_codel_args().
+    # cake needs neither: it uses QOS_CAKE_ARGS and sizes itself (see _qos_add_leaf()).
     [ -n "$QOS_QDISC_EFFECTIVE" ] || qos_qdisc_resolve
     local _vip_fq="" _bulk_fq=""
     _vip_limit=$(_qos_sfq_limit "$_rate_kbit" "${QOS_VIP_TARGET_MS:-40}" 32)
@@ -1870,12 +1989,32 @@ teardown_anti_tether() {
     # Remove the choke class
     tc class  del dev "$wan_if" classid 1:666 2>/dev/null
 }
+# Leaf under the shared unauthenticated-client class.  $1 dev  $2 parent
+# $3 handle  $4 flow-hash key (src for upload, dst for download)
+#   cake active -> cake: triple-isolate gives every unauth client its own fair
+#                  share (and nat sees past the WAN-side MASQUERADE), so the
+#                  PCQ emulation below is not needed. NO flow-hash filter is
+#                  attached: a tc filter on cake overrides cake's own flow
+#                  hashing and would collapse each host into a single flow.
+#   otherwise   -> SFQ with a low packet limit (12) to drop early and trigger
+#                  TCP backoff, plus PCQ emulation: a flow classifier forcing
+#                  SFQ to hash strictly by $4 (per-IP, not per-connection).
+# If cake cannot be attached it falls through to the SFQ path.
+_qos_add_unauth_leaf() {
+    if [ "$QOS_QDISC_EFFECTIVE" = "cake" ] && \
+       "$QOS_CAKE_TC" qdisc add dev "$1" parent "$2" handle "$3" cake $QOS_CAKE_ARGS 2>/dev/null; then
+        return 0
+    fi
+    tc qdisc add dev "$1" parent "$2" handle "$3" sfq perturb 10 limit 12
+    tc filter add dev "$1" parent "$3" protocol ip prio 1 flow hash keys "$4" perturb 10 divisor 1024 2>/dev/null
+}
+
 setup_qos() {
     # Normalise rate strings (handles bare m/k/g and mbps/kbps suffixes)
     GLOBAL_RATE=$(_norm_rate "$GLOBAL_RATE")
     UNAUTH_RATE=$(_norm_rate "$UNAUTH_RATE")
 
-    # Pick the per-user leaf qdisc (fq_codel / sfq) for this rebuild. Done
+    # Pick the per-user leaf qdisc (cake / fq_codel / sfq) for this rebuild. Done
     # before the trees are torn down: it may insmod the module and probes on lo,
     # neither of which touches the hotspot interfaces.
     qos_qdisc_resolve
@@ -1893,10 +2032,8 @@ setup_qos() {
     
     # Default unauth class with precise quantum
     tc class add dev $WAN_INT parent 1:1 classid 1:99 htb rate $UNAUTH_RATE  ceil $GLOBAL_RATE burst 4k quantum 1500
-    # SFQ with a low packet limit (12) to drop early and trigger TCP backoff
-    tc qdisc add dev $WAN_INT parent 1:99 handle 990: sfq perturb 10 limit 12
-    # PCQ Emulation: force unauth upload SFQ to hash strictly by source IP
-    tc filter add dev $WAN_INT parent 990: protocol ip prio 1 flow hash keys src perturb 10 divisor 1024 2>/dev/null
+    # cake (when active) or SFQ with a low packet limit (12) - see _qos_add_unauth_leaf()
+    _qos_add_unauth_leaf $WAN_INT 1:99 990: src
 
     # ------------------------------------------------------------
     # DOWNLOAD (LAN Bridge) CONFIGURATION
@@ -1907,10 +2044,8 @@ setup_qos() {
     
     # Default unauth class with precise quantum
     tc class add dev $HOTSPOT_BR parent 2:1 classid 2:99 htb rate $UNAUTH_RATE  ceil $GLOBAL_RATE burst 4k quantum 1500
-    # SFQ with low packet limit (12)
-    tc qdisc add dev $HOTSPOT_BR parent 2:99 handle 299: sfq perturb 10 limit 12
-    # PCQ Emulation: force unauth download SFQ to hash strictly by destination IP
-    tc filter add dev $HOTSPOT_BR parent 299: protocol ip prio 1 flow hash keys dst perturb 10 divisor 1024 2>/dev/null
+    # cake (when active) or SFQ with low packet limit (12)
+    _qos_add_unauth_leaf $HOTSPOT_BR 2:99 299: dst
 
     # Apply anti-tethering filters after QoS resets
     case "${ANTI_TETHER:-0}" in 1|yes|true) setup_anti_tether ;; esac

@@ -1,0 +1,81 @@
+--- www2/wlanadvanced.html
++++ www2/wlanadvanced.html
+@@ -969,19 +1047,73 @@
+                 applyBandSteerGating();
+                 return;
+             }
+-            const body    = 'band_steering=' + encodeURIComponent(val);
++            let body = 'band_steering=' + encodeURIComponent(val);
++
++            // RSSI thresholds travel with the mode (the CGI validates both
++            // before writing either). Skipped when the build doesn't have them.
++            const rssiOn = !!(currentStatus && currentStatus.rssi_supported === 1);
++            let rp = null, ro = null;
++            if (rssiOn) {
++                rp = readRssi('bs-rssi-p');
++                ro = readRssi('bs-rssi-o');
++                if (rp === null || ro === null) {
++                    toastr["warning"]('Enter whole-number RSSI values from -95 to 0 dBm.', "Invalid RSSI");
++                    return;
++                }
++                body += '&rssi_prefer=' + rp + '&rssi_nonprefer=' + ro;
++            }
+             const postUrl = CGI + '?band=' + currentBand + '&action=save_bandsteer';
+ 
++            // Only the thresholds changed: the CGI applies them live with no WiFi
++            // restart, so skip the restart countdown and just wait for the reply.
++            const modeChanged = !currentStatus || String(currentStatus.band_steering ?? 0) !== val;
++            if (rssiOn && !modeChanged) {
++                setFormEnabled(false);
++                fetch(postUrl, {
++                    method: 'POST',
++                    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
++                    body: body
++                })
++                .then(r => r.text().then(t => {
++                    if (!r.ok) throw new Error(t || ('HTTP ' + r.status));
++                }))
++                .then(() => {
++                    currentStatus.rssi_prefer = rp;
++                    currentStatus.rssi_nonprefer = ro;
++                    setFormEnabled(true);
++                    toastr["success"]('RSSI thresholds applied.', "Band Steering");
++                })
++                .catch(err => {
++                    setFormEnabled(true);
++                    toastr["warning"](err.message || 'Apply failed', "Error");
++                });
++                return;
++            }
++
+             setFormEnabled(false);
+-            // Applying band steering restarts WiFi on both radios, so reuse the
+-            // same countdown + poll-until-back flow as a live per-interface save.
++            // Changing the mode restarts WiFi on both radios, so reuse the same
++            // countdown + poll-until-back flow as a live per-interface save. A
++            // fast 4xx (e.g. an invalid RSSI) returns before any restart, so
++            // surface it and skip the poll.
++            let aborted = false;
+             startCountdown();
+             fetch(postUrl, {
+                 method: 'POST',
+                 headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                 body: body
+-            }).catch(() => {});
+-            setTimeout(() => pollUntilBack(), 4000);
++            })
++            .then(r => {
++                if (r && !r.ok) { aborted = true; return r.text().then(t => { throw new Error(t || ('HTTP ' + r.status)); }); }
++            })
++            .catch(err => {
++                if (aborted) {
++                    hideOverlay();
++                    setFormEnabled(true);
++                    toastr["warning"](err.message || 'Apply failed', "Error");
++                }
++                // else: expected connection drop during restart — ignore
++            });
++            setTimeout(() => { if (!aborted) pollUntilBack(); }, 4000);
+         }
+ 
+         // --------------------------------------------------------

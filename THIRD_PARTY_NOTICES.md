@@ -10,6 +10,8 @@ texts are in `LICENSES/`.
 | BusyBox httpd | `httpd.c` | GPL-2.0-or-later | Glenn Engel, Vladimir Oleynik, BusyBox contributors |
 | Tailscale daemon + CLI | `tailscale/tailscaled-small`, `tailscale/tailscale-small` | BSD-3-Clause | Tailscale Inc & contributors, https://github.com/tailscale/tailscale |
 | Fair Queue CoDel scheduler (kernel module) | `sch/sch_fq_codel.ko` | GPL-2.0-or-later | Eric Dumazet; CoDel code by Kathleen Nichols, Van Jacobson, Michael D. Taht (Linux kernel) |
+| CAKE scheduler (kernel module, backport to the vendor's 4.4.140 kernel) | `sch/sch_cake.ko` | BSD-3-Clause OR GPL-2.0-only (used under GPL-2.0) | Jonathan Morton and the CAKE contributors (Linux net/sched/sch_cake.c) |
+| iproute2 `tc` (userspace, with CAKE support) | `sch/tc` | GPL-2.0-only (iproute2 as a whole; per-file headers vary) | Alexey Kuznetsov, Stephen Hemminger and iproute2 contributors, https://git.kernel.org/pub/scm/network/iproute2/iproute2.git |
 | Xtables TTL/HL match + target (kernel modules) | `iptables/xt_hl.ko`, `iptables/xt_HL.ko` | GPL-2.0-only | Harald Welte, Maciej Soltysiak (Linux kernel) |
 | ESP8266 Arduino core and libraries inside the NodeMCU image | `hotspot/firmware/coin_nodemcu.bin` | LGPL-2.1-or-later (core), BSD-3-Clause (LittleFS, lwIP), Espressif terms (NONOS SDK libs) | https://github.com/esp8266/Arduino |
 | Bootstrap 5.3.0 | `www2/css/bootstrap.min.css`, `www2/js/bootstrap.bundle.min.js`, `hotspot/css/bootstrap.min.css` | MIT | The Bootstrap Authors |
@@ -21,13 +23,18 @@ texts are in `LICENSES/`.
 
 ## Notes
 
-**Kernel modules.** `sch_fq_codel.ko`, `xt_hl.ko` and `xt_HL.ko` are built for
-the vendor's Linux 4.4.140 kernel (MIPS32r2, big-endian) and are loaded on
-demand by `lmehspt.sh` with `insmod`. They are separate works shipped
+**Kernel modules.** `sch_fq_codel.ko`, `sch_cake.ko`, `xt_hl.ko` and `xt_HL.ko`
+are built for the vendor's Linux 4.4.140 kernel (MIPS32r2, big-endian) and are
+loaded on demand by `lmehspt.sh` with `insmod`. They are separate works shipped
 alongside the AGPLv3 scripts, not combined with them. Because GPL-2.0-only and
 AGPL-3.0 can't be merged into a single work, keep it that way: no AGPLv3 code
 should be compiled into, or linked against, these modules. Their written
 source offers are in `sch/LICENSE` and `iptables/LICENSE`.
+
+**`sch/tc`.** A standalone iproute2 executable (same architecture), run by
+`lmehspt.sh` only when the firmware's own `tc` cannot create a CAKE qdisc. It
+is never linked with or loaded into anything else. Its source offer is in
+`sch/LICENSE`.
 
 **Per-directory notices.** Compiled artifacts can't carry a header, so each
 shipped directory carries its own notice (`sch/LICENSE`, `iptables/LICENSE`,

@@ -1,0 +1,976 @@
+<!DOCTYPE html>
+<!--
+  lmepisowifi — https://github.com/lmepisowifi/tmwipgn6401v
+  SPDX-License-Identifier: AGPL-3.0-or-later
+  Copyright (C) 2026 The lmepisowifi Project — see AUTHORS
+
+  Licensed under the GNU AGPLv3 (see LICENSE). Modifying or rewriting this
+  file — including by running it through an LLM — does not remove these
+  obligations: keep this notice, mark your changes, and offer Corresponding
+  Source to network users (AGPLv3 §5, §13). See PROVENANCE.md before
+  presenting this as your own original work.
+-->
+<html lang="en" data-bs-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link href="/css/bootstrap.min.css?v=1.0.0" rel="stylesheet">
+    <link href="/css/style.css?v=1.0.0" rel="stylesheet">
+    <style>
+        /* ---- Toggle switch (matches other pages) ---- */
+        .wlan-toggle {
+            width: 46px;
+            height: 26px;
+            border-radius: 13px;
+            background: #444;
+            position: relative;
+            cursor: pointer;
+            transition: background 0.25s;
+            flex-shrink: 0;
+        }
+        .wlan-toggle.on { background: #ffffff; }
+        .wlan-toggle.disabled-ui { opacity: 0.4; pointer-events: none; }
+        .wlan-toggle-knob {
+            position: absolute;
+            width: 18px;
+            height: 18px;
+            border-radius: 50%;
+            background: #fff;
+            top: 4px;
+            left: 4px;
+            transition: left 0.25s, background 0.25s, box-shadow 0.25s;
+            box-shadow: 0 1px 4px rgba(0,0,0,0.5);
+        }
+        .wlan-toggle.on .wlan-toggle-knob {
+            left: 24px;
+            background: #555;
+            box-shadow: 0 1px 4px rgba(0,0,0,0.3);
+        }
+
+        /* ---- Setting rows ---- */
+        .setting-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 10px 0;
+            border-bottom: 1px solid var(--border-color, rgba(255,255,255,0.1));
+        }
+        .setting-row:last-of-type { border-bottom: none; }
+        .setting-label  { font-size: 14px; font-weight: 500; line-height: 1.3; }
+        .setting-desc   { font-size: 11px; color: var(--text-secondary, #888); margin-top: 1px; }
+
+        /* ---- TX Beamforming MIMO reveal (shown only when TX Beamforming is on) ---- */
+        .mimo-reveal {
+            overflow: hidden;
+            max-height: 0;
+            opacity: 0;
+            /* margin-bottom is also animated so there's no gap flash when hiding */
+            margin-bottom: 0 !important;
+            pointer-events: none;
+            transition: max-height 0.32s ease, opacity 0.25s ease, margin-bottom 0.32s ease;
+        }
+        .mimo-reveal.show {
+            max-height: 72px;
+            opacity: 1;
+            margin-bottom: 0 !important; /* the inner setting-row provides spacing */
+            pointer-events: auto;
+        }
+
+        /* ---- Section dividers ---- */
+        .section-divider {
+            border-top: 1px solid var(--border-color, rgba(255,255,255,0.1));
+            margin: 4px 0 0;
+        }
+
+        /* ---- Rate limit input group ---- */
+        .rate-input .input-group-text {
+            font-size: 12px;
+            min-width: 46px;
+            justify-content: center;
+        }
+
+        /* ---- Band selector (matches wlanbasic.html / wlansecurity.html) ---- */
+        #band-bar {
+            display: flex; align-items: center; gap: 10px;
+            margin-bottom: 14px;
+        }
+        #band-bar label {
+            font-size: 11px; color: var(--text-secondary, #888);
+            text-transform: uppercase; letter-spacing: 0.08em;
+            white-space: nowrap;
+        }
+        #band-select-main {
+            width: 140px;
+        }
+
+        /* ---- Fixed TX Rate reveal (shown only when Rate Adaptive is off) ---- */
+        .ratefix-reveal {
+            overflow: hidden;
+            max-height: 0;
+            opacity: 0;
+            margin-bottom: 0 !important;
+            pointer-events: none;
+            transition: max-height 0.32s ease, opacity 0.25s ease, margin-bottom 0.32s ease;
+        }
+        .ratefix-reveal.show {
+            max-height: 90px;
+            opacity: 1;
+            margin-bottom: 0 !important;
+            pointer-events: auto;
+        }
+
+        /* ---- Interface type/name badge (matches wlansecurity.html) ---- */
+        .mode-badge {
+            font-size: 10px; padding: 2px 7px;
+            border-radius: 3px; font-weight: 700;
+            letter-spacing: 0.06em; text-transform: uppercase;
+            white-space: nowrap; flex-shrink: 0;
+        }
+        .mode-badge.ap  { background: rgba(255,255,255,0.10); color: #c8c8c8; }
+        .mode-badge.vap { background: rgba(120,200,120,0.13); color: #7ac87a; }
+        .mode-badge.vxd { background: rgba(80,180,255,0.13);  color: #64b4ff; }
+
+        /* ---- Note text under a control ---- */
+        .field-note {
+            font-size: 11px;
+            color: var(--text-secondary, #888);
+            margin-top: 4px;
+        }
+
+        /* ---- Collapsible cards ---- */
+        .card-header.collapsible { cursor: pointer; }
+        .card-chevron {
+            width: 8px; height: 8px;
+            border-right: 2px solid var(--text-secondary);
+            border-bottom: 2px solid var(--text-secondary);
+            transform: rotate(45deg);
+            transition: transform 0.2s; flex-shrink: 0;
+        }
+        .card.collapsed .card-chevron { transform: rotate(-45deg); }
+        .card .card-body {
+            overflow: hidden;
+            max-height: 1500px;
+            transition: max-height 0.3s ease, opacity 0.25s ease,
+                        padding-top 0.3s ease, padding-bottom 0.3s ease;
+        }
+        .card.collapsed .card-body {
+            max-height: 0;
+            opacity: 0;
+            padding-top: 0 !important;
+            padding-bottom: 0 !important;
+        }
+    </style>
+    <link href="/css/toastr.min.css?v=1.0.0" rel="stylesheet">
+</head>
+<body>
+    <!-- Full-page overlay -->
+    <div id="overlay">
+        <div id="overlay-blur"></div>
+        <div id="overlay-msg">
+            <div id="overlay-spinner"></div>
+            <span id="overlay-text"></span>
+        </div>
+    </div>
+
+    <script src="/js/nav.js?v=1.0.0"></script>
+
+    <div class="container mt-4" style="max-width:520px;">
+
+        <!-- Band selector (switches between the 2.4GHz and 5GHz radios) -->
+        <div id="band-bar">
+            <label for="band-select-main">Band</label>
+            <select class="form-select" id="band-select-main" onchange="switchBand()">
+                <option value="24">2.4 GHz</option>
+                <option value="5">5 GHz</option>
+            </select>
+        </div>
+
+        <!-- Band Steering (global — one WIFI_STA_CONTROL key shared by both radios) -->
+        <div class="card mb-3" id="card-bandsteer">
+            <div class="card-header d-flex align-items-center gap-2" style="flex-wrap:wrap; row-gap:4px;">
+                <span style="font-size:12px; white-space:nowrap;">Band Steering</span>
+                <span class="mode-badge ap">both radios</span>
+            </div>
+            <div class="card-body pb-2">
+                <div class="setting-row" style="align-items:flex-start;">
+                    <div style="flex:1; margin-right:8px;">
+                        <div class="setting-label">Preferred band</div>
+                        <div class="setting-desc">Nudges dual-band clients toward one radio. Global — applies to 2.4 GHz and 5 GHz together. Applying restarts both radios, and only if the setting changed.</div>
+                    </div>
+                    <select id="bandsteer-sel" class="form-select form-select-sm" style="max-width:190px;">
+                        <option value="0">Disabled</option>
+                        <option value="1">Enabled — 5 GHz preferred</option>
+                        <option value="3">Enabled — 2.4 GHz preferred</option>
+                    </select>
+                </div>
+                <!-- Shown only when Unified SSID is OFF: band steering is unavailable -->
+                <div class="field-note" id="bandsteer-locked-note" style="display:none;">
+                    🔗 Band steering needs one shared network across both radios. Turn on
+                    <strong>Unified SSID</strong> on the WiFi (Basic) page to enable it.
+                </div>
+                <div class="mt-3">
+                    <button type="button" class="btn btn-primary w-100" id="bandsteer-save-btn"
+                            onclick="saveBandSteering()">Apply</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Regulatory Domain (global — HW_WLAN0/1_REG_DOMAIN, written together for both radios) -->
+        <div class="card mb-3" id="card-regdomain">
+            <div class="card-header d-flex align-items-center gap-2" style="flex-wrap:wrap; row-gap:4px;">
+                <span style="font-size:12px; white-space:nowrap;">Regulatory Domain</span>
+                <span class="mode-badge ap">both radios</span>
+            </div>
+            <div class="card-body pb-2">
+                <div class="setting-row" style="align-items:flex-start;">
+                    <div style="flex:1; margin-right:8px;">
+                        <div class="setting-label">Domain</div>
+                        <div class="setting-desc">Sets the allowed channels and TX power limits for 2.4 GHz and 5 GHz together. Pick the domain that matches where this router is used. Applying restarts only the radio(s) whose domain changes.</div>
+                    </div>
+                    <select id="regdomain-sel" class="form-select form-select-sm" style="max-width:190px;">
+                        <option value="" disabled hidden>Unknown</option>
+                        <option value="1">FCC (1)</option>
+                        <option value="2">IC (2)</option>
+                        <option value="3">ETSI (3)</option>
+                        <option value="4">SPAIN (4)</option>
+                        <option value="5">FRANCE (5)</option>
+                        <option value="6">MKK (6)</option>
+                        <option value="7">ISRAEL (7)</option>
+                        <option value="8">MKK1 (8)</option>
+                        <option value="9">MKK2 (9)</option>
+                        <option value="10">MKK3 (10)</option>
+                        <option value="11">NCC (11)</option>
+                        <option value="12">RUSSIAN (12)</option>
+                        <option value="13">CN (13)</option>
+                        <option value="14">GLOBAL (14)</option>
+                        <option value="15">WORLD-WIDE (15)</option>
+                    </select>
+                </div>
+                <!-- Shown only when the two radios are currently on different domains -->
+                <div class="field-note" id="regdomain-mismatch-note" style="display:none;"></div>
+                <div class="mt-3">
+                    <button type="button" class="btn btn-primary w-100" id="regdomain-save-btn"
+                            onclick="saveRegDomain()">Apply</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Iface cards injected here (Main AP, VAPs, VXD) -->
+        <div id="ifaces-container"></div>
+
+    </div>
+
+    <script>
+        const CGI        = '/cgi-bin/wlanadvanced.cgi';
+        const overlay    = document.getElementById('overlay');
+        const overlayTxt = document.getElementById('overlay-text');
+        const spinner    = document.getElementById('overlay-spinner');
+
+        // fixedTxRate encoding (11ac, 5GHz only): base + (NSS-1)*10 + MCS
+        // NSS1 MCS0-9 -> 2147483648-2147483657, NSS2 MCS0-9 -> 2147483658-2147483667
+        const FIXEDRATE_BASE = 2147483648;
+        function encodeFixedRate(nss, mcs) {
+            return FIXEDRATE_BASE + (nss - 1) * 10 + mcs;
+        }
+        function decodeFixedRate(val) {
+            const offset = val - FIXEDRATE_BASE;
+            if (offset < 0 || offset > 19) return null;
+            return { nss: Math.floor(offset / 10) + 1, mcs: offset % 10 };
+        }
+
+        let countdownTimer  = null;
+        let secondsLeft     = 90;
+        let currentBand     = 24;   // 24 = 2.4GHz (wlan1), 5 = 5GHz (wlan0)
+        let currentStatus   = null; // last-loaded {band, wlan_if, shortgi, ifaces[]}
+
+        // --------------------------------------------------------
+        // Toggle helpers
+        // --------------------------------------------------------
+        function isOn(id) {
+            return document.getElementById(id).classList.contains('on');
+        }
+
+        function setToggle(id, on) {
+            const el = document.getElementById(id);
+            if (!el) return;
+            el.classList.toggle('on', !!on);
+            el.setAttribute('aria-checked', on ? 'true' : 'false');
+        }
+
+        /** Generic toggle for simple binary switches. */
+        function localToggle(id) {
+            const el = document.getElementById(id);
+            const nowOn = el.classList.toggle('on');
+            el.setAttribute('aria-checked', nowOn ? 'true' : 'false');
+        }
+
+        /** Collapse / expand a card via its header. */
+        function toggleCard(headerEl) {
+            const card = headerEl.closest('.card');
+            if (card) card.classList.toggle('collapsed');
+        }
+
+        /** Toggle TX Beamforming on card `id` and show/hide its TX Beamforming MIMO row accordingly. */
+        function toggleTxbf(id) {
+            const txbfEl = document.getElementById(id + '-txbf-toggle');
+            const nowOn = txbfEl.classList.toggle('on');
+            txbfEl.setAttribute('aria-checked', nowOn ? 'true' : 'false');
+            applyMimoVisibility(id, nowOn);
+        }
+
+        /** Show/hide a card's TX Beamforming MIMO row based on its TX Beamforming state. */
+        function applyMimoVisibility(id, txbfOn) {
+            const revealEl = document.getElementById(id + '-mimo-reveal');
+            if (txbfOn) {
+                revealEl.classList.add('show');
+            } else {
+                revealEl.classList.remove('show');
+                // TX Beamforming MIMO requires TX Beamforming — force it off
+                // whenever TX Beamforming is disabled
+                setToggle(id + '-mimo-toggle', false);
+            }
+        }
+
+        /** Toggle Rate Adaptive on card `id` and show/hide its fixed-rate row. */
+        function toggleRateAdapt(id) {
+            const el = document.getElementById(id + '-rateadapt-toggle');
+            const nowOn = el.classList.toggle('on');
+            el.setAttribute('aria-checked', nowOn ? 'true' : 'false');
+            applyRateFixVisibility(id, !nowOn);
+        }
+
+        /** Show/hide a card's Fixed Rate (NSS/MCS) controls; only usable on 5GHz. */
+        function applyRateFixVisibility(id, showFixed) {
+            const revealEl = document.getElementById(id + '-ratefix-reveal');
+            if (showFixed && currentBand === 5) {
+                revealEl.classList.add('show');
+            } else {
+                revealEl.classList.remove('show');
+            }
+        }
+
+        /** 2.4GHz has no validated Fixed-Rate MCS mapping yet — force Auto-only there. */
+        function updateBandGatingForCard(id) {
+            const is5g = currentBand === 5;
+            const noteEl = document.getElementById(id + '-ratefix-note');
+            if (!is5g) {
+                setToggle(id + '-rateadapt-toggle', true);
+                applyRateFixVisibility(id, false);
+                noteEl.textContent = '11ac fixed rate is only available on 5GHz.';
+            } else {
+                noteEl.textContent = '11ac fixed rate (5GHz only)';
+            }
+            document.getElementById(id + '-rateadapt-toggle').classList.toggle('disabled-ui', !is5g);
+        }
+
+        function updateAllBandGating() {
+            if (!currentStatus) return;
+            currentStatus.ifaces.forEach(iface => updateBandGatingForCard('adv-' + iface.idx));
+        }
+
+        // --------------------------------------------------------
+        // Band switching
+        // --------------------------------------------------------
+        function switchBand() {
+            currentBand = parseInt(document.getElementById('band-select-main').value, 10) || 24;
+            loadStatus();
+        }
+
+        // --------------------------------------------------------
+        // Form enable / disable (everything inside the dynamic cards)
+        // --------------------------------------------------------
+        function setFormEnabled(enabled) {
+            const bandSel = document.getElementById('band-select-main');
+            if (bandSel) bandSel.disabled = !enabled;
+            document.querySelectorAll(
+                '#ifaces-container input, #ifaces-container select, #ifaces-container button, ' +
+                '#card-bandsteer select, #card-bandsteer button, ' +
+                '#card-regdomain select, #card-regdomain button'
+            ).forEach(el => { el.disabled = !enabled; });
+            document.querySelectorAll('#ifaces-container .wlan-toggle')
+                .forEach(el => el.classList.toggle('disabled-ui', !enabled));
+            // Band steering stays locked whenever Unified SSID is off, even
+            // once the rest of the form is re-enabled after a load.
+            if (enabled) applyBandSteerGating();
+        }
+
+        // --------------------------------------------------------
+        // Band steering availability — only usable when Unified SSID is on
+        // --------------------------------------------------------
+        function applyBandSteerGating() {
+            const unified = currentStatus && currentStatus.unified_ssid === 1;
+            const sel  = document.getElementById('bandsteer-sel');
+            const btn  = document.getElementById('bandsteer-save-btn');
+            const note = document.getElementById('bandsteer-locked-note');
+            if (!sel || !btn || !note) return;
+            if (unified) {
+                sel.disabled = false;
+                btn.disabled = false;
+                note.style.display = 'none';
+            } else {
+                // Not available: reflect the disabled state and lock the controls.
+                sel.value = '0';
+                sel.disabled = true;
+                btn.disabled = true;
+                note.style.display = 'block';
+            }
+        }
+
+        // --------------------------------------------------------
+        // Overlay helpers
+        // --------------------------------------------------------
+        function showOverlay(text) {
+            overlayTxt.textContent = text;
+            spinner.style.display = 'block';
+            overlay.classList.add('visible');
+        }
+
+        function hideOverlay() {
+            overlay.classList.remove('visible');
+            if (countdownTimer) { clearInterval(countdownTimer); countdownTimer = null; }
+        }
+
+        function startCountdown() {
+            secondsLeft = 90;
+            showOverlay('Applying Changes. ' + secondsLeft + 's');
+            countdownTimer = setInterval(() => {
+                secondsLeft--;
+                if (secondsLeft > 0) {
+                    overlayTxt.textContent = 'Applying Changes. ' + secondsLeft + 's';
+                } else {
+                    clearInterval(countdownTimer);
+                    countdownTimer = null;
+                    overlayTxt.textContent = 'Reverting Changes.';
+                }
+            }, 1000);
+        }
+
+        // --------------------------------------------------------
+        // Interface naming / labels
+        // --------------------------------------------------------
+        function vifName(idx, type) {
+            const base = currentBand === 5 ? 'wlan0' : 'wlan1';
+            if (idx === 0) return base;
+            if (type === 'vxd') return base + '-vxd';
+            return base + '-vap' + (idx - 1);
+        }
+
+        function ifaceLabel(iface) {
+            if (iface.type === 'ap')  return 'Main AP';
+            if (iface.type === 'vxd') return 'VXD — Repeater / Client';
+            return 'VAP ' + iface.idx;
+        }
+
+        // --------------------------------------------------------
+        // Build one card per interface (idx 0-5)
+        // --------------------------------------------------------
+        function buildIfaceCards(ifaces) {
+            const container = document.getElementById('ifaces-container');
+            container.innerHTML = '';
+
+            ifaces.forEach(iface => {
+                const id = 'adv-' + iface.idx;
+                const isMainAp = iface.idx === 0;
+
+                const sgiBlock = !isMainAp ? '' : `
+                    <div class="setting-row">
+                        <div>
+                            <div class="setting-label">Short Guard Interval</div>
+                            <div class="setting-desc">Improves throughput; may increase sensitivity to multipath (applies to the whole radio)</div>
+                        </div>
+                        <div id="${id}-sgi-toggle" class="wlan-toggle"
+                             onclick="localToggle('${id}-sgi-toggle')" role="switch" aria-checked="false"
+                             title="Toggle Short GI">
+                            <div class="wlan-toggle-knob"></div>
+                        </div>
+                    </div>
+                    <div class="section-divider mb-0"></div>`;
+
+                const div = document.createElement('div');
+                div.className = 'card mb-3 collapsed';
+                div.id = 'card-' + id;
+
+                div.innerHTML = `
+                    <div class="card-header collapsible d-flex align-items-center gap-2" style="flex-wrap:wrap; row-gap:4px;"
+                         onclick="toggleCard(this)">
+                        <span class="card-chevron"></span>
+                        <span style="font-size:12px; white-space:nowrap;">${ifaceLabel(iface)}</span>
+                        <span class="mode-badge ${iface.type}">${vifName(iface.idx, iface.type)}</span>
+                    </div>
+                    <div class="card-body pb-2">
+
+                        <!-- TX Beamforming -->
+                        <div class="setting-row">
+                            <div>
+                                <div class="setting-label">TX Beamforming</div>
+                                <div class="setting-desc">Steers signal toward clients</div>
+                            </div>
+                            <div id="${id}-txbf-toggle" class="wlan-toggle"
+                                 onclick="toggleTxbf('${id}')" role="switch" aria-checked="false"
+                                 title="Toggle TX Beamforming">
+                                <div class="wlan-toggle-knob"></div>
+                            </div>
+                        </div>
+
+                        <!-- TX Beamforming MIMO — revealed only when TX Beamforming is on -->
+                        <div id="${id}-mimo-reveal" class="mimo-reveal">
+                            <div class="setting-row">
+                                <div>
+                                    <div class="setting-label">TX Beamforming MIMO</div>
+                                    <div class="setting-desc">Multi-user beamforming, MU-MIMO (requires TX Beamforming)</div>
+                                </div>
+                                <div id="${id}-mimo-toggle" class="wlan-toggle"
+                                     onclick="localToggle('${id}-mimo-toggle')" role="switch" aria-checked="false"
+                                     title="Toggle TX Beamforming MIMO">
+                                    <div class="wlan-toggle-knob"></div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="section-divider mt-1 mb-0"></div>
+
+                        ${sgiBlock}
+
+                        <!-- Multicast to Unicast -->
+                        <div class="setting-row">
+                            <div>
+                                <div class="setting-label">Multicast to Unicast</div>
+                                <div class="setting-desc">Converts multicast to per-client unicast for reliability</div>
+                            </div>
+                            <div id="${id}-mc2u-toggle" class="wlan-toggle"
+                                 onclick="localToggle('${id}-mc2u-toggle')" role="switch" aria-checked="false"
+                                 title="Toggle multicast to unicast">
+                                <div class="wlan-toggle-knob"></div>
+                            </div>
+                        </div>
+
+                        <div class="section-divider mb-0"></div>
+
+                        <!-- Security -->
+                        <div class="setting-row">
+                            <div>
+                                <div class="setting-label">Protected Management Frames</div>
+                                <div class="setting-desc">Protects against deauth/disassoc attacks (802.11w)</div>
+                            </div>
+                            <select id="${id}-pmf-sel" class="form-select form-select-sm"
+                                    style="max-width:130px;flex-shrink:0;">
+                                <option value="0">Disabled</option>
+                                <option value="1">Capable</option>
+                                <option value="2">Required</option>
+                            </select>
+                        </div>
+
+                        <div class="setting-row">
+                            <div>
+                                <div class="setting-label">SHA-256 Key Derivation</div>
+                                <div class="setting-desc">Enhanced key management; recommended with PMF</div>
+                            </div>
+                            <div id="${id}-sha256-toggle" class="wlan-toggle"
+                                 onclick="localToggle('${id}-sha256-toggle')" role="switch" aria-checked="false"
+                                 title="Toggle SHA-256">
+                                <div class="wlan-toggle-knob"></div>
+                            </div>
+                        </div>
+
+                        <div class="section-divider mb-0"></div>
+
+                        <!-- Rate Limits -->
+                        <div class="setting-row">
+                            <div style="flex:1;margin-right:12px;">
+                                <div class="setting-label mb-1">TX Rate Limit</div>
+                                <div class="input-group input-group-sm rate-input">
+                                    <input type="number" class="form-control" id="${id}-tx-restrict"
+                                           min="0" max="1000" value="0" placeholder="0">
+                                    <span class="input-group-text">Mbps</span>
+                                </div>
+                                <div class="setting-desc mt-1">0 = no limit</div>
+                            </div>
+                            <div style="flex:1;">
+                                <div class="setting-label mb-1">RX Rate Limit</div>
+                                <div class="input-group input-group-sm rate-input">
+                                    <input type="number" class="form-control" id="${id}-rx-restrict"
+                                           min="0" max="1000" value="0" placeholder="0">
+                                    <span class="input-group-text">Mbps</span>
+                                </div>
+                                <div class="setting-desc mt-1">0 = no limit</div>
+                            </div>
+                        </div>
+
+                        <div class="section-divider mb-0"></div>
+
+                        <!-- TX Rate -->
+                        <div class="setting-row">
+                            <div>
+                                <div class="setting-label">Rate Adaptive</div>
+                                <div class="setting-desc">Auto-selects transmit rate; disable to fix a single rate</div>
+                            </div>
+                            <div id="${id}-rateadapt-toggle" class="wlan-toggle"
+                                 onclick="toggleRateAdapt('${id}')" role="switch" aria-checked="true"
+                                 title="Toggle Rate Adaptive">
+                                <div class="wlan-toggle-knob"></div>
+                            </div>
+                        </div>
+
+                        <div id="${id}-ratefix-reveal" class="ratefix-reveal">
+                            <div class="setting-row" style="align-items:flex-start;">
+                                <div style="flex:1;margin-right:8px;">
+                                    <div class="setting-label mb-1">Spatial Streams</div>
+                                    <select id="${id}-ratefix-nss" class="form-select form-select-sm">
+                                        <option value="1">1 (NSS1)</option>
+                                        <option value="2">2 (NSS2)</option>
+                                    </select>
+                                </div>
+                                <div style="flex:1;">
+                                    <div class="setting-label mb-1">MCS Index</div>
+                                    <select id="${id}-ratefix-mcs" class="form-select form-select-sm">
+                                        <option value="0">MCS 0</option>
+                                        <option value="1">MCS 1</option>
+                                        <option value="2">MCS 2</option>
+                                        <option value="3">MCS 3</option>
+                                        <option value="4">MCS 4</option>
+                                        <option value="5">MCS 5</option>
+                                        <option value="6">MCS 6</option>
+                                        <option value="7">MCS 7</option>
+                                        <option value="8">MCS 8</option>
+                                        <option value="9">MCS 9</option>
+                                    </select>
+                                </div>
+                            </div>
+                            <div class="field-note" id="${id}-ratefix-note">11ac fixed rate (5GHz only)</div>
+                        </div>
+
+                        <div class="mt-3" style="display:flex; gap:8px;">
+                            <button type="button" class="btn btn-primary" style="flex:1;"
+                                    title="Apply without restarting the WLAN"
+                                    onclick="saveAdvanced(${iface.idx}, true)">Apply</button>
+                        </div>
+                        <div style="font-size:11px; color:#888; margin-top:6px;">
+                            <b>Apply</b> applies TX beamforming, multicast-to-unicast and short GI with
+                            <code>iwpriv</code> &mdash; no restart. Other changes restart only this
+                            ${iface.idx === 0 ? 'radio' : 'SSID'}, not both radios.
+                        </div>
+
+                    </div>`;
+
+                container.appendChild(div);
+
+                // Populate values
+                setToggle(id + '-mimo-toggle',   iface.mimo   == 1);
+                setToggle(id + '-txbf-toggle',   iface.txbf   == 1);
+                // mc2u_disable=0 means the feature is ON — invert for the toggle
+                setToggle(id + '-mc2u-toggle',   iface.mc2u_disable == 0);
+                setToggle(id + '-sha256-toggle', iface.sha256 == 1);
+                if (isMainAp) setToggle(id + '-sgi-toggle', currentStatus.shortgi == 1);
+
+                document.getElementById(id + '-pmf-sel').value     = String(iface.pmf);
+                document.getElementById(id + '-tx-restrict').value = iface.tx_restrict;
+                document.getElementById(id + '-rx-restrict').value = iface.rx_restrict;
+
+                applyMimoVisibility(id, iface.txbf == 1);
+
+                const rateAdaptive = iface.rate_adaptive == 1;
+                setToggle(id + '-rateadapt-toggle', rateAdaptive);
+                const decoded = decodeFixedRate(parseInt(iface.fixed_rate, 10) || 0);
+                if (decoded) {
+                    document.getElementById(id + '-ratefix-nss').value = String(decoded.nss);
+                    document.getElementById(id + '-ratefix-mcs').value = String(decoded.mcs);
+                }
+                applyRateFixVisibility(id, !rateAdaptive);
+                updateBandGatingForCard(id);
+            });
+
+            // Band steering is global (same value on every band) — sync the
+            // dropdown from the latest status alongside the per-iface cards.
+            const bsSel = document.getElementById('bandsteer-sel');
+            if (bsSel && currentStatus) {
+                bsSel.value = String(currentStatus.band_steering ?? 0);
+            }
+
+            // Regulatory domain is global too (HW_WLAN0 = 5 GHz, HW_WLAN1 = 2.4 GHz).
+            const rdSel  = document.getElementById('regdomain-sel');
+            const rdNote = document.getElementById('regdomain-mismatch-note');
+            if (rdSel && currentStatus) {
+                const r5  = parseInt(currentStatus.regdomain_5, 10)  || 0;
+                const r24 = parseInt(currentStatus.regdomain_24, 10) || 0;
+                const cur = r5 || r24;
+                if (cur && !rdSel.querySelector('option[value="' + cur + '"]')) {
+                    // A value outside the vendor dropdown list (e.g. set from the CLI)
+                    const opt = document.createElement('option');
+                    opt.value = String(cur);
+                    opt.textContent = 'Current (' + cur + ')';
+                    rdSel.appendChild(opt);
+                }
+                rdSel.value = cur ? String(cur) : '';
+                if (rdNote) {
+                    if (r5 && r24 && r5 !== r24) {
+                        rdNote.textContent = '⚠️ The two radios are on different domains right now (5 GHz: ' +
+                            r5 + ', 2.4 GHz: ' + r24 + '). Apply sets both to the selected domain.';
+                        rdNote.style.display = 'block';
+                    } else {
+                        rdNote.style.display = 'none';
+                    }
+                }
+            }
+        }
+
+        // --------------------------------------------------------
+        // Load status
+        // --------------------------------------------------------
+        function loadStatus() {
+            setFormEnabled(false);
+            showOverlay('Loading ' + (currentBand === 24 ? '2.4 GHz' : '5 GHz') + '…');
+            fetch(CGI + '?band=' + currentBand + '&action=adv_status')
+                .then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
+                .then(status => {
+                    currentStatus = status;
+                    buildIfaceCards(status.ifaces);
+                    if (status.pending) {
+                        fetch(CGI + '?band=' + currentBand + '&action=adv_confirm').catch(() => {});
+                    }
+                    setFormEnabled(true);
+                    updateAllBandGating();
+                    hideOverlay();
+                })
+                .catch(err => {
+                    hideOverlay();
+                    toastr["warning"]('Could not load advanced WiFi settings: ' + (err.message || err), "Error");
+                });
+        }
+
+        // --------------------------------------------------------
+        // Poll until the device is back after restart
+        // --------------------------------------------------------
+        function pollUntilBack(retries) {
+            retries = (retries === undefined) ? 25 : retries;
+            fetch(CGI + '?band=' + currentBand + '&action=adv_status')
+                .then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
+                .then(status => {
+                    currentStatus = status;
+                    buildIfaceCards(status.ifaces);
+                    if (status.pending) {
+                        fetch(CGI + '?band=' + currentBand + '&action=adv_confirm').catch(() => {});
+                    }
+                    if (countdownTimer) { clearInterval(countdownTimer); countdownTimer = null; }
+                    spinner.style.display = 'none';
+                    overlayTxt.textContent = 'Changes Applied.';
+                    setFormEnabled(true);
+                    updateAllBandGating();
+                    setTimeout(hideOverlay, 1200);
+                })
+                .catch(err => {
+                    if (retries > 0) {
+                        setTimeout(() => pollUntilBack(retries - 1), 2000);
+                    } else {
+                        hideOverlay();
+                        toastr["warning"]('Network error after apply: ' + (err.message || err), "Error");
+                    }
+                });
+        }
+
+        // --------------------------------------------------------
+        // Save one interface's advanced settings
+        // --------------------------------------------------------
+        function saveAdvanced(idx, live) {
+            const id    = 'adv-' + idx;
+            const txbfOn   = isOn(id + '-txbf-toggle');
+            // TX Beamforming MIMO is only meaningful (and visible) when TX
+            // Beamforming is on — it requires TX Beamforming to be enabled first
+            const mimoOn   = txbfOn && isOn(id + '-mimo-toggle');
+            // mc2u_disable is inverted: toggle ON → mc2u_disable=0 (feature enabled)
+            const mc2uDis  = isOn(id + '-mc2u-toggle') ? 0 : 1;
+            const sha256On = isOn(id + '-sha256-toggle');
+            const pmf      = document.getElementById(id + '-pmf-sel').value;
+            let   txr      = parseInt(document.getElementById(id + '-tx-restrict').value, 10);
+            let   rxr      = parseInt(document.getElementById(id + '-rx-restrict').value, 10);
+            if (isNaN(txr) || txr < 0) txr = 0;
+            if (isNaN(rxr) || rxr < 0) rxr = 0;
+
+            // Rate Adaptive / Fixed Rate — Fixed is only ever sent on 5GHz;
+            // the CGI also enforces this and falls back to auto otherwise.
+            const rateAdaptOn = isOn(id + '-rateadapt-toggle') || currentBand !== 5;
+            let   fixedRate   = 0;
+            if (!rateAdaptOn) {
+                const nss = parseInt(document.getElementById(id + '-ratefix-nss').value, 10) || 1;
+                const mcs = parseInt(document.getElementById(id + '-ratefix-mcs').value, 10) || 0;
+                fixedRate = encodeFixedRate(nss, mcs);
+            }
+
+            let body = 'mimo='          + (mimoOn   ? 1 : 0)
+                     + '&txbf='         + (txbfOn   ? 1 : 0)
+                     + '&mc2u_disable=' + mc2uDis
+                     + '&sha256='       + (sha256On ? 1 : 0)
+                     + '&pmf='          + encodeURIComponent(pmf)
+                     + '&tx_restrict='  + txr
+                     + '&rx_restrict='  + rxr
+                     + '&rate_adaptive='+ (rateAdaptOn ? 1 : 0)
+                     + '&fixed_rate='   + fixedRate;
+
+            // Short Guard Interval only exists on the Main AP (idx 0) card —
+            // it's a radio-wide setting with no per-interface variant.
+            if (idx === 0) {
+                body += '&shortgi=' + (isOn(id + '-sgi-toggle') ? 1 : 0);
+            }
+
+            if (live) body += '&live=1';
+
+            const iface   = currentStatus?.ifaces?.find(i => i.idx === idx);
+            const ifaceOn = (iface?.disabled ?? 1) === 0;
+            const postUrl = CGI + '?band=' + currentBand + '&idx=' + idx;
+
+            setFormEnabled(false);
+
+            if (!ifaceOn) {
+                // Interface is off — quick save, no restart
+                showOverlay('Saving.');
+                fetch(postUrl, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                    body: body
+                })
+                .then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); })
+                .then(() => fetch(CGI + '?band=' + currentBand + '&action=adv_status')
+                    .then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); }))
+                .then(status => { currentStatus = status; buildIfaceCards(status.ifaces); })
+                .then(() => {
+                    spinner.style.display = 'none';
+                    overlayTxt.textContent = 'Settings Saved.';
+                    setFormEnabled(true);
+                    updateAllBandGating();
+                    setTimeout(hideOverlay, 900);
+                })
+                .catch(err => {
+                    hideOverlay();
+                    toastr["warning"]('Save error: ' + (err.message || err), "Error");
+                });
+
+            } else {
+                if (live) {
+                    // Apply live: iwpriv where the driver allows it, otherwise restart only
+                    // this radio/SSID. Short overlay; surface errors; poll soon (it confirms).
+                    showOverlay('Applying.');
+                    let aborted = false;
+                    fetch(postUrl, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                        body: body
+                    })
+                    .then(r => {
+                        if (r && !r.ok) { aborted = true; return r.text().then(t => { throw new Error(t || ('HTTP ' + r.status)); }); }
+                    })
+                    .then(() => { if (!aborted) setTimeout(() => pollUntilBack(), 1500); })
+                    .catch(err => {
+                        if (aborted) {
+                            hideOverlay();
+                            setFormEnabled(true);
+                            toastr["warning"](err.message || 'Apply failed', "Error");
+                        } else {
+                            setTimeout(() => pollUntilBack(), 3000);
+                        }
+                    });
+                    return;
+                }
+                // Interface is live — needs wlan_apply, use countdown + poll-until-back
+                startCountdown();
+                fetch(postUrl, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                    body: body
+                }).catch(() => {});
+                setTimeout(() => pollUntilBack(), 4000);
+            }
+        }
+
+        // --------------------------------------------------------
+        // Apply a global (both-radio) setting: band steering, regulatory domain.
+        // Neither can be applied live, so the CGI restarts only what changed via
+        // wlanapply. It answers "NOCHANGE" (nothing restarted) when the value is
+        // already set, and a 4xx before touching anything for an invalid value;
+        // both skip the poll. There is no revert timer for these (a valid value
+        // cannot lock the admin out), so no countdown overlay either.
+        // --------------------------------------------------------
+        function applyGlobal(postUrl, body) {
+            setFormEnabled(false);
+            showOverlay('Applying.');
+            let aborted  = false;
+            let noChange = false;
+            fetch(postUrl, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                body: body
+            })
+            .then(r => {
+                if (r && !r.ok) { aborted = true; return r.text().then(t => { throw new Error(t || ('HTTP ' + r.status)); }); }
+                return r.text().then(t => { noChange = (t || '').trim() === 'NOCHANGE'; });
+            })
+            .then(() => {
+                if (noChange) {
+                    hideOverlay();
+                    setFormEnabled(true);
+                    toastr["info"]('Already set. Nothing was restarted.', "No change");
+                } else {
+                    setTimeout(() => pollUntilBack(), 1500);
+                }
+            })
+            .catch(err => {
+                if (aborted) {
+                    hideOverlay();
+                    setFormEnabled(true);
+                    toastr["warning"](err.message || 'Apply failed', "Error");
+                } else {
+                    // expected connection drop while the radio restarts
+                    setTimeout(() => pollUntilBack(), 3000);
+                }
+            });
+        }
+
+        // --------------------------------------------------------
+        // Save global band steering (WIFI_STA_CONTROL — both radios)
+        // --------------------------------------------------------
+        function saveBandSteering() {
+            const val     = document.getElementById('bandsteer-sel').value;
+            // Guard: enabling (1/3) requires Unified SSID. Mirrors the CGI check.
+            if (val !== '0' && !(currentStatus && currentStatus.unified_ssid === 1)) {
+                toastr["warning"]('Turn on Unified SSID on the WiFi (Basic) page before enabling band steering.', "Unavailable");
+                applyBandSteerGating();
+                return;
+            }
+            const body    = 'band_steering=' + encodeURIComponent(val);
+            const postUrl = CGI + '?band=' + currentBand + '&action=save_bandsteer';
+            applyGlobal(postUrl, body);
+        }
+
+        // --------------------------------------------------------
+        // Save global regulatory domain (HW_WLAN0/1_REG_DOMAIN — both radios)
+        // --------------------------------------------------------
+        function saveRegDomain() {
+            const sel = document.getElementById('regdomain-sel');
+            const val = sel.value;
+            if (!val) {
+                toastr["warning"]('Choose a regulatory domain first.', "Regulatory Domain");
+                return;
+            }
+            const label = sel.options[sel.selectedIndex].textContent;
+            if (!confirm('Set the regulatory domain to ' + label + '?\n\n' +
+                         'WiFi restarts on the radio(s) whose domain changes, and the allowed channels ' +
+                         'and TX power follow the new domain. Use the domain that matches where this router operates.')) {
+                return;
+            }
+            const body    = 'regdomain=' + encodeURIComponent(val);
+            const postUrl = CGI + '?band=' + currentBand + '&action=save_regdomain';
+            applyGlobal(postUrl, body);
+        }
+
+        // --------------------------------------------------------
+        // Init
+        // --------------------------------------------------------
+        window.addEventListener('DOMContentLoaded', () => {
+            document.getElementById('band-select-main').value = String(currentBand);
+            setFormEnabled(false); // Disable until data is loaded
+            loadStatus();
+        });
+    </script>
+    <script src="/js/bootstrap.bundle.min.js?v=1.0.0"></script>
+    <script src="/js/jquery-3.7.1.min.js?v=1.0.0"></script>
+    <script src="/js/toastr.min.js?v=1.0.0"></script>
+</body>
+</html>

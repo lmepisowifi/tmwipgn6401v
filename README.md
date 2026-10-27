@@ -20,6 +20,13 @@ This project is licensed under AGPLv3 (see `LICENSE`), except:
   retains its original GPL-2.0-or-later license. See `sch/LICENSE` and
   `LICENSES/GPL-2.0-or-later.txt`.
 
+- `sch/sch_cake.ko` — the CAKE packet scheduler, built as a loadable module
+  for the same kernel, offered by its authors under BSD-3-Clause or
+  GPL-2.0-only and used here under GPL-2.0. `sch/tc` — an iproute2 `tc` build
+  with CAKE support, used only when the firmware's own `tc` lacks it, under
+  GPL-2.0. See `sch/LICENSE`, `LICENSES/GPL-2.0-only.txt` and
+  `LICENSES/BSD-3-Clause.txt`.
+
 - `iptables/xt_hl.ko` and `iptables/xt_HL.ko` — the Linux kernel's Netfilter
   TTL/hop-limit match and target modules, built for the same kernel, retain
   their original GPL-2.0-only license. See `iptables/LICENSE` and

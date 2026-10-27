@@ -49,6 +49,13 @@
  * 404to302:index.html # Instead of a 404, send a 302 redirect to index.html
  * I:index.html      # Show index.html when a directory is requested
  * CacheControl:no-cache  # Send "Cache-Control: <value>" on 200/206/304 responses
+ * WebTerm:/ws       # Web terminal: WebSocket on URL /ws <-> shell on a pty.
+ *                   # "WebTerm:/ws:CMD" runs "sh -c CMD" instead of a login shell
+ * WebTermSession:/tmp/sessions[:600]
+ *                   # Web terminal auth: require cookie "session=ID" where file
+ *                   # /tmp/sessions/ID contains a unix time no older than 600s.
+ *                   # Without it, the WebTerm URL must be covered by a
+ *                   # "/ws:user:pass" rule, otherwise the connection is refused.
  *
  * P:/url:[http://]hostname[:port]/new/path
  *                   # When /urlXXXXXX is requested, reverse proxy
@@ -306,6 +313,14 @@
 #if ENABLE_FEATURE_USE_SENDFILE
 # include <sys/sendfile.h>
 #endif
+#include <netinet/tcp.h>
+/* old libc/kernel headers may lack these (same values on every arch) */
+#ifndef TIOCGPTN
+# define TIOCGPTN _IOR('T', 0x30, unsigned int)
+#endif
+#ifndef TIOCSPTLCK
+# define TIOCSPTLCK _IOW('T', 0x31, int)
+#endif
 
 /* see sys/netinet6/in6.h */
 #if defined(__FreeBSD__)
@@ -482,6 +497,18 @@ struct globals {
 	/* "CacheControl:VALUE" config directive: value for a Cache-Control
 	 * header on file responses (200/206/304). NULL = send none. */
 	const char *cache_control;
+	/* "WebTerm:/URL[:CMD]" and "WebTermSession:DIR[:TTL]" directives */
+	const char *webterm_url;
+	const char *webterm_cmd;
+	const char *webterm_sess_dir;
+	int webterm_sess_ttl;
+	/* request headers captured for the web terminal handshake */
+	char *ws_key;
+	char *ws_host;
+	char *ws_origin;
+	char *ws_sess;          /* hex session id from "Cookie: session=..." */
+	smallint ws_upgrade;    /* "Upgrade: websocket" seen */
+	smallint ws_version_ok; /* "Sec-WebSocket-Version: 13" seen */
 #if ENABLE_FEATURE_HTTPD_ACL_IP
 	Htaccess_IP *ip_a_d;    /* config allow/deny lines */
 #endif
@@ -536,6 +563,16 @@ struct globals {
 #define redirect_404        (G.redirect_404       )
 #define redirect_404_active (G.redirect_404_active)
 #define cache_control       (G.cache_control      )
+#define webterm_url         (G.webterm_url        )
+#define webterm_cmd         (G.webterm_cmd        )
+#define webterm_sess_dir    (G.webterm_sess_dir   )
+#define webterm_sess_ttl    (G.webterm_sess_ttl   )
+#define ws_key              (G.ws_key             )
+#define ws_host             (G.ws_host            )
+#define ws_origin           (G.ws_origin          )
+#define ws_sess             (G.ws_sess            )
+#define ws_upgrade          (G.ws_upgrade         )
+#define ws_version_ok       (G.ws_version_ok      )
 #define last_mod          (G.last_mod         )
 #define g_realm           (G.g_realm          )
 #define remoteuser        (G.remoteuser       )
@@ -771,6 +808,8 @@ static int parse_conf(const char *path, int flag)
 	 * .ext:mime/type   # mime type
 	 * *.php:/path/php  # run xxx.php through an interpreter
 	 * /file:user:pass  # username and password
+	 * WebTerm:/url[:cmd]            # web terminal URL (root config only)
+	 * WebTermSession:dir[:ttl]      # web terminal session cookie dir
 	 */
 	while (fgets(buf, sizeof(buf), f) != NULL) {
 		unsigned strlen_buf;
@@ -912,6 +951,47 @@ static int parse_conf(const char *path, int flag)
 				goto config_error;
 			free((char*)cache_control);
 			cache_control = *after_colon ? xstrdup(after_colon) : NULL;
+			continue;
+		}
+
+		/* "WebTerm:/URL[:CMD]" - serve a WebSocket terminal on URL.
+		 * "WebTermSession:DIR[:TTL]" - require a valid session cookie.
+		 * Root config only. Whitespace was stripped from the line, so
+		 * CMD can't contain spaces (use a script for anything fancier). */
+		if (flag == FIRST_PARSE
+		 && strncmp(buf, "WebTerm", 7) == 0
+		 && buf[7] == ':'
+		) {
+			char *cmd;
+			if (after_colon[0] != '/')
+				goto config_error;
+			free((char*)webterm_url);
+			free((char*)webterm_cmd);
+			webterm_url = xstrdup(after_colon);
+			webterm_cmd = NULL;
+			cmd = strchr(webterm_url, ':');
+			if (cmd) {
+				*cmd++ = '\0';
+				if (*cmd)
+					webterm_cmd = xstrdup(cmd);
+			}
+			continue;
+		}
+		if (flag == FIRST_PARSE
+		 && strncmp(buf, "WebTermSession", 14) == 0
+		 && buf[14] == ':'
+		) {
+			char *ttl;
+			free((char*)webterm_sess_dir);
+			webterm_sess_dir = xstrdup(after_colon);
+			webterm_sess_ttl = 600;
+			ttl = strchr(webterm_sess_dir, ':');
+			if (ttl) {
+				*ttl++ = '\0';
+				webterm_sess_ttl = bb_strtou(ttl, NULL, 10);
+				if (errno || webterm_sess_ttl <= 0)
+					goto config_error;
+			}
 			continue;
 		}
 
@@ -2250,6 +2330,560 @@ static Htaccess_Proxy *find_proxy_entry(const char *url)
 #endif
 
 /*
+ * Web terminal (config: "WebTerm:/URL[:CMD]", "WebTermSession:DIR[:TTL]").
+ *
+ * A GET on URL with "Upgrade: websocket" is answered with 101 and the
+ * connection is then bridged to a shell running on a pty.
+ *
+ * Wire protocol (first byte of every message is a command; this is what
+ * www2/terminal.html speaks):
+ *   client -> server, text:   '0' + keystrokes
+ *                             '3' + {"cols":N,"rows":N}   (resize)
+ *   server -> client, binary: '1' + terminal output
+ */
+#if BB_MMU
+
+#define WS_GUID "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+#define WT_CHUNK 1024 /* max pty output bytes per websocket frame */
+#define WT_TICK_MS (30 * 1000) /* how often the session is re-validated */
+#define WT_TICK_S  (WT_TICK_MS / 1000)
+
+enum {
+	WS_OP_CONT  = 0,
+	WS_OP_TEXT  = 1,
+	WS_OP_BIN   = 2,
+	WS_OP_CLOSE = 8,
+	WS_OP_PING  = 9,
+	WS_OP_PONG  = 10,
+};
+enum { /* client frame parser states */
+	WSRX_B0, WSRX_B1, WSRX_EXT, WSRX_MASK, WSRX_PAY,
+};
+
+struct wt {
+	int mfd;                /* pty master */
+	pid_t pid;              /* shell */
+	smallint close_sent;
+	uint8_t carry[4];       /* incomplete utf-8 tail of pty output */
+	uint8_t ncarry;
+	/* client frame parser */
+	uint8_t st, op, fin, mi, ext;
+	uint8_t mask[4];
+	uint8_t mcmd;           /* command byte of the current message */
+	uint32_t mpos;          /* payload bytes of current message seen so far */
+	uint64_t plen, pos;     /* current frame payload length / bytes seen */
+	unsigned cl;
+	char cbuf[128];         /* control-frame payload or resize json */
+};
+
+static volatile smallint wt_child_gone;
+static void wt_sigchld(int sig UNUSED_PARAM)
+{
+	wt_child_gone = 1;
+}
+
+/* Send one unfragmented server frame: [tag byte] + data. tag < 0: no tag. */
+static int ws_send(unsigned op, int tag, const void *data, unsigned len)
+{
+	uint8_t f[4 + 1 + WT_CHUNK];
+	unsigned plen = len + (tag >= 0);
+	unsigned hl, total;
+
+	if (plen > 1 + WT_CHUNK)
+		return -1;
+	f[0] = 0x80 | op;
+	if (plen < 126) {
+		f[1] = plen;
+		hl = 2;
+	} else {
+		f[1] = 126;
+		f[2] = plen >> 8;
+		f[3] = plen;
+		hl = 4;
+	}
+	if (tag >= 0)
+		f[hl] = tag;
+	memcpy(f + hl + (tag >= 0), data, len);
+	total = hl + plen;
+	/* one write(): don't let Nagle + delayed ACK stall keystrokes */
+	return full_write(STDOUT_FILENO, f, total) == (ssize_t)total ? 0 : -1;
+}
+
+static void ws_send_close(struct wt *t, unsigned code)
+{
+	uint8_t c[2];
+	if (t->close_sent)
+		return;
+	t->close_sent = 1;
+	c[0] = code >> 8;
+	c[1] = code;
+	ws_send(WS_OP_CLOSE, -1, c, 2);
+}
+
+/* Pty -> websocket. Returns 1: sent data, 0: nothing to do, -1: pty is gone */
+static int wt_pump(struct wt *t)
+{
+	uint8_t buf[WT_CHUNK];
+	unsigned n, keep, back;
+	ssize_t r;
+
+	memcpy(buf, t->carry, t->ncarry);
+	r = read(t->mfd, buf + t->ncarry, sizeof(buf) - t->ncarry);
+	if (r < 0)
+		return (errno == EAGAIN || errno == EINTR) ? 0 : -1;
+	if (r == 0)
+		return -1;
+	n = t->ncarry + r;
+	t->ncarry = 0;
+
+	/* Browser decodes every frame separately: never split a utf-8
+	 * sequence across two frames. Hold back an incomplete tail. */
+	keep = 0;
+	for (back = 0; back < 3 && back < n; back++) {
+		unsigned c = buf[n - 1 - back];
+		unsigned need;
+		if ((c & 0xc0) == 0x80)
+			continue; /* continuation byte, look further back */
+		need = (c >= 0xf0) ? 4 : (c >= 0xe0) ? 3 : (c >= 0xc0) ? 2 : 1;
+		if (need > back + 1)
+			keep = back + 1;
+		break;
+	}
+	if (keep) {
+		memcpy(t->carry, buf + n - keep, keep);
+		t->ncarry = keep;
+		n -= keep;
+	}
+	if (n == 0)
+		return 0;
+	return ws_send(WS_OP_BIN, '1', buf, n) == 0 ? 1 : -1;
+}
+
+/* Websocket -> pty. The pty is non-blocking; while it is full keep
+ * draining shell output, else a chatty shell and a big paste deadlock. */
+static int wt_write_in(struct wt *t, const uint8_t *p, unsigned n)
+{
+	while (n != 0) {
+		ssize_t w = write(t->mfd, p, n);
+		if (w < 0) {
+			struct pollfd pf;
+			if (errno == EINTR)
+				continue;
+			if (errno != EAGAIN)
+				return -1;
+			pf.fd = t->mfd;
+			pf.events = POLLIN | POLLOUT;
+			pf.revents = 0;
+			poll(&pf, 1, 1000);
+			if (pf.revents & POLLIN) {
+				if (wt_pump(t) < 0)
+					return -1;
+			} else if (pf.revents & (POLLERR | POLLHUP | POLLNVAL)) {
+				return -1;
+			}
+			continue;
+		}
+		p += w;
+		n -= w;
+	}
+	return 0;
+}
+
+static int ws_json_int(const char *s, const char *key)
+{
+	s = strstr(s, key);
+	if (s)
+		s = strchr(s, ':');
+	return s ? atoi(s + 1) : 0;
+}
+
+static void wt_resize(struct wt *t)
+{
+	struct winsize w;
+	int cols, rows;
+
+	t->cbuf[t->cl] = '\0';
+	cols = ws_json_int(t->cbuf, "\"cols\"");
+	rows = ws_json_int(t->cbuf, "\"rows\"");
+	if (cols < 1 || cols > 1000 || rows < 1 || rows > 1000)
+		return;
+	memset(&w, 0, sizeof(w));
+	w.ws_col = cols;
+	w.ws_row = rows;
+	ioctl(t->mfd, TIOCSWINSZ, &w);
+}
+
+/* A whole frame has been received */
+static int wt_frame_done(struct wt *t)
+{
+	switch (t->op) {
+	case WS_OP_CLOSE:
+		ws_send_close(t, 1000);
+		return -1;
+	case WS_OP_PING:
+		return ws_send(WS_OP_PONG, -1, t->cbuf, t->cl);
+	case WS_OP_PONG:
+		return 0;
+	}
+	/* data frame */
+	if (t->fin) {
+		if (t->mpos != 0 && t->mcmd == '3')
+			wt_resize(t);
+		t->mpos = 0;
+	}
+	return 0;
+}
+
+/* Feed bytes received from the client into the websocket frame parser.
+ * Streaming: a 100k paste is one frame and must not need a 100k buffer.
+ * Returns < 0 when the connection should be closed. */
+static int ws_feed(struct wt *t, uint8_t *b, unsigned n)
+{
+	while (n != 0) {
+		unsigned c = *b;
+
+		switch (t->st) {
+		case WSRX_B0:
+			if (c & 0x70) /* RSV bits: no extensions negotiated */
+				goto proto_err;
+			t->fin = c >> 7;
+			t->op = c & 0x0f;
+			if (t->op > WS_OP_PONG
+			 || (t->op > WS_OP_BIN && t->op < WS_OP_CLOSE)
+			) {
+				goto proto_err;
+			}
+			t->st = WSRX_B1;
+			break;
+		case WSRX_B1:
+			if (!(c & 0x80)) /* client frames must be masked */
+				goto proto_err;
+			t->plen = c & 0x7f;
+			t->mi = 0;
+			t->st = WSRX_MASK;
+			if (t->plen >= 126) {
+				t->ext = (t->plen == 126) ? 2 : 8;
+				t->plen = 0;
+				t->st = WSRX_EXT;
+			}
+			break;
+		case WSRX_EXT:
+			t->plen = (t->plen << 8) | c;
+			if (--t->ext == 0)
+				t->st = WSRX_MASK;
+			break;
+		case WSRX_MASK:
+			t->mask[t->mi++] = c;
+			if (t->mi < 4)
+				break;
+			if (t->op >= WS_OP_CLOSE && (!t->fin || t->plen > 125))
+				goto proto_err; /* RFC 6455 5.5 */
+			t->pos = 0;
+			t->cl = 0;
+			if (t->op != WS_OP_CONT && t->op < WS_OP_CLOSE)
+				t->mpos = 0; /* new message */
+			t->st = WSRX_PAY;
+			if (t->plen == 0) {
+				t->st = WSRX_B0;
+				if (wt_frame_done(t) < 0)
+					return -1;
+			}
+			break;
+		case WSRX_PAY: {
+			uint64_t left = t->plen - t->pos;
+			unsigned chunk = (left < n) ? (unsigned)left : n;
+			unsigned i;
+			uint8_t *d = b;
+			unsigned dlen = chunk;
+
+			for (i = 0; i < chunk; i++)
+				b[i] ^= t->mask[(t->pos + i) & 3];
+			t->pos += chunk;
+
+			if (t->op >= WS_OP_CLOSE) {
+				memcpy(t->cbuf + t->cl, b, chunk);
+				t->cl += chunk;
+			} else {
+				if (t->mpos == 0) { /* first byte: command */
+					t->mcmd = *d++;
+					dlen--;
+					t->mpos = 1;
+					t->cl = 0;
+				}
+				t->mpos += dlen;
+				if (t->mcmd == '0') {
+					if (wt_write_in(t, d, dlen) < 0)
+						return -1;
+				} else if (t->mcmd == '3') {
+					/* resize json, tiny; extra is dropped */
+					if (dlen > sizeof(t->cbuf) - 1 - t->cl)
+						dlen = sizeof(t->cbuf) - 1 - t->cl;
+					memcpy(t->cbuf + t->cl, d, dlen);
+					t->cl += dlen;
+				}
+			}
+			b += chunk;
+			n -= chunk;
+			if (t->pos == t->plen) {
+				t->st = WSRX_B0;
+				if (wt_frame_done(t) < 0)
+					return -1;
+			}
+			continue; /* b and n already advanced */
+		}
+		}
+		b++;
+		n--;
+	}
+	return 0;
+ proto_err:
+	ws_send_close(t, 1002);
+	return -1;
+}
+
+/* Is there a "/path:user:pass" rule covering this URL? */
+static int url_has_auth_rule(const char *path)
+{
+#if ENABLE_FEATURE_HTTPD_BASIC_AUTH
+	Htaccess *cur;
+	for (cur = g_auth; cur; cur = cur->next) {
+		const char *pfx = cur->before_colon;
+		size_t len = strlen(pfx);
+		if (len == 1
+		 || (strncmp(pfx, path, len) == 0
+		     && (path[len] == '/' || path[len] == '\0'))
+		) {
+			return 1;
+		}
+	}
+#endif
+	return 0;
+}
+
+/* Same rule as cgi-bin/check_auth.cgi: file DIR/ID holds the time of last
+ * activity, valid while it is no older than TTL. (Does not refresh it: the
+ * admin pages' keepalive does that.) */
+static int wt_session_ok(void)
+{
+	char *path;
+	char b[24];
+	ssize_t len;
+	long last;
+
+	if (!ws_sess)
+		return 0;
+	path = concat_path_file(webterm_sess_dir, ws_sess);
+	len = open_read_close(path, b, sizeof(b) - 1);
+	free(path);
+	if (len <= 0)
+		return 0;
+	b[len] = '\0';
+	last = atol(b);
+	if (last <= 0)
+		return 0;
+	return (long)(time(NULL) - last) <= webterm_sess_ttl;
+}
+
+/* Cross-site websocket hijacking guard: a browser always sends Origin.
+ * It must name the host we were addressed as. */
+static int wt_origin_ok(void)
+{
+	const char *o = ws_origin;
+	if (!o)
+		return 1; /* not a browser */
+	o = strstr(o, "://");
+	if (!o || !ws_host)
+		return 0;
+	return strcasecmp(o + 3, ws_host) == 0;
+}
+
+/* Open a pty, start the shell on it. Returns master fd or -1. */
+static int wt_spawn(struct wt *t)
+{
+	char slave[32];
+	unsigned n = 0;
+	int unlock = 0;
+	int mfd, sfd;
+	struct winsize w;
+
+	mfd = open("/dev/ptmx", O_RDWR | O_NOCTTY);
+	if (mfd < 0)
+		return -1;
+	if (ioctl(mfd, TIOCSPTLCK, &unlock) != 0
+	 || ioctl(mfd, TIOCGPTN, &n) != 0
+	) {
+		goto fail;
+	}
+	snprintf(slave, sizeof(slave), "/dev/pts/%u", n);
+	/* Opened here, not in the child: keeps the slave alive so the master
+	 * never sees a spurious hangup before the shell has started. */
+	sfd = open(slave, O_RDWR | O_NOCTTY);
+	if (sfd < 0)
+		goto fail;
+	memset(&w, 0, sizeof(w));
+	w.ws_col = 80;
+	w.ws_row = 24;
+	ioctl(mfd, TIOCSWINSZ, &w);
+
+	t->pid = fork();
+	if (t->pid < 0) {
+		close(sfd);
+		goto fail;
+	}
+	if (t->pid == 0) {
+		int i;
+		/* httpd ignores some signals, the shell must not inherit that */
+		for (i = 1; i < 32; i++)
+			signal(i, SIG_DFL);
+		setsid();
+		ioctl(sfd, TIOCSCTTY, 0);
+		xdup2(sfd, 0);
+		xdup2(sfd, 1);
+		xdup2(sfd, 2);
+		if (sfd > 2)
+			close(sfd);
+		if (mfd > 2)
+			close(mfd);
+		xchdir("/");
+		setenv("TERM", "xterm-256color", 1);
+		if (webterm_cmd)
+			execl("/bin/sh", "sh", "-c", webterm_cmd, (char*)NULL);
+		else
+			execl("/bin/sh", "-sh", (char*)NULL); /* login shell */
+		_exit(127);
+	}
+	close(sfd);
+	t->mfd = mfd;
+	ndelay_on(mfd);
+	return mfd;
+ fail:
+	close(mfd);
+	return -1;
+}
+
+static void webterm_and_exit(void) NORETURN;
+static void webterm_and_exit(void)
+{
+	struct wt *t;
+	uint8_t sha[20];
+	char accept[32];
+	sha1_ctx_t ctx;
+	uint8_t rx[2048];
+	time_t last_chk;
+
+	/* Must be a proper websocket upgrade (GET only) */
+	if (!ws_upgrade || !ws_version_ok || !ws_key || strlen(ws_key) != 24)
+		send_headers_and_exit(HTTP_BAD_REQUEST);
+
+	/* A root shell: never serve it unauthenticated. Either the session
+	 * cookie (WebTermSession) or an explicit basic-auth rule for the URL
+	 * (already verified by the caller) is required. */
+	if (webterm_sess_dir) {
+		if (!wt_session_ok())
+			send_headers_and_exit(HTTP_FORBIDDEN);
+	} else if (!url_has_auth_rule(webterm_url)) {
+		bb_simple_error_msg("webterm: refused, set WebTermSession or protect the url");
+		send_headers_and_exit(HTTP_FORBIDDEN);
+	}
+	if (!wt_origin_ok())
+		send_headers_and_exit(HTTP_FORBIDDEN);
+
+	t = xzalloc(sizeof(*t));
+	if (wt_spawn(t) < 0)
+		send_headers_and_exit(HTTP_INTERNAL_SERVER_ERROR);
+
+	sha1_begin(&ctx);
+	sha1_hash(&ctx, ws_key, 24);
+	sha1_hash(&ctx, WS_GUID, sizeof(WS_GUID) - 1);
+	sha1_end(&ctx, sha);
+	bb_uuencode(accept, sha, 20, bb_uuenc_tbl_base64);
+
+	fdprintf(STDOUT_FILENO,
+		"HTTP/1.1 101 Switching Protocols\r\n"
+		"Upgrade: websocket\r\n"
+		"Connection: Upgrade\r\n"
+		"Sec-WebSocket-Accept: %s\r\n"
+		"\r\n", accept);
+	setsockopt_1(STDOUT_FILENO, IPPROTO_TCP, TCP_NODELAY);
+	signal(SIGCHLD, wt_sigchld);
+	signal(SIGPIPE, SIG_IGN);
+	if (verbose)
+		bb_simple_error_msg("webterm: started");
+
+	/* Bytes after the request headers (none from a sane browser) */
+	if (hdr_cnt > 0) {
+		if (ws_feed(t, (uint8_t*)hdr_ptr, hdr_cnt) < 0)
+			goto done;
+		hdr_cnt = 0;
+	}
+
+	last_chk = time(NULL);
+	while (1) {
+		struct pollfd pfd[2];
+		int r;
+
+		pfd[0].fd = STDIN_FILENO;
+		pfd[0].events = POLLIN;
+		pfd[1].fd = t->mfd;
+		pfd[1].events = POLLIN;
+		r = poll(pfd, 2, WT_TICK_MS);
+		if (r < 0 && errno != EINTR)
+			break;
+		if (wt_child_gone) {
+			while (wt_pump(t) > 0) /* flush what the shell said last */
+				continue;
+			ws_send_close(t, 1000);
+			break;
+		}
+		/* Drop the terminal on logout/expiry. This must not hang off
+		 * poll() timing out: while the shell or the browser is busy
+		 * (top, ping, tail -f, typing...) poll() never times out, so a
+		 * check done only then would never run and a logged-out session
+		 * would stay alive. Re-validate on elapsed time instead; an idle
+		 * tick (r == 0) still forces one. now < last_chk: clock stepped
+		 * backwards (NTP), just check. */
+		if (webterm_sess_dir) {
+			time_t now = time(NULL);
+			if (r == 0 || now < last_chk || now - last_chk >= WT_TICK_S) {
+				last_chk = now;
+				if (!wt_session_ok()) {
+					ws_send_close(t, 1008);
+					break;
+				}
+			}
+		}
+		if (r <= 0)
+			continue; /* idle tick or EINTR */
+		if (pfd[1].revents & (POLLIN | POLLHUP | POLLERR)) {
+			if (wt_pump(t) < 0) {
+				ws_send_close(t, 1000);
+				break;
+			}
+		}
+		if (pfd[0].revents & (POLLIN | POLLHUP | POLLERR)) {
+			ssize_t n = read(STDIN_FILENO, rx, sizeof(rx));
+			if (n <= 0)
+				break;
+			if (ws_feed(t, rx, n) < 0)
+				break;
+		}
+	}
+ done:
+	kill(-t->pid, SIGHUP);
+	kill(-t->pid, SIGCONT);
+	waitpid(t->pid, NULL, WNOHANG);
+	_exit(0);
+}
+
+#else /* !BB_MMU */
+static void webterm_and_exit(void) NORETURN;
+static void webterm_and_exit(void)
+{
+	send_headers_and_exit(HTTP_NOT_IMPLEMENTED);
+}
+#endif /* BB_MMU */
+
+/*
  * Handle timeouts
  */
 static void send_REQUEST_TIMEOUT_and_exit(int sig) NORETURN;
@@ -2574,6 +3208,52 @@ static void handle_incoming_and_exit(const len_and_sockaddr *fromAddr)
 			send_headers_and_exit(HTTP_ENTITY_TOO_LARGE);
 #endif
 		dbg("header:'%s'\n", iobuf);
+		if (webterm_url) {
+			/* captured for the web terminal handshake; no "continue":
+			 * other handlers below still see these lines */
+			char *v = strchr(iobuf, ':');
+			if (v) {
+				v = skip_whitespace(v + 1);
+				trim(v); /* in place; v is still the start */
+				if (STRNCASECMP(iobuf, "Sec-WebSocket-Key:") == 0) {
+					free(ws_key);
+					ws_key = xstrdup(v);
+				} else if (STRNCASECMP(iobuf, "Sec-WebSocket-Version:") == 0) {
+					ws_version_ok = (strncmp(v, "13", 2) == 0
+						&& (v[2] == '\0' || v[2] == ' '));
+				} else if (STRNCASECMP(iobuf, "Upgrade:") == 0) {
+					ws_upgrade = (strncasecmp(v, "websocket", 9) == 0);
+				} else if (STRNCASECMP(iobuf, "Host:") == 0) {
+					free(ws_host);
+					ws_host = xstrdup(v);
+				} else if (STRNCASECMP(iobuf, "Origin:") == 0) {
+					free(ws_origin);
+					ws_origin = xstrdup(v);
+				} else if (STRNCASECMP(iobuf, "Cookie:") == 0) {
+					/* find "session=<hex>" among "a=b; c=d" */
+					char *p = v;
+					while (*p) {
+						unsigned l;
+						p = skip_whitespace(p);
+						if (strncmp(p, "session=", 8) == 0) {
+							p += 8;
+							l = strspn(p, "0123456789abcdefABCDEF");
+							if (l != 0 && l <= 128
+							 && (p[l] == ';' || p[l] == ' ' || p[l] == '\0')
+							) {
+								free(ws_sess);
+								ws_sess = xstrndup(p, l);
+							}
+							break;
+						}
+						p = strchr(p, ';');
+						if (!p)
+							break;
+						p++;
+					}
+				}
+			}
+		}
 #if ENABLE_FEATURE_HTTPD_CGI
 		/* Only POST needs to know POST_length */
 		if (prequest == request_POST && STRNCASECMP(iobuf, "Content-Length:") == 0) {
@@ -2693,6 +3373,13 @@ static void handle_incoming_and_exit(const len_and_sockaddr *fromAddr)
 	if (!authorized)
 		send_headers_and_exit(HTTP_UNAUTHORIZED);
 #endif
+
+	/* Web terminal: after the basic-auth check, before anything else */
+	if (webterm_url && strcmp(urlcopy, webterm_url) == 0) {
+		if (prequest != request_GET)
+			send_headers_and_exit(HTTP_BAD_REQUEST);
+		webterm_and_exit();
+	}
 
 	if (found_moved_temporarily)
 		send_headers_and_exit(HTTP_MOVED_TEMPORARILY);
