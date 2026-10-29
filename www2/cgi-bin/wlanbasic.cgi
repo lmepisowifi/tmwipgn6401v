@@ -340,6 +340,30 @@ wl_2ndch() {
     if [ "$2" = "0" ]; then printf '1'; else printf '2'; fi
 }
 
+# wl_mode_set IF WBD -> push an 802.11 mode into the driver exactly as the
+# vendor's setupWLan() does (subr_wlan.c): the MIB wlanBand code is NOT what the
+# driver gets.  The driver's `band` (net_work_type) keeps the legacy bits and
+# `deny_legacy` (legacySTADeny) is what turns them off for the "pure" modes:
+#   n only      5G: band 12 deny 4      2.4G: band 11 deny 3
+#   g only      band 3  deny 1
+#   g/n         band 11 deny 1
+#   ac only     band 76 deny 12
+#   n/ac        band 76 deny 4
+#   anything else (b, b/g, b/g/n, a, a/n, a/ac, a/n/ac): band = code, deny 0
+# wlan0 is the 5 GHz radio, wlan1 the 2.4 GHz one.
+wl_mode_set() {
+    case "$2" in
+        8)  if [ "$1" = "wlan0" ]; then _wm_b=12; _wm_d=4; else _wm_b=11; _wm_d=3; fi ;;
+        2)  _wm_b=3;  _wm_d=1  ;;
+        10) _wm_b=11; _wm_d=1  ;;
+        64) _wm_b=76; _wm_d=12 ;;
+        72) _wm_b=76; _wm_d=4  ;;
+        *)  _wm_b="$2"; _wm_d=0 ;;
+    esac
+    wl_set "$1" band "$_wm_b"
+    wl_set "$1" deny_legacy "$_wm_d"
+}
+
 # wl_bounce IF -> re-open a root interface so the driver re-reads its mib
 # (channel / width / sideband). VAP/VXD netdevs that were up are re-upped.
 wl_bounce() {
@@ -365,9 +389,7 @@ live_apply_ap() {
     _la_s="$1"; _la_a="$2"; _la_c="$3"; _la_w="$4"; _la_b="$5"; _la_m="$6"; _la_ps="$7"
     if [ "$LV_OWN" = "1" ]; then
         if [ "$LV_WBD" = "1" ] && [ -n "$_la_m" ]; then
-            if [ "$WLAN_IF" = "wlan0" ]; then _la_max=76; else _la_max=11; fi
-            wl_set "$WLAN_IF" band "$_la_m"
-            wl_set "$WLAN_IF" deny_legacy "$((_la_max - _la_m))"
+            wl_mode_set "$WLAN_IF" "$_la_m"
         fi
         if [ "$LV_CW" = "1" ] || { [ "$LV_CH" = "1" ] && [ "$_la_a" != "1" ]; }; then
             # width/sideband change or a manual channel move: write, re-open once
@@ -1353,17 +1375,11 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
             ifconfig "$WLAN_IF" up
         elif [ "$WBD_AND_SSID_CHANGED" = "1" ]; then
             dbg "save_ap: 802.11 mode+SSID change ($RV_WBD -> $FORM_WBD, $RV_SSID -> $FORM_SSID), using iwpriv set_mib instead of wlan_apply restart"
-            if [ "$WLAN_IF" = "wlan0" ]; then WBD_MAX=76; else WBD_MAX=11; fi
-            WBD_DENY=$((WBD_MAX - FORM_WBD))
-            iwpriv "$WLAN_IF" set_mib "band=$FORM_WBD"
-            iwpriv "$WLAN_IF" set_mib "deny_legacy=$WBD_DENY"
+            wl_mode_set "$WLAN_IF" "$FORM_WBD"
             iwpriv "$WLAN_IF" set_mib "ssid=$FORM_SSID"
         elif [ "$ONLY_WBD_CHANGED" = "1" ]; then
             dbg "save_ap: 802.11 mode-only change ($RV_WBD -> $FORM_WBD), using iwpriv set_mib instead of wlan_apply restart"
-            if [ "$WLAN_IF" = "wlan0" ]; then WBD_MAX=76; else WBD_MAX=11; fi
-            WBD_DENY=$((WBD_MAX - FORM_WBD))
-            iwpriv "$WLAN_IF" set_mib "band=$FORM_WBD"
-            iwpriv "$WLAN_IF" set_mib "deny_legacy=$WBD_DENY"
+            wl_mode_set "$WLAN_IF" "$FORM_WBD"
         elif [ "$ONLY_SSID_CHANGED" = "1" ]; then
             dbg "save_ap: SSID-only change ($RV_SSID -> $FORM_SSID), using iwpriv set_mib instead of wlan_apply restart"
             iwpriv "$WLAN_IF" set_mib "ssid=$FORM_SSID"
