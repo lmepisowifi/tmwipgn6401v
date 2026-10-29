@@ -2209,6 +2209,8 @@ pause_session() {
 }
 
 check_inactivity() {
+    # emergency fix due to tc -s crashing in the newer tc binary, and also since auto uses cake
+    return 0
     [ "${AUTO_PAUSE_ENABLED:-1}" = "1" ] || return
     [ -z "$INACTIVITY_TIMEOUT" ] && return
     [ "$INACTIVITY_TIMEOUT" -le 0 ] 2>/dev/null && return
