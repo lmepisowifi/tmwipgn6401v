@@ -1836,7 +1836,9 @@ restore_qos_sessions() {
         [ -z "$ip" ] && continue
         cid=$(ip_to_cid "$ip")
         [ -z "$cid" ] && continue
-        tc class show dev $WAN_INT classid 1:$cid 2>/dev/null | $BB grep -q ":" && continue
+        # "parent 1:" scopes the kernel-side dump to the root HTB (see the note
+        # in check_inactivity); the classid match is unchanged.
+        tc class show dev $WAN_INT parent 1: classid 1:$cid 2>/dev/null | $BB grep -q ":" && continue
         add_user_qos "$mac"
     done < "$SESSION_FILE"
     # A newly (re)created class above changes how many sessions are online,
@@ -2214,7 +2216,14 @@ pause_session() {
 }
 
 check_inactivity() {
-    # it is an issue in cake, not tc 
+    # The crash seen here with cake leaves (SIGSEGV in tc, then "Kernel panic -
+    # Aiee, killing interrupt handler!") was an issue in cake, not tc: on
+    # kernels < 4.8 sch_cake's ->dump_stats() / ->dump_class_stats() returned
+    # with the root qdisc lock held (BH disabled) when the netlink dump skb ran
+    # out of room inside cake's own attribute writes. Fixed in sch/sch_cake.ko.
+    # The dump below is ALSO scoped to the root HTB ("parent 2:") so it never
+    # walks the per-flow classes of every cake leaf - that is what made it hit
+    # the bug so often (and it is far cheaper).
     [ "${AUTO_PAUSE_ENABLED:-1}" = "1" ] || return
     [ -z "$INACTIVITY_TIMEOUT" ] && return
     [ "$INACTIVITY_TIMEOUT" -le 0 ] 2>/dev/null && return
@@ -2250,7 +2259,11 @@ check_inactivity() {
         if [ -n "$client_ip" ]; then
             cid=$(ip_to_cid "$client_ip")
             if [ -n "$cid" ]; then
-                dl_pkts=$(tc -s class show dev $HOTSPOT_BR classid 2:$cid 2>/dev/null \
+                # "parent 2:" is the only filter the KERNEL applies (it picks
+                # which qdisc to walk); "classid" is filtered by tc afterwards.
+                # Without it the kernel dumps every class of every qdisc on
+                # the bridge, including each active flow of every cake leaf.
+                dl_pkts=$(tc -s class show dev $HOTSPOT_BR parent 2: classid 2:$cid 2>/dev/null \
                     | $BB awk '/^[[:space:]]*Sent/{print $4+0; exit}')
             fi
             [ -z "$dl_pkts" ] && dl_pkts=0
