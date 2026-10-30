@@ -292,6 +292,29 @@
                 <code>iwpriv</code> &mdash; no restart (a channel or width change briefly re-opens this radio).
                 Anything else (radio on/off, TX power, Auto width) restarts only this radio, not both.
             </div>
+            <!-- Lock BSSID (client mode). Only shown when the firmware has the
+                 LME_BSSID_LOCKING MIB key AND this radio is set to Client / WDS
+                 (updateBssidLockVisibility); the firmware ignores the key otherwise. -->
+            <div id="ap-bssid-lock-wrap" style="display:none;">
+                <hr class="my-3">
+                <div class="d-flex align-items-center gap-2">
+                    <div class="wlan-toggle" id="toggle-ap-bssid" role="switch" aria-checked="false"
+                         onclick="onBssidLockToggle('ap')" title="Lock to one specific access point">
+                        <div class="wlan-toggle-knob"></div>
+                    </div>
+                    <span style="font-size:13px;">Lock BSSID</span>
+                </div>
+                <div class="d-flex gap-2 mt-2">
+                    <input type="text" class="form-control" id="ap-bssid-lock"
+                           maxlength="17" placeholder="AA:BB:CC:DD:EE:FF">
+                    <button type="button" class="btn btn-outline-secondary" style="white-space:nowrap;"
+                            id="save-ap-bssid-btn" onclick="saveBssidLock(0)">Save</button>
+                </div>
+                <div style="font-size:11px; color:#888; margin-top:4px;">
+                    Pins this client to one specific access point instead of any AP broadcasting the SSID.
+                    Turn the switch off and Save to remove the lock (the BSSID is set to all zeros).
+                </div>
+            </div>
         </div>
     </div>
 
@@ -433,6 +456,7 @@ function setFormEnabled(enabled) {
     if (enabled) {
         updateMergeFieldsState();
         if (typeof updateNodemcuFieldsState === 'function') updateNodemcuFieldsState();
+        syncBssidLockFields();
     }
 }
 
@@ -646,6 +670,7 @@ function updateVapLock() {
     for (let i = 1; i <= 5; i++) {
         lockToggle('iface-' + i, apClientMode);
     }
+    updateBssidLockVisibility();
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -712,16 +737,25 @@ function buildIfaceCards(ifaces) {
                 ${bssidLockSupported ? `
                 <!-- Only rendered when the firmware has the LME_BSSID_LOCKING MIB key
                      (status.bssidLockSupported); stock firmware gets no lock UI at all. -->
-                <label class="form-label mt-2">Lock to BSSID <span style="font-weight:400; color:#888;">(optional)</span></label>
-                <div class="d-flex gap-2">
-                    <input type="text" class="form-control" id="${id}-bssid-lock"
-                           maxlength="17" placeholder="AA:BB:CC:DD:EE:FF (blank = any AP with this SSID)">
-                    <button type="button" class="btn btn-outline-secondary" style="white-space:nowrap;"
-                            id="save-${id}-bssid-btn" onclick="saveBssidLock(${iface.idx})">Save</button>
-                </div>
-                <div style="font-size:11px; color:#888; margin-top:4px;">
-                    Pins this radio to one specific access point instead of any AP broadcasting the SSID.
-                    Applies while the repeater is the uplink client; leave blank to join any AP with this SSID.
+                <div id="${id}-bssid-wrap" class="mt-2">
+                    <div class="d-flex align-items-center gap-2">
+                        <div class="wlan-toggle" id="toggle-${id}-bssid" role="switch" aria-checked="false"
+                             onclick="onBssidLockToggle('${id}')" title="Lock to one specific access point">
+                            <div class="wlan-toggle-knob"></div>
+                        </div>
+                        <span style="font-size:13px;">Lock BSSID</span>
+                    </div>
+                    <div class="d-flex gap-2 mt-2">
+                        <input type="text" class="form-control" id="${id}-bssid-lock"
+                               maxlength="17" placeholder="AA:BB:CC:DD:EE:FF">
+                        <button type="button" class="btn btn-outline-secondary" style="white-space:nowrap;"
+                                id="save-${id}-bssid-btn" onclick="saveBssidLock(${iface.idx})">Save</button>
+                    </div>
+                    <div style="font-size:11px; color:#888; margin-top:4px;">
+                        Pins this radio to one specific access point instead of any AP broadcasting the SSID.
+                        Applies while the repeater is the uplink client. Turn the switch off and Save to remove
+                        the lock (the BSSID is set to all zeros).
+                    </div>
                 </div>` : ''}` : ''}
             </div>`;
 
@@ -731,16 +765,19 @@ function buildIfaceCards(ifaces) {
         document.getElementById(id + '-ssid').value = iface.ssid || '';
         setToggle(id, iface.disabled === 0);
     });
-
-    startVxdStatusPolling();
 }
 
 // ═══════════════════════════════════════════════════════════════
-// VXD (idx 5) — BSSID lock field. Live connection/auth status now
-// lives on the Site Survey page (Android-style card at the top);
-// this page only needs vxd_status for the lockedBssid value.
+// BSSID lock — switch + field, for the client-mode root (idx 0, card
+// "ap") and the repeater VXD (idx 5, card "iface-5"). Requires the
+// LME_BSSID_LOCKING MIB key (status.bssidLockSupported). Live connection
+// status lives on the Site Survey page. The stored lock arrives with
+// the normal status payload (ifaces[].lockedBssid), so there is no
+// background polling that could overwrite a half-edited switch/field.
+//   switch ON  + valid BSSID + Save  -> lock to that AP
+//   switch OFF + Save                -> BSSID set to 000000000000 (off)
 // ═══════════════════════════════════════════════════════════════
-let vxdPollTimer = null;
+const BSSID_ZERO = '000000000000';
 
 function macToColon(hex) {
     if (!hex || hex.length !== 12) return '';
@@ -750,62 +787,64 @@ function macToHex(colonOrHex) {
     return (colonOrHex || '').toLowerCase().replace(/[^0-9a-f]/g, '');
 }
 
-function applyVxdStatus(vs) {
-    const id = 'iface-5';
-    const lockInput = document.getElementById(id + '-bssid-lock');
-    if (!lockInput) return; // VXD card not currently rendered
+// Card id for an MBSSIB index: the root is the "ap" card, the rest are iface-N
+function bssidLockCardId(idx) { return idx === 0 ? 'ap' : 'iface-' + idx; }
 
-    // Don't stomp on a value the user is actively typing
-    if (document.activeElement !== lockInput) {
-        lockInput.value = macToColon(vs.lockedBssid);
-    }
+// Field is editable only while its switch is on
+function syncBssidLockField(id) {
+    const input = document.getElementById(id + '-bssid-lock');
+    if (!input) return;
+    input.disabled = !isToggleOn(id + '-bssid');
+}
+function syncBssidLockFields() {
+    ['ap', 'iface-5'].forEach(syncBssidLockField);
 }
 
-function loadVxdStatus() {
-    fetch(CGI + '?band=' + currentBand + '&action=vxd_status')
-        .then(r => { if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); })
-        .then(applyVxdStatus)
-        .catch(() => {}); // silent — this is a background poll
+function onBssidLockToggle(id) {
+    localToggle(id + '-bssid');
+    syncBssidLockField(id);
+    const input = document.getElementById(id + '-bssid-lock');
+    if (input && isToggleOn(id + '-bssid')) input.focus();
 }
 
-function startVxdStatusPolling() {
-    if (vxdPollTimer) { clearInterval(vxdPollTimer); vxdPollTimer = null; }
-    if (!document.getElementById('iface-5-bssid-lock')) return; // no VXD card this band
-    loadVxdStatus();
-    vxdPollTimer = setInterval(loadVxdStatus, 5000);
+// Load the stored lock: non-zero = switch on + field filled, else off + blank
+function setBssidLockState(id, hex) {
+    const input = document.getElementById(id + '-bssid-lock');
+    if (!input) return; // lock UI not rendered (unsupported firmware / no VXD card)
+    const h = macToHex(hex);
+    const locked = h.length === 12 && h !== BSSID_ZERO;
+    setToggle(id + '-bssid', locked);
+    input.value = locked ? macToColon(h) : '';
+    syncBssidLockField(id);
 }
 
-// Save VXD BSSID lock  (POST ?action=save_bssid_lock)
+// Client mode: the lock belongs to the root. Otherwise it belongs to the VXD.
+// (The firmware ignores the VXD lock while the root is the client.)
+function updateBssidLockVisibility() {
+    const sup = !!(currentStatus && currentStatus.bssidLockSupported);
+    const apWrap = document.getElementById('ap-bssid-lock-wrap');
+    if (apWrap) apWrap.style.display = (sup && apClientMode) ? '' : 'none';
+    const vxdWrap = document.getElementById('iface-5-bssid-wrap');
+    if (vxdWrap) vxdWrap.style.display = (sup && !apClientMode) ? '' : 'none';
+}
+
+// Save BSSID lock  (POST ?action=save_bssid_lock&idx=0|5)
 function saveBssidLock(idx) {
-    const id = 'iface-' + idx;
-    const raw = document.getElementById(id + '-bssid-lock').value.trim();
-    const hex = macToHex(raw);
+    const id  = bssidLockCardId(idx);
+    const on  = isToggleOn(id + '-bssid');
+    const hex = macToHex(document.getElementById(id + '-bssid-lock').value.trim());
 
-    if (raw && hex.length !== 12) {
-        toastr["warning"]('Enter a full MAC address (AA:BB:CC:DD:EE:FF) or leave it blank.', "Error");
+    if (on && (hex.length !== 12 || hex === BSSID_ZERO)) {
+        toastr["warning"]('Enter the full BSSID to lock to (AA:BB:CC:DD:EE:FF), or turn the switch off.', "Error");
         return;
     }
 
+    // Switch off = lock disabled = all-zero BSSID (the firmware's "not locked" value)
+    const bssid = on ? hex : BSSID_ZERO;
+
     setFormEnabled(false);
-    startCountdown('Applying');
-    let aborted = false;
-    fetch(CGI + '?action=save_bssid_lock&band=' + currentBand, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-        body: 'bssid=' + encodeURIComponent(hex)
-    })
-    .then(r => {
-        if (r && !r.ok) { aborted = true; return r.text().then(t => { throw new Error(t || ('HTTP ' + r.status)); }); }
-    })
-    .catch(err => {
-        if (aborted) {
-            if (countdownTimer) { clearInterval(countdownTimer); countdownTimer = null; }
-            hideOverlay();
-            setFormEnabled(true);
-            toastr["warning"](err.message || 'Save failed', "Error");
-        }
-    });
-    setTimeout(() => { if (!aborted) pollUntilBack(); }, 4500);
+    sendLive(CGI + '?action=save_bssid_lock&band=' + currentBand + '&idx=' + idx,
+             'bssid=' + bssid);
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -852,6 +891,12 @@ function applyStatus(status) {
 
     // VAPs and VXD
     buildIfaceCards(status.ifaces.filter(i => i.type !== 'ap'));
+
+    // BSSID lock switch state (client-mode root + VXD)
+    const lockAp  = status.ifaces.find(i => i.type === 'ap');
+    const lockVxd = status.ifaces.find(i => i.type === 'vxd');
+    setBssidLockState('ap',      lockAp  && lockAp.lockedBssid);
+    setBssidLockState('iface-5', lockVxd && lockVxd.lockedBssid);
 
     // Apply client-mode lock state
     updateVapLock();

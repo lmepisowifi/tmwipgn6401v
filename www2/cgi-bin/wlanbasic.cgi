@@ -822,11 +822,17 @@ if [ "$REQUEST_METHOD" = "GET" ]; then
 
             SE=$(json_esc "$SSID")
             PE=$(json_esc "$PSK")
+            # LME_BSSID_LOCKING is only consumed for the root (idx 0, client mode)
+            # and the repeater VXD (idx 5); empty when the key can't be read.
+            LKB=""
+            if [ "$I" = "0" ] || [ "$I" = "5" ]; then
+                LKB=$(lme_lock_get "$TBL_PFX" "$I")
+            fi
             if   [ "$I" = "0" ]; then TY="ap"
             elif [ "$I" = "5" ]; then TY="vxd"
             else                       TY="vap"
             fi
-            IFACES_J="${IFACES_J}${ISEP}{\"idx\":${I},\"type\":\"${TY}\",\"ssid\":\"${SE}\",\"disabled\":${DIS},\"wlanMode\":${WMOD},\"wlanBand\":${WBD},\"encrypt\":${ENC},\"unicastCipher\":${UC},\"wpa2UnicastCipher\":${U2C},\"psk\":\"${PE}\",\"wep\":${WEP},\"wepKeyType\":${WKT},\"wepDefaultKey\":${WDK},\"wepKey\":\"${WEPKEY}\",\"authType\":${AUTHTYPE}}"
+            IFACES_J="${IFACES_J}${ISEP}{\"idx\":${I},\"type\":\"${TY}\",\"ssid\":\"${SE}\",\"disabled\":${DIS},\"wlanMode\":${WMOD},\"wlanBand\":${WBD},\"encrypt\":${ENC},\"unicastCipher\":${UC},\"wpa2UnicastCipher\":${U2C},\"psk\":\"${PE}\",\"wep\":${WEP},\"wepKeyType\":${WKT},\"wepDefaultKey\":${WDK},\"wepKey\":\"${WEPKEY}\",\"authType\":${AUTHTYPE},\"lockedBssid\":\"${LKB}\"}"
             ISEP=","
             I=$((I + 1))
         done
@@ -1506,11 +1512,15 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
         exit 0
     fi
 
-    # ── action=save_bssid_lock: pin/unpin VXD (idx 5) to one specific AP ──
-    # Body: bssid=<12 hex chars>  (empty or all-zero clears the lock)
-    # Writes the custom LME_BSSID_LOCKING key (WLAN[1]_MBSSIB_TBL.5.*), which the
-    # patched setupWLan() feeds to the driver as dot11DesiredBssid (bssid2join);
-    # the patched driver no longer skips that check for the repeater vxd.
+    # ── action=save_bssid_lock: pin/unpin the uplink client to one specific AP ──
+    # Query: idx=0 (the root, while it is in Client / WDS mode) or idx=5 (the
+    #        repeater VXD, the default when idx is absent)
+    # Body:  bssid=<12 hex chars>  (empty or all-zero clears the lock)
+    # Writes the custom LME_BSSID_LOCKING key (WLAN[1]_MBSSIB_TBL.<idx>.*), which
+    # the patched setupWLan() feeds to the driver as dot11DesiredBssid
+    # (bssid2join); all-zero is "not locked" and is also what removes a lock
+    # applied by an earlier setupWLan(). The key is ignored for idx 0 outside
+    # Client mode and for idx 5 while the root is the client.
     # Only available on firmware that has the key (lme-bssid-locking.patch):
     # anywhere else this answers 501 and writes nothing.
     if [ "$ACTION" = "save_bssid_lock" ]; then
@@ -1521,6 +1531,21 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
             printf "BSSID locking is not supported by this firmware"
             exit 0
         fi
+
+        LK_IDX=$(echo "$QUERY_STRING" \
+            | busybox sed -n 's/.*idx=\([^&]*\).*/\1/p' \
+            | busybox tr -d '\r\n')
+        case "$LK_IDX" in
+            "") LK_IDX=5 ;;
+            0|5) ;;
+            *)
+                dbg "WARN save_bssid_lock: invalid index '$LK_IDX'"
+                printf "Status: 400 Bad Request\r\n"
+                printf "Content-Type: text/plain\r\n\r\n"
+                printf "BSSID lock only applies to the client (0) or VXD (5) interface"
+                exit 0
+                ;;
+        esac
 
         RAW_BSSID=$(pd_str bssid)
         BSSID=$(printf '%s' "$RAW_BSSID" | busybox tr 'A-Z' 'a-z' | busybox sed 's/[^0-9a-f]//g')
@@ -1535,13 +1560,17 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
             exit 0
         fi
 
-        mib set "${TBL_PFX}.5.${LME_BSSID_KEY}" "$BSSID"
+        mib set "${TBL_PFX}.${LK_IDX}.${LME_BSSID_KEY}" "$BSSID"
         mib commit
-        dbg "save_bssid_lock: band=$BAND ${TBL_PFX}.5.${LME_BSSID_KEY}=$BSSID"
+        dbg "save_bssid_lock: band=$BAND ${TBL_PFX}.${LK_IDX}.${LME_BSSID_KEY}=$BSSID"
 
-        wlan_apply restart
-        dbg "save_bssid_lock: also restarting multi-ap agent service"
-        sysconf multi_ap_agent_restart
+        # Restart only what consumes the key (same as sta_connect): the VXD on
+        # its own, or the whole band when the root itself is the client.
+        wl_restart_scoped "$BAND" "$LK_IDX"
+        if [ "$LK_IDX" = "5" ]; then
+            dbg "save_bssid_lock idx=5: also restarting multi-ap agent service"
+            sysconf multi_ap_agent_restart
+        fi
 
         printf "Status: 200 OK\r\n"
         printf "Content-Type: text/plain\r\n\r\n"
