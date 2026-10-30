@@ -206,12 +206,12 @@
                 <div class="col-sm-6">
                     <label class="form-label" for="r-qdisc">Queue Discipline</label>
                     <select class="form-select" id="r-qdisc">
-                        <option value="auto">Auto (cake, then fq_codel, then sfq)</option>
+                        <option value="auto">Auto (fq_codel, then sfq)</option>
                         <option value="cake">cake (forced)</option>
                         <option value="fq_codel">fq_codel (forced)</option>
                         <option value="sfq">sfq (forced)</option>
                     </select>
-                    <div class="field-hint">Queue type inside each client's gaming and bulk lanes. Auto uses cake when it can be loaded, otherwise fq_codel, otherwise sfq. Forcing cake or fq_codel never falls back: if it can't be used, client queues are left as plain FIFO. Takes effect on Save &amp; Apply.</div>
+                    <div class="field-hint">Queue type inside each client's gaming and bulk lanes. Auto uses fq_codel when it can be loaded, otherwise sfq (choose cake to force it). Forcing cake or fq_codel never falls back: if it can't be used, client queues are left as plain FIFO. Takes effect on Save &amp; Apply.</div>
                     <div class="field-hint" id="qdisc-status"></div>
                 </div>
             </div>

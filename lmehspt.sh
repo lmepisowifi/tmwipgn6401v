@@ -113,6 +113,11 @@ QOS_BULK_TARGET_MS="80"
 # cake is the active qdisc: then they become cake too, because triple-isolate
 # already does the per-host fairness that emulation was faking.
 QOS_QDISC="auto"
+# CHANGED: "auto" skips cake (fq_codel, else sfq) while this is 0. Lives in
+# lmehspt.sh, which every OTA replaces wholesale, so it holds until the next
+# update ships a lmehspt.sh without it (or with 1). An admin-forced "cake" is
+# NOT affected. Set 1 to give auto its old cake-first order back.
+QOS_AUTO_CAKE="0"
 QOS_FQ_CODEL_KO="/lmepisowifi/sch/sch_fq_codel.ko"
 # Options for cake when it is the active leaf qdisc (auto or forced cake). cake sits
 # UNDER the HTB classes, which do all the rate shaping, so it runs "unlimited"
@@ -1537,7 +1542,7 @@ qos_qdisc_resolve() {
                 logger -t lmehspt "qos: $note" 2>/dev/null
             fi ;;
         *)
-            if [ "$want" = "auto" ] && _qos_cake_ready; then
+            if [ "$want" = "auto" ] && [ "${QOS_AUTO_CAKE:-0}" = "1" ] && _qos_cake_ready; then
                 # cake replaces fq_codel/sfq (not stacked on them). No note -
                 # the admin page renders any note as a warning.
                 QOS_QDISC_EFFECTIVE="cake"
@@ -2209,8 +2214,7 @@ pause_session() {
 }
 
 check_inactivity() {
-    # emergency fix due to tc -s crashing in the newer tc binary, and also since auto uses cake
-    return 0
+    # it is an issue in cake, not tc 
     [ "${AUTO_PAUSE_ENABLED:-1}" = "1" ] || return
     [ -z "$INACTIVITY_TIMEOUT" ] && return
     [ "$INACTIVITY_TIMEOUT" -le 0 ] 2>/dev/null && return
