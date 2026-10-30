@@ -303,13 +303,24 @@
                         <label for="cm-pw" class="form-label" style="font-size:12px;">Password</label>
                         <input type="password" class="form-control" id="cm-pw" autocomplete="off"
                                placeholder="Network password">
-                        <div class="d-flex align-items-center gap-2 mt-2">
-                            <div class="wlan-toggle" id="cm-show" role="switch" aria-checked="false"
-                                 onclick="toggleShowPw()" title="Show password">
-                                <div class="wlan-toggle-knob"></div>
-                            </div>
-                            <span style="font-size:12px;">Show password</span>
+                    </div>
+                    <!-- Hidden unless the firmware has the LME_BSSID_LOCKING MIB key
+                         (toggled in openConnectModal from bssidLockSupported) -->
+                    <div id="cm-lock-wrap" class="mb-2" style="display:none;align-items:center;gap:.5rem;">
+                        <div class="wlan-toggle" id="cm-lock" role="switch" aria-checked="false"
+                             onclick="toggleLockBssid()" title="Lock to this access point's BSSID">
+                            <div class="wlan-toggle-knob"></div>
                         </div>
+                        <span style="font-size:12px;">Lock BSSID
+                            <span id="cm-lock-bssid" class="bssid" style="margin-left:4px;"></span>
+                        </span>
+                    </div>
+                    <div id="cm-show-wrap" class="mb-2" style="display:flex;align-items:center;gap:.5rem;">
+                        <div class="wlan-toggle" id="cm-show" role="switch" aria-checked="false"
+                             onclick="toggleShowPw()" title="Show password">
+                            <div class="wlan-toggle-knob"></div>
+                        </div>
+                        <span style="font-size:12px;">Show password</span>
                     </div>
                     <div id="cm-open-note" class="mb-1" style="display:none;font-size:12px;color:var(--text-secondary);">
                         This is an open network &mdash; no password required.
@@ -1159,6 +1170,7 @@
             ' \u2014 ' + (getIs5G() ? '5 GHz (wlan0)' : '2.4 GHz (wlan1)');
 
         var pwWrap  = document.getElementById('cm-pw-wrap');
+        var showWrap = document.getElementById('cm-show-wrap');
         var openNote = document.getElementById('cm-open-note');
         var pw      = document.getElementById('cm-pw');
         var showChk = document.getElementById('cm-show');
@@ -1167,16 +1179,35 @@
         showChk.classList.remove('on');
         showChk.setAttribute('aria-checked', 'false');
 
+        // BSSID lock: only offered when the firmware has LME_BSSID_LOCKING and
+        // the scan result carries a full 12-hex-char BSSID. Always starts off.
+        var lockWrap = document.getElementById('cm-lock-wrap');
+        var lockChk  = document.getElementById('cm-lock');
+        var apBssid  = String(ap.mac || '').toLowerCase().replace(/[^0-9a-f]/g, '');
+        lockChk.classList.remove('on');
+        lockChk.setAttribute('aria-checked', 'false');
+        document.getElementById('cm-lock-bssid').textContent = apBssid.length === 12 ? '(' + formatBssid(ap.mac) + ')' : '';
+        lockWrap.style.display = (bssidLockSupported && apBssid.length === 12) ? 'flex' : 'none';
+
         if (m.open) {
             pwWrap.style.display   = 'none';
+            showWrap.style.display = 'none';
             openNote.style.display = '';
         } else {
             pwWrap.style.display   = '';
+            showWrap.style.display = 'flex';
             openNote.style.display = 'none';
         }
 
         var modal = getConnectModal();
         if (modal) modal.show();
+    }
+
+    // Lock-to-BSSID toggle
+    function toggleLockBssid() {
+        var t = document.getElementById('cm-lock');
+        t.classList.toggle('on');
+        t.setAttribute('aria-checked', t.classList.contains('on') ? 'true' : 'false');
     }
 
     // Show/hide password toggle
@@ -1226,6 +1257,18 @@
                    '&unicastCipher='     + (m.uc  || 0) +
                    '&wpa2UnicastCipher=' + (m.u2c || 2) +
                    '&psk='               + encodeURIComponent(psk);
+
+        // Always resend the lock state when supported (the BSSID, or empty to
+        // clear) so a previous lock can't linger across an unrelated connect.
+        if (bssidLockSupported) {
+            var lockOn = document.getElementById('cm-lock').classList.contains('on');
+            var lockHex = lockOn ? String(ap.mac || '').toLowerCase().replace(/[^0-9a-f]/g, '') : '';
+            if (lockOn && lockHex.length !== 12) {
+                toastr["warning"]('This access point did not report a usable BSSID, so it cannot be locked.', 'Cannot lock BSSID');
+                return;
+            }
+            body += '&bssid=' + lockHex;
+        }
 
         var btn = document.getElementById('cm-connect-btn');
         btn.disabled = true;
