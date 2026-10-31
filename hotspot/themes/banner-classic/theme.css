@@ -401,16 +401,16 @@ html body .btn {
 }
 html body .btn:focus { box-shadow: var(--focus-shadow) !important; outline: none; }
 
-/* the Pause / Insert Coin / WiFi Rates stack: centred, in this order */
+/* the WiFi Rates / Pause (Resume) / Insert Coin stack: centred, rates on top */
 html body #v-login > .d-flex.flex-column.gap-2,
 html body #v-status > .d-flex.flex-column.gap-2 {
   align-items: center;
   gap: 10px !important;
 }
-html body #btn-pause,
-html body #btn-resume                { order: 1; }
 html body #btn-rates-login,
-html body #btn-rates-status          { order: 2; }
+html body #btn-rates-status          { order: 1; }
+html body #btn-pause,
+html body #btn-resume                { order: 2; }
 html body #btn-coin-login,
 html body #btn-coin-status           { order: 3; }
 html body #v-login .d-flex .btn,
