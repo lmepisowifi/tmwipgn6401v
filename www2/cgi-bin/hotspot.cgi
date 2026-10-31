@@ -3727,6 +3727,9 @@ ptheme_json() {
 
 if echo "$QS" | $BB grep -q "action=portal_theme_list"; then
     _pt_cur=$(ptheme_raw)
+    # legacy id (releases up to 1.5.70) -> current id, so the picker highlights
+    # the right card; "Use this theme" then rewrites the file with the new id
+    [ "$_pt_cur" = "pisofi" ] && _pt_cur="banner-classic"
     ptheme_usable "$_pt_cur" || _pt_cur="default"
     # Stock look first, then the rest alphabetically (the glob is sorted). A
     # folder that is not a usable theme is skipped, so a half-copied theme

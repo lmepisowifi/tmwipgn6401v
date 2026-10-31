@@ -29,6 +29,8 @@ PORTAL_FOOTER="Your device is identified by MAC address. Vouchers are single-use
 PORTAL_THEME="default"
 if [ -f "$HDATA/portal_theme" ]; then
     _pt=$($BB head -n1 "$HDATA/portal_theme" 2>/dev/null | $BB tr -cd 'a-z0-9_-' | $BB cut -c1-32)
+    # legacy id (releases up to 1.5.70) -> current id; see portal_theme.sh
+    [ "$_pt" = "pisofi" ] && _pt="banner-classic"
     [ -n "$_pt" ] && [ -f "/lmepisowifi/hotspot/themes/$_pt/theme.info" ] \
         && [ -f "/lmepisowifi/hotspot/themes/$_pt/theme.css" ] && PORTAL_THEME="$_pt"
 fi

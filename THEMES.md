@@ -13,10 +13,15 @@ text are the same in every theme.
 
 Shipped themes:
 
-| id        | Look                                                                                         |
-|-----------|----------------------------------------------------------------------------------------------|
-| `default` | The built-in lmepisowifi look (no stylesheet; selecting it removes the choice).              |
-| `pisofi`  | Familiar to customers of PisoFi-style portals: title bar over a full-width banner, striped time bar, a "Connection Info" card, big blue Insert Coin and green voucher buttons. Light and dark. |
+| id               | Look                                                                                  |
+|------------------|---------------------------------------------------------------------------------------|
+| `default`        | The built-in lmepisowifi look (no stylesheet; selecting it removes the choice).       |
+| `banner-classic` | Title bar over a full-width banner, striped time bar, a "Session Info" card, big blue Insert Coin and green voucher buttons. Light and dark. |
+
+> **Renamed.** Releases up to 1.5.70 shipped this theme under a different id (`pisofi`). A device
+> that had it selected keeps the look: the old id is mapped to `banner-classic` automatically.
+> Custom CSS that targets the old id, `html[data-lme-theme="pisofi"]`, has to be changed to
+> `html[data-lme-theme="banner-classic"]`.
 
 ## How it works
 
@@ -36,7 +41,7 @@ hotspot/cgi-bin/portal_theme.sh  serves the chosen theme.css  (also ?id=<id>, us
   with a release are refreshed by the update; **a theme you copy onto a device by hand is lost
   on the next OTA** unless it is also in the repository (send a pull request, or re-copy it).
 * The page tags `<html data-lme-theme="<id>">` (the saved theme, or `default`), so Custom CSS can
-  target one theme: `html[data-lme-theme="pisofi"] .btn { ... }`. `<html data-theme="dark|light">`
+  target one theme: `html[data-lme-theme="banner-classic"] .btn { ... }`. `<html data-theme="dark|light">`
   is the portal's own colour mode.
 
 ### Safety net
@@ -102,7 +107,7 @@ two colour modes. The rules below are what makes a theme behave.
   external file would stall the portal. Use a system font stack.
 * **Keep it small.** The theme is fetched on every portal load (it is deliberately not cached: it
   is served from one URL whatever theme is selected, so a stale copy must never be possible). The
-  PisoFi theme is ~18 KB; staying well under ~30 KB keeps the first paint quick on a weak
+  Banner Classic theme is ~18 KB; staying well under ~30 KB keeps the first paint quick on a weak
   hotspot link.
 * **Test both modes, narrow and wide**: 320 px phones matter, and long portal titles must not
   push buttons off-screen.
@@ -126,8 +131,10 @@ Custom CSS loads after the theme, so colour variables set there win as usual. A 
 ## Licensing and provenance
 
 Themes are first-party source files like any other: keep the SPDX header and the AGPLv3 notice
-(see `PROVENANCE.md`). If a theme imitates the *look* of another system, write it from scratch —
-**do not copy another system's CSS, JavaScript, images, fonts or logos** into this repository, and
-do not use its name or branding as your own. The shipped `pisofi` theme uses a similar layout and
-colour language only, ships no PisoFi code or artwork, and is not affiliated with or endorsed by
-PisoFi.
+(see `PROVENANCE.md`). If a theme takes inspiration from the *look* of another system, write it
+from scratch — **do not copy another system's CSS, JavaScript, images, fonts or logos** into this
+repository, and **do not use its name or branding** in a theme's id, name, description or comments
+(names and logos are trademarks, and a theme must not suggest it comes from, or is endorsed by,
+someone else). The shipped `banner-classic` theme is written from scratch, uses the common
+Bootstrap 4 colour palette, ships no third-party CSS, JavaScript, fonts or artwork, and is not
+affiliated with or endorsed by any other captive-portal system.

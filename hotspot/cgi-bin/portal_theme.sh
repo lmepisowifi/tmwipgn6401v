@@ -44,6 +44,9 @@ ID=$(printf '&%s' "$QUERY_STRING" | $BB sed -n 's/.*&id=\([^&]*\).*/\1/p' | $BB 
 if [ -z "$ID" ] && [ -f "$SEL" ]; then
     ID=$($BB head -n1 "$SEL" 2>/dev/null | $BB tr -cd 'a-z0-9_-' | $BB cut -c1-32)
 fi
+# Legacy id: releases up to 1.5.70 shipped the "banner-classic" theme under
+# another folder name. Keep a saved choice (and old test links) working.
+[ "$ID" = "pisofi" ] && ID="banner-classic"
 
 CSS="$TDIR/$ID/theme.css"
 if [ -z "$ID" ] || [ "$ID" = "default" ] || [ ! -f "$CSS" ]; then

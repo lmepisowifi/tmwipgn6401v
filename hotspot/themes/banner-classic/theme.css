@@ -11,13 +11,13 @@
  */
 
 /* ===========================================================================
-   Theme: "PisoFi Style"
+   Theme: "Banner Classic"
 
-   Written from scratch with the public look of PisoFi captive portals as a
-   visual reference: a title bar over a full-width banner, a tagline band, a
-   striped time bar, a "Connection Info" card and big blue / green buttons.
-   No PisoFi code, images or logos are used; the icons below are inline SVG
-   drawn for this project.
+   Written from scratch: a title bar over a full-width banner, a tagline band,
+   a striped time bar, a "Session Info" card and big blue / green buttons.
+   It uses no code, images, fonts or logos from any other captive-portal
+   system; the icons below are inline SVG drawn for this project, and the
+   colours are the common Bootstrap 4 palette.
 
    How it works: this file is layered over the stock portal styles (see
    index.html), so it restyles the SAME markup; the portal's behaviour does
@@ -96,13 +96,13 @@
   --btn-rates-border: #868e96;
   --btn-rates-color:  #ced4da;
 
-  --pf-track:  #343a40;
-  --pf-badge:  #495057;
-  --pf-line:   rgba(255, 255, 255, .14);
-  --pf-active: #86efac;
+  --bc-track:  #343a40;
+  --bc-badge:  #495057;
+  --bc-line:   rgba(255, 255, 255, .14);
+  --bc-active: #86efac;
 }
 
-/* light: the signature PisoFi look */
+/* light: the signature look */
 :root[data-theme="light"] {
   --bg-body:          #f1f3f5;
   --bg-surface:       #ffffff;
@@ -121,15 +121,15 @@
   --btn-rates-border: #6c757d;
   --btn-rates-color:  #495057;
 
-  --pf-track:  #e9ecef;
-  --pf-badge:  #6c757d;
-  --pf-line:   rgba(0, 0, 0, .1);
-  --pf-active: #1e7e34;
+  --bc-track:  #e9ecef;
+  --bc-badge:  #6c757d;
+  --bc-line:   rgba(0, 0, 0, .1);
+  --bc-active: #1e7e34;
 }
 
 /* ------------------------------------------------------------------- base */
-/* The stock sheet forces Nunito on everything with !important; PisoFi uses the
-   plain system UI font, which also means the Nunito file is never fetched. */
+/* The stock sheet forces Nunito on everything with !important; this theme uses
+   the plain system UI font, which also means the Nunito file is never fetched. */
 html body,
 html body *,
 html body *::before,
@@ -273,7 +273,7 @@ html body .view-title {
   font-size: 1.05rem;
   font-weight: 700;
   color: var(--text-primary);
-  border-top: 1px solid var(--pf-line);
+  border-top: 1px solid var(--bc-line);
 }
 html body .view-subtitle {
   margin: 0 0 16px;
@@ -281,7 +281,7 @@ html body .view-subtitle {
   text-align: center;
   font-size: .85rem;
   color: var(--text-secondary);
-  border-bottom: 1px solid var(--pf-line);
+  border-bottom: 1px solid var(--bc-line);
 }
 
 /* ---------------------------------------------------------- time bar */
@@ -307,7 +307,7 @@ html body .progress-wrap .expiry-notice {
 html body .progress-wrap .progress-bg {
   grid-row: 2; grid-column: 1;
   height: 2.5rem;
-  background: var(--pf-track);
+  background: var(--bc-track);
   border: 0;
   border-radius: .25rem;
 }
@@ -316,8 +316,8 @@ html body .progress-wrap .progress-fill {
   /* stripes sit on top of whatever colour the portal picks (green/amber/red by time left) */
   background-image: linear-gradient(45deg, rgba(255, 255, 255, .28) 25%, transparent 25%, transparent 50%, rgba(255, 255, 255, .28) 50%, rgba(255, 255, 255, .28) 75%, transparent 75%, transparent) !important;
   background-size: 1.2rem 1.2rem !important;
-  -webkit-animation: pf-stripes 1s linear infinite;
-          animation: pf-stripes 1s linear infinite;
+  -webkit-animation: bc-stripes 1s linear infinite;
+          animation: bc-stripes 1s linear infinite;
 }
 html body .progress-wrap .time-text-main {
   grid-row: 2; grid-column: 1;
@@ -334,13 +334,13 @@ html body .progress-wrap .time-label-main {
   justify-self: center;
   margin: 6px 0 0;
 }
-@-webkit-keyframes pf-stripes { from { background-position: 1.2rem 0; } to { background-position: 0 0; } }
-@keyframes pf-stripes         { from { background-position: 1.2rem 0; } to { background-position: 0 0; } }
+@-webkit-keyframes bc-stripes { from { background-position: 1.2rem 0; } to { background-position: 0 0; } }
+@keyframes bc-stripes         { from { background-position: 1.2rem 0; } to { background-position: 0 0; } }
 @media (prefers-reduced-motion: reduce) {
   html body .progress-wrap .progress-fill { -webkit-animation: none; animation: none; }
 }
 
-/* ---------------------------------------------------- Connection Info card */
+/* ------------------------------------------------------- Session Info card */
 html body .session-info {
   margin: 0 0 16px;
   padding: 12px 0 6px;
@@ -349,7 +349,7 @@ html body .session-info {
   border-radius: .25rem;
 }
 html body .session-info::before {
-  content: "Connection Info";
+  content: "Session Info";
   display: block;
   margin-bottom: 6px;
   text-align: center;
@@ -376,7 +376,7 @@ html body .session-row .sv {
   margin-left: 12px;
   padding: .25em .7em;
   border-radius: 10rem;
-  background: var(--pf-badge);
+  background: var(--bc-badge);
   color: #fff !important;          /* beats the inline coin colour on the coins row */
   font-size: 75%;
   font-weight: 700;
@@ -401,7 +401,7 @@ html body .btn {
 }
 html body .btn:focus { box-shadow: var(--focus-shadow) !important; outline: none; }
 
-/* the Pause / Insert Coin / WiFi Rates stack: centred, PisoFi's order */
+/* the Pause / Insert Coin / WiFi Rates stack: centred, in this order */
 html body #v-login > .d-flex.flex-column.gap-2,
 html body #v-status > .d-flex.flex-column.gap-2 {
   align-items: center;
@@ -470,7 +470,7 @@ html body .btn-rates::before {
   margin: -2px 6px 0 0;
 }
 
-/* Voucher box (PisoFi's "Use WiPass" row) */
+/* Voucher box: a single row under the buttons */
 html body .add-panel {
   margin-top: 14px;
   padding-top: 0;
@@ -534,8 +534,8 @@ html body .coin-display {
   border-radius: .25rem;
   background: var(--bg-surface-hover);
 }
-html body .coin-preview.active { color: var(--pf-active); }
-html body .coin-bar-bg { height: 1rem; border: 0; border-radius: .25rem; background: var(--pf-track); }
+html body .coin-preview.active { color: var(--bc-active); }
+html body .coin-bar-bg { height: 1rem; border: 0; border-radius: .25rem; background: var(--bc-track); }
 html body .coin-bar-fill { border-radius: .25rem; }
 
 /* ----------------------------------------------------------------- footer */

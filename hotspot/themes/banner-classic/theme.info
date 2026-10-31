@@ -1,0 +1,13 @@
+# ---------------------------------------------------------------------------
+# lmepisowifi — https://github.com/lmepisowifi/tmwipgn6401v
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 The lmepisowifi Project — see AUTHORS
+# ---------------------------------------------------------------------------
+# Written from scratch for this project. It contains no code, images, fonts
+# or logos from any other captive-portal system, and is not affiliated with
+# or endorsed by any of them.
+name=Banner Classic
+description=A bold, simple layout: full-width banner under a dark title bar, striped time bar, a Session Info card, and big blue Insert Coin / green voucher buttons. Light and dark.
+author=lmepisowifi
+license=AGPL-3.0-or-later
+swatch=#007bff,#28a745,#ffc107,#212529
