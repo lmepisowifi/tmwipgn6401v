@@ -27,13 +27,32 @@
     <style>
         html, body { height: 100%; overflow: hidden; }
 
-        /* Make the page below the navbar fill remaining height */
+        /* style.css forces `font-family: Nunito !important` on *, which also hits
+           xterm's rows and its cell-measure element. xterm sizes every cell from
+           that measurement, so a proportional font gives wide cells and spaced-out
+           letters. Pin the terminal back to a monospace font (same !important so
+           it wins; .xterm * is more specific than the global *). */
+        .xterm, .xterm *, .xterm *::before, .xterm *::after {
+            font-family: 'Cascadia Code', 'Fira Code', 'DejaVu Sans Mono',
+                         'Liberation Mono', 'Courier New', monospace !important;
+        }
+
+        /* Fill exactly the VISIBLE viewport. 100vh is the largest viewport on mobile
+           browsers (URL bar hidden), so calc(100vh - 56px) pushed the quick-action
+           toolbar and status bar below the screen. Let body be a column at 100dvh
+           (visualViewport sets it exactly, see script) and the wrapper take the rest,
+           whatever the real navbar height is. */
+        body { display: flex; flex-direction: column; height: 100vh; height: 100dvh; }
+        body > nav.navbar { flex-shrink: 0; }
+
         .terminal-wrapper {
             display: flex;
             flex-direction: column;
-            height: calc(100vh - 56px); /* 56px = navbar height */
+            flex: 1 1 auto;
+            min-height: 0;
             background: #0d0d0d;
-            padding: 6px 8px; /* <-- PADDING MOVED HERE */
+            /* bottom: keep the toolbar/status bar clear of the fixed AGPL source notice */
+            padding: 6px 8px 22px;
         }
 
         #terminal-container {
@@ -286,6 +305,18 @@
                 () => setTimeout(() => { fitAddon.fit(); sendResize(); }, 300));
 
             connect();
+        }
+
+        // Track the visible viewport (URL bar / on-screen keyboard) so the toolbar
+        // and status bar never end up under the screen edge or the keyboard.
+        // The terminal's ResizeObserver refits whenever this changes the height.
+        if (window.visualViewport) {
+            const syncViewportHeight = () => {
+                document.body.style.height =
+                    Math.round(window.visualViewport.height * window.visualViewport.scale) + 'px';
+            };
+            window.visualViewport.addEventListener('resize', syncViewportHeight);
+            syncViewportHeight();
         }
 
         // 3. FINALLY, call loadAll AT THE VERY END, now that initTerminal actually exists!

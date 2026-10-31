@@ -164,38 +164,38 @@
             <hr class="my-3" style="border-color:var(--border-color);">
 
             <div class="d-flex align-items-center gap-2 mt-2">
-                <div class="wlan-toggle" id="ts-accept-routes" onclick="this.classList.toggle('on')" role="switch" title="Accept routes advertised by other tailnet devices"><div class="wlan-toggle-knob"></div></div>
+                <div class="wlan-toggle" id="ts-accept-routes" onclick="cfgToggle(this)" role="switch" title="Accept routes advertised by other tailnet devices"><div class="wlan-toggle-knob"></div></div>
                 <span>Accept routes from other devices <span class="field-hint d-inline">(use subnet routes other devices advertise on your tailnet)</span></span>
             </div>
 
             <div class="d-flex align-items-center gap-2 mt-3">
-                <div class="wlan-toggle" id="ts-accept-dns" onclick="this.classList.toggle('on')" role="switch" title="Accept DNS settings from tailnet"><div class="wlan-toggle-knob"></div></div>
+                <div class="wlan-toggle" id="ts-accept-dns" onclick="cfgToggle(this)" role="switch" title="Accept DNS settings from tailnet"><div class="wlan-toggle-knob"></div></div>
                 <span>Accept DNS settings <span class="field-hint d-inline">(use MagicDNS / nameservers pushed by your tailnet)</span></span>
             </div>
 
             <div class="d-flex align-items-center gap-2 mt-3">
-                <div class="wlan-toggle" id="ts-ssh" onclick="this.classList.toggle('on')" role="switch" title="Enable Tailscale SSH"><div class="wlan-toggle-knob"></div></div>
+                <div class="wlan-toggle" id="ts-ssh" onclick="cfgToggle(this)" role="switch" title="Enable Tailscale SSH"><div class="wlan-toggle-knob"></div></div>
                 <span>Enable Tailscale SSH <span class="field-hint d-inline">(allow SSH to this node over the tailnet)</span></span>
             </div>
 
             <div class="d-flex align-items-center gap-2 mt-3">
-                <div class="wlan-toggle" id="ts-exit" onclick="this.classList.toggle('on')" role="switch" title="Advertise as exit node"><div class="wlan-toggle-knob"></div></div>
+                <div class="wlan-toggle" id="ts-exit" onclick="cfgToggle(this)" role="switch" title="Advertise as exit node"><div class="wlan-toggle-knob"></div></div>
                 <span>Advertise as exit node <span class="field-hint d-inline">(lets tailnet devices route all traffic through this device — approve in Tailscale admin console)</span></span>
             </div>
 
             <hr class="my-3" style="border-color:var(--border-color);">
 
             <label class="form-label">Node hostname <span class="field-hint d-inline">(optional override)</span></label>
-            <input type="text" class="form-control" id="ts-hostname" placeholder="rtkgw" maxlength="63" autocomplete="off" spellcheck="false">
+            <input type="text" class="form-control" id="ts-hostname" placeholder="rtkgw" maxlength="63" autocomplete="off" spellcheck="false" oninput="markDirty()">
             <div class="field-hint mb-3">Letters, numbers, and hyphens only. Leave blank to use this device's default hostname.</div>
 
             <label class="form-label">ACL tags <span class="field-hint d-inline">(comma-separated)</span></label>
-            <input type="text" class="form-control" id="ts-tags" placeholder="tag:hotspot" autocomplete="off" spellcheck="false">
+            <input type="text" class="form-control" id="ts-tags" placeholder="tag:hotspot" autocomplete="off" spellcheck="false" oninput="markDirty()">
             <div class="field-hint">e.g. <code>tag:hotspot</code> — the tag(s) must already exist in your tailnet's ACL policy.</div>
 
             <div class="d-flex gap-2 flex-wrap mt-3">
                 <button class="btn btn-primary" onclick="saveConfig()">Save &amp; Apply</button>
-                <button class="btn btn-outline-secondary" onclick="loadStatus()">Refresh</button>
+                <button class="btn btn-outline-secondary" onclick="refreshClick()">Refresh</button>
             </div>
         </div>
     </div>
@@ -211,6 +211,15 @@ function hideOverlay(){ document.getElementById('overlay').classList.remove('vis
 
 var _pollTimer = null;
 var currentRoutes = [];
+// True once the user edits any config field (toggles, routes, hostname, tags)
+// and false again after a successful save / explicit Refresh. While true the
+// 5s status poll must NOT overwrite those fields, otherwise an unsaved change
+// snaps back to the server's value.
+var cfgDirty = false;
+var _statusSeq = 0;   // drop out-of-order status responses
+function markDirty(){ cfgDirty = true; }
+function cfgToggle(el){ el.classList.toggle('on'); markDirty(); }
+function refreshClick(){ cfgDirty = false; loadStatus(); }
 
 function esc(s) {
     return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;')
@@ -246,21 +255,21 @@ function applyStatus(d){
     if (d.enabled) sw.classList.add('on'); else sw.classList.remove('on');
     document.getElementById('ts-switch-label').textContent = d.enabled ? 'On' : 'Off';
 
-    document.getElementById('ts-ssh').classList.toggle('on', !!d.ssh);
-    document.getElementById('ts-exit').classList.toggle('on', !!d.exit_node);
-    document.getElementById('ts-accept-routes').classList.toggle('on', !!d.accept_routes);
-    document.getElementById('ts-accept-dns').classList.toggle('on', !!d.accept_dns);
+    // Config fields (toggles, hostname, tags, routes) are only synced from the
+    // server while the user has no unsaved edits, so a slow "Save & Apply"
+    // doesn't get its toggles reverted by the background poll.
+    if (!cfgDirty) {
+        document.getElementById('ts-ssh').classList.toggle('on', !!d.ssh);
+        document.getElementById('ts-exit').classList.toggle('on', !!d.exit_node);
+        document.getElementById('ts-accept-routes').classList.toggle('on', !!d.accept_routes);
+        document.getElementById('ts-accept-dns').classList.toggle('on', !!d.accept_dns);
 
-    var hostnameEl = document.getElementById('ts-hostname');
-    if (document.activeElement !== hostnameEl) hostnameEl.value = d.hostname || '';
-    var tagsEl = document.getElementById('ts-tags');
-    if (document.activeElement !== tagsEl) tagsEl.value = d.tags || '';
+        var hostnameEl = document.getElementById('ts-hostname');
+        hostnameEl.value = d.hostname || '';
+        var tagsEl = document.getElementById('ts-tags');
+        tagsEl.value = d.tags || '';
 
-    // Routes list: server sends one comma-separated string. Keep our local
-    // array in sync with it unless the add-route input is currently
-    // focused, same guard the old single text field used to avoid
-    // clobbering an in-progress edit on every 5s poll.
-    if (document.activeElement !== document.getElementById('ts-route-input')) {
+        // Routes list: server sends one comma-separated string.
         currentRoutes = (d.routes || '').split(',').map(function(s){ return s.trim(); }).filter(Boolean);
         renderRoutesList();
     }
@@ -377,12 +386,14 @@ function addRoute(){
         return;
     }
     currentRoutes.push(raw);
+    markDirty();
     renderRoutesList();
     input.value = '';
 }
 
 function delRoute(idx){
     currentRoutes.splice(idx, 1);
+    markDirty();
     renderRoutesList();
 }
 
@@ -400,9 +411,10 @@ function doLogout(){
 }
 
 function loadStatus(firstLoad){
+    var seq = ++_statusSeq;
     fetch('/cgi-bin/tailscale.cgi?action=status', { cache:'no-store' })
         .then(function(r){ return r.json(); })
-        .then(function(d){ if (d.ok) applyStatus(d); if (firstLoad) hideOverlay(); })
+        .then(function(d){ if (d.ok && seq === _statusSeq) applyStatus(d); if (firstLoad) hideOverlay(); })
         .catch(function(){ if (firstLoad) hideOverlay(); });
 }
 
@@ -442,7 +454,7 @@ function saveConfig(){
     .then(function(r){ return r.json(); })
     .then(function(d){
         hideOverlay();
-        if (d.ok){ toastr.success('Settings applied'); loadStatus(); }
+        if (d.ok){ toastr.success('Settings applied'); cfgDirty = false; loadStatus(); }
         else { toastr.error('Failed: ' + (d.error||'unknown')); }
     })
     .catch(function(){ hideOverlay(); toastr.error('Network error'); });

@@ -86,45 +86,28 @@ LAN_SH="/lmepisowifi/www2/sh/lan.sh"
 STATE_FILE="/tmp/repurpose_active"
 STARTUP_SH="/lmepisowifi/www2/sh/startup.sh"
 
+# [fix: fused interface name] Shared, locked, atomic registry + startup.sh
+# helpers (rp_registry_add / rp_registry_remove / rp_registry_list /
+# rp_startup_regen) — see repurpose_lib.sh. Without them two names could end
+# up fused into one that is not a real interface ("eth0.5.0wlan0-vxd") and
+# get persisted into startup.sh.
+if [ ! -r /lmepisowifi/www2/sh/repurpose_lib.sh ]; then
+    printf "Status: 500 Internal Server Error\r\nContent-Type: text/plain\r\n\r\n"
+    printf "repurpose_lib.sh is missing"
+    exit 0
+fi
+. /lmepisowifi/www2/sh/repurpose_lib.sh
+
 # ── update_startup_repurpose_all ──────────────────────────────────────────────
 # Rewrites the whole BEGIN_WAN_REPURPOSE … END_WAN_REPURPOSE section of
 # startup.sh from the CURRENT live registry (STATE_FILE + each interface's
 # own /tmp/repurpose_defroute_<iface> flag) — one launch line per configured
 # interface, so every currently-configured DHCP-client interface (not just
-# the one just touched) survives a reboot. Uses the same
-# getline-from-contentfile awk idiom ota.sh's self-heal already uses for
-# splicing a marker section, for consistency.
+# the one just touched) survives a reboot. The work (and the awk
+# getline-from-contentfile splice it uses) now lives in repurpose_lib.sh so
+# the watchdog can share it; only valid interface names are ever written.
 update_startup_repurpose_all() {
-    [ ! -f "$STARTUP_SH" ] && return
-
-    _USR_CONTENT="/tmp/startup_sh_repurpose_content_$$.tmp"
-    : > "$_USR_CONTENT"
-    if [ -f "$STATE_FILE" ]; then
-        while IFS= read -r _usr_if; do
-            [ -z "$_usr_if" ] && continue
-            _usr_flag=$(busybox cat "/tmp/repurpose_defroute_${_usr_if}" 2>/dev/null | busybox tr -d '\r\n')
-            _usr_flag="${_usr_flag:-1}"
-            printf '( sh %s %s %s ) &\n' "$REPURPOSE_SH" "$_usr_if" "$_usr_flag" >> "$_USR_CONTENT"
-        done < "$STATE_FILE"
-    fi
-
-    _USR_TMP="/tmp/startup_sh_repurpose_$$.tmp"
-    busybox awk \
-        -v contentfile="$_USR_CONTENT" \
-        'BEGIN { in_sec=0 }
-         /^# --- BEGIN_WAN_REPURPOSE ---/ {
-             print; in_sec=1
-             while ((getline line < contentfile) > 0) print line
-             close(contentfile)
-             next
-         }
-         /^# --- END_WAN_REPURPOSE ---/ { in_sec=0; print; next }
-         in_sec { next }
-         { print }' \
-        "$STARTUP_SH" > "$_USR_TMP" \
-    && busybox mv "$_USR_TMP" "$STARTUP_SH" \
-    && busybox chmod 755 "$STARTUP_SH"
-    rm -f "$_USR_CONTENT"
+    rp_startup_regen
 }
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -141,12 +124,14 @@ mib_field() {
 # True if $1 is currently a configured (applied) DHCP-client interface —
 # i.e. it has its own line in the shared state registry.
 iface_configured() {
-    [ -f "$STATE_FILE" ] && busybox grep -qx "$1" "$STATE_FILE" 2>/dev/null
+    # [fix: fused interface name] read through rp_registry_list so a registry
+    # that an earlier build left corrupt is still understood correctly.
+    rp_registry_list | busybox grep -qx "$1"
 }
 
 # Space this interface's configured-interface list, one per line.
 configured_ifaces() {
-    [ -f "$STATE_FILE" ] && busybox grep -v '^[[:space:]]*$' "$STATE_FILE" 2>/dev/null
+    rp_registry_list
 }
 
 # This interface's default-route flag ("1" or "0"). Missing flag file = "1"
@@ -161,9 +146,7 @@ get_defroute() {
 # real kernel default route.
 _clear_other_defaults() {
     _KEEP="$1"
-    [ -f "$STATE_FILE" ] || return
-    while IFS= read -r _oi; do
-        [ -z "$_oi" ] && continue
+    for _oi in $(rp_registry_list); do
         [ "$_oi" = "$_KEEP" ] && continue
         [ "$(get_defroute "$_oi")" = "1" ] || continue
         printf '0' > "/tmp/repurpose_defroute_${_oi}"
@@ -171,7 +154,7 @@ _clear_other_defaults() {
         case "$_ocd" in *"dev $_oi"*) ip route del default dev "$_oi" 2>/dev/null ;; esac
         iptables -t nat -D POSTROUTING -o "$_oi" -j MASQUERADE 2>/dev/null
         rm -f "/tmp/repurpose_gw_${_oi}"
-    done < "$STATE_FILE"
+    done
 }
 
 # Immediately point the kernel default route + NAT masquerade at $1, using
@@ -585,8 +568,8 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
         # synchronously (before backgrounding the daemon below) so the
         # table/startup.sh reflect this immediately rather than racing the
         # daemon's own startup.
-        busybox grep -qx "$FORM_IFACE" "$STATE_FILE" 2>/dev/null \
-            || printf '%s\n' "$FORM_IFACE" >> "$STATE_FILE"
+        # [fix: fused interface name] locked, atomic, newline-safe add.
+        rp_registry_add "$FORM_IFACE"
         printf '%s' "$FORM_DEFROUTE" > "/tmp/repurpose_defroute_${FORM_IFACE}"
 
         # Only one interface may hold the real default route.
@@ -638,12 +621,7 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
         # Belt-and-suspenders — revertwan.sh already does this, but the CGI
         # doesn't wait for it to finish, so clear these here too.
         rm -f "/tmp/repurpose_defroute_${FORM_IFACE}" "/tmp/repurpose_gw_${FORM_IFACE}"
-        if [ -f "$STATE_FILE" ]; then
-            _REV_TMP="/tmp/repurpose_active.cgi.$$.tmp"
-            busybox grep -vx "$FORM_IFACE" "$STATE_FILE" > "$_REV_TMP" 2>/dev/null
-            busybox mv "$_REV_TMP" "$STATE_FILE"
-            [ -s "$STATE_FILE" ] || rm -f "$STATE_FILE"
-        fi
+        rp_registry_remove "$FORM_IFACE"   # locked + atomic
 
         # Update startup.sh so it isn't relaunched on next reboot.
         update_startup_repurpose_all

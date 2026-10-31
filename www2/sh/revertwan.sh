@@ -19,6 +19,16 @@ if [ -z "$1" ]; then
     exit 1
 fi
 
+# [fix: fused interface name] Shared, locked, atomic registry helpers — see
+# repurpose_lib.sh.
+_RP_DIR="/lmepisowifi/www2/sh"
+case "$0" in */*) _RP_DIR="${0%/*}" ;; esac
+if [ ! -r "$_RP_DIR/repurpose_lib.sh" ]; then
+    echo "$0: $_RP_DIR/repurpose_lib.sh not found (deploy it together with this script)" >&2
+    exit 1
+fi
+. "$_RP_DIR/repurpose_lib.sh"
+
 TARGET_IFACE="$1"
 STATE_FILE="/tmp/repurpose_active"
 DEFROUTE_FILE="/tmp/repurpose_defroute_${TARGET_IFACE}"
@@ -104,13 +114,8 @@ ip link set "$TARGET_IFACE" up 2>/dev/null
 # ── 7. Clear this interface's state + temp files ──────────────────────────────
 # Remove only TARGET_IFACE's own line from the shared registry — other
 # concurrently repurposed interfaces (each with their own line) are left
-# running and untouched.
-if [ -f "$STATE_FILE" ]; then
-    _RW_TMP="/tmp/repurpose_active.revert.$$.tmp"
-    busybox grep -vx "$TARGET_IFACE" "$STATE_FILE" > "$_RW_TMP" 2>/dev/null
-    busybox mv "$_RW_TMP" "$STATE_FILE"
-    [ -s "$STATE_FILE" ] || rm -f "$STATE_FILE"
-fi
+# running and untouched. [fix: fused interface name] locked + atomic.
+rp_registry_remove "$TARGET_IFACE"
 rm -f "$SCRIPT_PATH"
 rm -f "$LOG"
 rm -f "$DEFROUTE_FILE"

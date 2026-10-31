@@ -3656,6 +3656,120 @@ if echo "$QS" | $BB grep -q "action=anti_tether_set"; then
 fi
 
 # ================================================================
+# Portal themes
+#
+# A theme is a folder hotspot/themes/<id>/ holding theme.info (name, blurb,
+# swatch colours) and, for anything other than the stock look, theme.css —
+# see THEMES.md. hotspot/index.html loads the chosen theme's stylesheet from
+# /cgi-bin/portal_theme.sh as its OWN <link>, so a theme can only restyle the
+# page, never replace it, and the portal drops it again by itself if it ever
+# hides a control (same safety net as the custom CSS below, which still loads
+# AFTER the theme and so can tweak it).
+#
+# The choice is one line — the theme id — in hotspot_data/portal_theme. That
+# survives OTA / module reinstalls (they re-lay hotspot/, not hotspot_data/),
+# and is deliberately NOT a portal.env key: portal_set and the logo upload
+# rewrite portal.env from scratch, which would silently reset the theme.
+#
+#   GET  ?action=portal_theme_list  -> {ok,current,themes:[{id,name,description,
+#                                       author,license,swatch:["#rrggbb",..]}]}
+#   POST ?action=portal_theme_set   body: theme=<id>     ("default" = stock look)
+# ================================================================
+PTHEME_DIR="/lmepisowifi/hotspot/themes"
+PTHEME_SEL="$HDATA/portal_theme"
+
+# ptheme_usable ID — same test the portal applies (portal_config.sh /
+# portal_theme.sh), so the admin can never pick something that would render
+# as the stock look. "default" restyles nothing and is always available.
+ptheme_usable() {
+    case "$1" in ""|*[!a-z0-9_-]*) return 1 ;; esac
+    [ "${#1}" -le 32 ] || return 1
+    [ "$1" = "default" ] && return 0
+    [ -f "$PTHEME_DIR/$1/theme.info" ] && [ -f "$PTHEME_DIR/$1/theme.css" ]
+}
+
+# ptheme_raw — the saved id, sanitised but NOT checked against the folders.
+ptheme_raw() {
+    [ -f "$PTHEME_SEL" ] || return 0
+    $BB head -n1 "$PTHEME_SEL" 2>/dev/null | $BB tr -cd 'a-z0-9_-' | $BB cut -c1-32
+}
+
+# ptheme_field FILE KEY MAXLEN — one theme.info value, trimmed, control
+# characters dropped (esc_json is applied by the caller).
+ptheme_field() {
+    $BB sed -n "s/^$2=//p" "$1" 2>/dev/null | $BB head -n1 | $BB tr -d '\000-\037' \
+        | $BB cut -c1-"$3" | $BB sed 's/^[[:space:]]*//;s/[[:space:]]*$//'
+}
+
+# ptheme_swatch CSV — up to four #rgb / #rrggbb colours as a JSON array body.
+ptheme_swatch() {
+    printf '%s' "$1" | $BB tr ',' '\n' | $BB sed 's/^[[:space:]]*//;s/[[:space:]]*$//' \
+        | $BB grep -E '^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$' | $BB head -n4 \
+        | $BB sed 's/.*/"&"/' | $BB tr '\n' ',' | $BB sed 's/,$//'
+}
+
+# ptheme_json ID — the list entry for one theme.
+ptheme_json() {
+    _pj_inf="$PTHEME_DIR/$1/theme.info"
+    _pj_name=""; _pj_desc=""; _pj_auth=""; _pj_lic=""; _pj_sw=""
+    if [ -f "$_pj_inf" ]; then
+        _pj_name=$(ptheme_field "$_pj_inf" name 40)
+        _pj_desc=$(ptheme_field "$_pj_inf" description 240)
+        _pj_auth=$(ptheme_field "$_pj_inf" author 40)
+        _pj_lic=$(ptheme_field "$_pj_inf" license 40)
+        _pj_sw=$(ptheme_swatch "$(ptheme_field "$_pj_inf" swatch 80)")
+    fi
+    [ -n "$_pj_name" ] || { [ "$1" = "default" ] && _pj_name="Default" || _pj_name="$1"; }
+    printf '{"id":"%s","name":"%s","description":"%s","author":"%s","license":"%s","swatch":[%s]}' \
+        "$1" "$(esc_json "$_pj_name")" "$(esc_json "$_pj_desc")" \
+        "$(esc_json "$_pj_auth")" "$(esc_json "$_pj_lic")" "$_pj_sw"
+}
+
+if echo "$QS" | $BB grep -q "action=portal_theme_list"; then
+    _pt_cur=$(ptheme_raw)
+    ptheme_usable "$_pt_cur" || _pt_cur="default"
+    # Stock look first, then the rest alphabetically (the glob is sorted). A
+    # folder that is not a usable theme is skipped, so a half-copied theme
+    # simply does not show up until it is complete.
+    _pt_list=$(ptheme_json default)
+    for _pt_d in "$PTHEME_DIR"/*/; do
+        _pt_id="${_pt_d%/}"; _pt_id="${_pt_id##*/}"
+        [ "$_pt_id" = "default" ] && continue
+        ptheme_usable "$_pt_id" || continue
+        _pt_list="${_pt_list},$(ptheme_json "$_pt_id")"
+    done
+    ok_json "{\"ok\":true,\"current\":\"${_pt_cur}\",\"themes\":[${_pt_list}]}"
+fi
+
+if echo "$QS" | $BB grep -q "action=portal_theme_set"; then
+    read -n "$CONTENT_LENGTH" POST_DATA
+    # Theme ids are [a-z0-9_-] so there is nothing to url-decode: anything
+    # else (including a %-encoded id) fails ptheme_usable and is refused
+    # rather than being "cleaned" into some other theme's id.
+    _pt_new=$(printf '%s' "$POST_DATA" | $BB tr '&' '\n' | $BB sed -n 's/^theme=//p' | $BB head -n1 | $BB tr -d '\r\n')
+    ptheme_usable "$_pt_new" || err_json "no_such_theme"
+
+    if [ "$_pt_new" = "default" ]; then
+        # Removing the file (not writing "default" into it) means a stale or
+        # unusable leftover can never come back to life later, e.g. when an
+        # OTA brings that theme back.
+        rm -f "$PTHEME_SEL" 2>/dev/null
+        [ -e "$PTHEME_SEL" ] && err_json "write_failed"
+    elif [ "$(ptheme_raw)" != "$_pt_new" ]; then
+        # Only touch flash when the choice actually changes. Write beside the
+        # target and verify before it can replace anything.
+        mkdir -p "$HDATA" 2>/dev/null
+        { printf '%s\n' "$_pt_new" > "$PTHEME_SEL.tmp"; } 2>/dev/null
+        if [ "$($BB cat "$PTHEME_SEL.tmp" 2>/dev/null)" != "$_pt_new" ]; then
+            rm -f "$PTHEME_SEL.tmp" 2>/dev/null
+            err_json "write_failed"
+        fi
+        $BB mv -f "$PTHEME_SEL.tmp" "$PTHEME_SEL" 2>/dev/null || { rm -f "$PTHEME_SEL.tmp" 2>/dev/null; err_json "write_failed"; }
+    fi
+    ok_json "{\"ok\":true,\"theme\":\"${_pt_new}\"}"
+fi
+
+# ================================================================
 # Custom portal CSS
 #
 # hotspot/index.html loads the operator's CSS from /cgi-bin/portal_css.sh as

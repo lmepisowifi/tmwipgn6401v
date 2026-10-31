@@ -813,6 +813,49 @@
   </style>
 
   <!--
+    Portal theme (www2 > Hotspot > Portal > Theme).
+    A theme is one extra stylesheet layered over the built-in styles above and
+    under the operator's Custom CSS below, so it can restyle (and re-lay out)
+    the same markup and the portal's behaviour never changes with the theme.
+    portal_theme.sh serves the saved theme's CSS, or nothing for the stock
+    look. It is a plain, parser-inserted <link> on purpose: the stylesheet is
+    guaranteed to be applied before the first screen is shown, so there is no
+    flash of the wrong theme.
+
+      /?theme=<id>   try another theme without saving it (e.g. on your phone)
+      /?notheme=1    safe mode: skip the theme entirely (stock look)
+
+    A theme is not the dark/light switch: that is <html data-theme>, a colour
+    mode every theme supports. This one is <html data-lme-theme>, set by the
+    script at the end of <body> once portal_config.sh has answered.
+  -->
+  <link id="theme-css" rel="stylesheet" href="/cgi-bin/portal_theme.sh">
+  <script>
+  (function () {
+    var l       = document.getElementById('theme-css');
+    var qs      = window.location.search;
+    var m       = /[?&]theme=([a-z0-9_-]{1,32})(&|$)/.exec(qs);
+    var preview = /[?&]cssprev=1(&|$)/.test(qs) && window.parent !== window;
+    window.__lmeTheme = { link: l, id: m ? m[1] : '' };
+    if (!l) return;
+
+    var off = /[?&]notheme=1(&|$)/.test(qs);
+    // A visit that already tripped the safety check keeps the stock look
+    if (!off && !preview) { try { off = window.sessionStorage.getItem('lme_theme_bad') === '1'; } catch (e) {} }
+    if (off) {
+      if (l.parentNode) l.parentNode.removeChild(l);
+      window.__lmeTheme.link = null;
+      window.__lmeTheme.id = '';
+      return;
+    }
+    if (m) {
+      l.href = '/cgi-bin/portal_theme.sh?id=' + m[1];
+      document.documentElement.setAttribute('data-lme-theme', m[1]);
+    }
+  })();
+  </script>
+
+  <!--
     Operator custom CSS (www2 > Hotspot > Portal > Custom CSS).
     It is added as its OWN <link>, after every built-in style, so (a) it wins
     the cascade at equal specificity and (b) a mistake inside it can only ever
@@ -2738,7 +2781,14 @@ checkCoinEnabled();
 
     // Tab title / favicon always mirror the header (see _syncTabFromHeader above)
     _syncTabFromHeader();
-    
+
+    // Which portal theme is on screen, as <html data-lme-theme="..."> so an
+    // operator's Custom CSS can target one theme (html[data-lme-theme="pisofi"] ...).
+    // A /?theme=<id> visit already set it; otherwise it is the saved theme, and
+    // "default" when the theme was switched off (safe mode / safety check).
+    var _lt = window.__lmeTheme || {};
+    if (!_lt.id) document.documentElement.setAttribute('data-lme-theme', (_lt.link && c.theme) ? c.theme : 'default');
+
     // 3. Carousel Logic
     var promos = c.promos || [];
     if(promos.length > 0){
@@ -2807,24 +2857,28 @@ checkCoinEnabled();
 
 <script>
 /* ────────────────────────────────────────────────────────────────────────────
-   Custom-CSS safety net  (+ hooks for the www2 "Custom CSS" live preview)
+   Custom-CSS / theme safety net
+   (+ hooks for the www2 "Theme" and "Custom CSS" live previews)
 
-   Does nothing unless an operator stylesheet (#custom-css, see <head>) is in
-   use. It protects the ways a customer gets online and back out of a window:
+   Does nothing unless an operator stylesheet (#custom-css) or a portal theme
+   (#theme-css) is in use, see <head>. It protects the ways a customer gets
+   online and back out of a window:
      · the card and the panel being shown
      · the voucher box + its Submit button, Insert Coin, Resume Time
      · the enabled buttons of an open coin / rates window (Done, Cancel, ×)
    Everything else (Pause, WiFi Rates, colours, fonts, layout…) is the
-   operator's call. If the custom CSS hides, shrinks, covers, pushes
-   off-screen or blanks one of the protected controls — on two checks in a
-   row — the stylesheet is dropped for this visit and the stock look is used.
+   operator's call. If the styling hides, shrinks, covers, pushes off-screen
+   or blanks one of the protected controls — on two checks in a row — the
+   operator's custom CSS is dropped for this visit (it is the likeliest
+   culprit). If the problem is still there two checks later, the theme is
+   dropped as well and the stock look is used.
    Nothing is written to the server, and www2 (port 8080) never loads this
-   stylesheet, so the operator can always get back in to fix it.
+   stylesheet or theme, so the operator can always get back in to fix it.
    ──────────────────────────────────────────────────────────────────────────── */
 (function () {
-  var C = window.__lmeCss;
-  if (!C || !C.link) return;
-  var preview = C.preview, hold = false, cur = 'live', strikes = 0, lastSig = '', timer = null;
+  var C = window.__lmeCss || {}, T = window.__lmeTheme || {};
+  if (!C.link && !T.link) return;
+  var preview = !!C.preview, hold = false, cur = 'live', strikes = 0, lastSig = '', timer = null;
   var realShow = window.show;
 
   function say(msg) { try { window.parent.postMessage(msg, '*'); } catch (e) {} }
@@ -2939,12 +2993,29 @@ checkCoinEnabled();
     return out;
   }
 
-  /* ── customer devices: drop the stylesheet if it breaks something, twice in a row ── */
+  /* ── customer devices: drop the styling if it breaks something, twice in a row ── */
+  function drop(link, flag) {
+    try { link.disabled = true; if (link.parentNode) link.parentNode.removeChild(link); } catch (e) {}
+    try { window.sessionStorage.setItem(flag, '1'); } catch (e) {}
+  }
   function trip(issues) {
+    var why = issues.join('; '), rules = -1;
+    try { if (C.link && C.link.sheet) rules = C.link.sheet.cssRules.length; } catch (e) {}
+    if (C.link && C.link.parentNode && rules !== 0) {
+      // 1st: the operator's own CSS (when there is any: an empty stylesheet
+      // can't be the cause, so then the theme goes straight away). Keep
+      // watching: if the screen is still broken without it, the theme goes next.
+      drop(C.link, 'lme_css_bad');
+      strikes = 0; lastSig = '';
+      try { console.warn('Custom portal CSS switched off for this visit: ' + why); } catch (e) {}
+      return;
+    }
     clearInterval(timer);
-    try { C.link.disabled = true; if (C.link.parentNode) C.link.parentNode.removeChild(C.link); } catch (e) {}
-    try { window.sessionStorage.setItem('lme_css_bad', '1'); } catch (e) {}
-    try { console.warn('Custom portal CSS switched off for this visit: ' + issues.join('; ')); } catch (e) {}
+    if (T.link && T.link.parentNode) {
+      drop(T.link, 'lme_theme_bad');
+      document.documentElement.setAttribute('data-lme-theme', 'default');
+      try { console.warn('Portal theme switched off for this visit: ' + why); } catch (e) {}
+    }
   }
   function run() {
     var issues = collect(), sig = issues.join('|');
@@ -2954,14 +3025,15 @@ checkCoinEnabled();
     if (strikes >= 2) trip(issues);
   }
   function start() {
-    if (!preview) {
-      // An empty operator stylesheet (the common case) has nothing to guard
-      try { var rules = C.link.sheet && C.link.sheet.cssRules; if (rules && rules.length === 0) return; } catch (e) {}
+    if (!preview && !T.link) {
+      // An empty operator stylesheet and no theme (the stock setup) has nothing to guard
+      try { var rules = C.link && C.link.sheet && C.link.sheet.cssRules; if (rules && rules.length === 0) return; } catch (e) {}
     }
     setTimeout(run, 1200);
     timer = setInterval(run, 2000);
   }
-  if (C.link.sheet) start(); else C.link.addEventListener('load', start);
+  var L = C.link || T.link;
+  if (L.sheet) start(); else L.addEventListener('load', start);
 
   /* ── admin live preview (only inside the www2 iframe, only obeys its parent) ── */
   if (!preview) return;
@@ -2992,16 +3064,34 @@ checkCoinEnabled();
       setTimeout(function () { results[st] = collect(); next(); }, 900);
     })();
   }
+  // Swap the portal theme in place (the Theme picker's preview). Note the
+  // naming: 'theme' below is the dark/light colour mode, 'portalTheme' is this.
+  function setPortalTheme(id) {
+    id = String(id || '').replace(/[^a-z0-9_-]/g, '').slice(0, 32);
+    if (!id) return;
+    var l = T.link;
+    if (!l) {
+      l = document.createElement('link');
+      l.rel = 'stylesheet'; l.id = 'theme-css';
+      l.addEventListener('load', function () { setTimeout(run, 400); });
+      document.head.insertBefore(l, (C.link && C.link.parentNode === document.head) ? C.link : null);
+      T.link = l;
+    }
+    l.href = '/cgi-bin/portal_theme.sh?id=' + id + '&_=' + new Date().getTime();
+    document.documentElement.setAttribute('data-lme-theme', id);
+  }
   window.addEventListener('message', function (e) {
     var d = e.data;
     if (e.source !== window.parent || !d || d.lmePreview !== true) return;
     if (d.cmd === 'state') setState(String(d.state));
     else if (d.cmd === 'audit') audit();
     else if (d.cmd === 'theme') document.documentElement.setAttribute('data-theme', d.theme === 'light' ? 'light' : 'dark');
-    else if (d.cmd === 'reload') C.link.href = '/cgi-bin/portal_css.sh?draft=1&_=' + new Date().getTime();
+    else if (d.cmd === 'portalTheme') setPortalTheme(d.id);
+    else if (d.cmd === 'reload' && C.link) C.link.href = '/cgi-bin/portal_css.sh?draft=1&_=' + new Date().getTime();
   });
-  // Every time the stylesheet is (re)loaded, re-check the current screen
-  C.link.addEventListener('load', function () { setTimeout(run, 400); });
+  // Every time a stylesheet is (re)loaded, re-check the current screen
+  if (C.link) C.link.addEventListener('load', function () { setTimeout(run, 400); });
+  if (T.link) T.link.addEventListener('load', function () { setTimeout(run, 400); });
   say({ lmeCssReady: true });
 })();
 </script>

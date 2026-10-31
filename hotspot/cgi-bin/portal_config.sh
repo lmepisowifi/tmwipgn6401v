@@ -22,6 +22,17 @@ PORTAL_LOGO="/img/favicon.ico"
 PORTAL_FOOTER="Your device is identified by MAC address. Vouchers are single-use."
 [ -f "$PCFG" ] && . "$PCFG" 2>/dev/null
 
+# Active portal theme id (same rule as portal_theme.sh: whitelisted, and the
+# folder must exist). The page only uses it to tag <html data-lme-theme="...">
+# so operator Custom CSS can target one theme; the look itself comes from
+# portal_theme.sh. Kept out of portal.env on purpose — see portal_theme.sh.
+PORTAL_THEME="default"
+if [ -f "$HDATA/portal_theme" ]; then
+    _pt=$($BB head -n1 "$HDATA/portal_theme" 2>/dev/null | $BB tr -cd 'a-z0-9_-' | $BB cut -c1-32)
+    [ -n "$_pt" ] && [ -f "/lmepisowifi/hotspot/themes/$_pt/theme.info" ] \
+        && [ -f "/lmepisowifi/hotspot/themes/$_pt/theme.css" ] && PORTAL_THEME="$_pt"
+fi
+
 esc_j() { printf '%s' "$1" | $BB sed 's/\\/\\\\/g; s/"/\\"/g'; }
 
 # Cache-buster: append ?v=<mtime> to a URL so browsers refetch whenever the
@@ -78,7 +89,7 @@ for _e in mp3 ogg wav; do
 done
 
 printf "Content-Type: application/json\r\nCache-Control: no-cache, no-store\r\n\r\n"
-printf '{"title":"%s","brand":"%s","logo":"%s","promos":[%s],"bg_music":"%s","coin_sound":"%s","insert_bg_music":"%s","footer":"%s"}\n' \
+printf '{"title":"%s","brand":"%s","logo":"%s","promos":[%s],"bg_music":"%s","coin_sound":"%s","insert_bg_music":"%s","footer":"%s","theme":"%s"}\n' \
     "$(esc_j "$PORTAL_TITLE")" \
     "$(esc_j "$PORTAL_BRAND")" \
     "$(esc_j "$PORTAL_LOGO")" \
@@ -86,4 +97,5 @@ printf '{"title":"%s","brand":"%s","logo":"%s","promos":[%s],"bg_music":"%s","co
     "$(esc_j "$BG_MUSIC")" \
     "$(esc_j "$COIN_SOUND")" \
     "$(esc_j "$INSERT_BG_MUSIC")" \
-    "$(esc_j "$PORTAL_FOOTER")"
+    "$(esc_j "$PORTAL_FOOTER")" \
+    "$PORTAL_THEME"

@@ -62,6 +62,24 @@
         .portal-prev-field { height:28px; background:#1d1d22; border:1px solid #2e2e33; border-radius:6px; margin-bottom:7px; }
         .portal-prev-btn { height:32px; background:#fff; border-radius:6px; width:100%; margin-bottom:7px; }
         .portal-prev-btn.outline { background:transparent; border:1px solid #2e2e33; }
+        /* Theme picker */
+        .theme-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(150px,1fr)); gap:10px; }
+        .theme-opt {
+            display:flex; flex-direction:column; gap:8px; text-align:left; padding:10px;
+            background:var(--bg-input); border:2px solid var(--border-color); border-radius:10px;
+            color:var(--text-primary); cursor:pointer; font:inherit; min-width:0;
+            transition:border-color .15s, background .15s;
+        }
+        .theme-opt:hover { border-color:#888; }
+        .theme-opt:focus-visible { outline:2px solid #3b82f6; outline-offset:2px; }
+        .theme-opt[aria-checked="true"] { border-color:#3b82f6; background:var(--bg-surface-hover); }
+        .theme-sw { display:flex; height:34px; border-radius:6px; overflow:hidden; border:1px solid rgba(128,128,128,.35); background:var(--bg-surface-hover); }
+        .theme-sw i { flex:1; display:block; }
+        .theme-name { font-size:13px; font-weight:600; display:flex; align-items:center; gap:6px; flex-wrap:wrap; line-height:1.3; }
+        .theme-live {
+            font-size:10px; font-weight:600; letter-spacing:.04em; text-transform:uppercase; color:#4ade80;
+            border:1px solid rgba(74,222,128,.5); border-radius:999px; padding:0 6px; line-height:16px;
+        }
         /* Hidden real file inputs for each slot */
         .slot-file-input { display:none; }
         /* Pending upload indicator */
@@ -253,10 +271,49 @@
 
 </div><!-- /row -->
 
-<!-- ═══════════════ Custom CSS ═══════════════ -->
+<!-- ═══════════════ Theme + Custom CSS (share one live preview) ═══════════════ -->
 <div class="row g-3 mt-1" id="css-section">
 
 <div class="col-lg-7">
+    <!-- Theme -->
+    <div class="card mb-3" id="theme-card">
+        <div class="card-header d-flex align-items-center justify-content-between">
+            <span>Theme</span>
+            <small class="text-muted" style="font-size:11px;">Overall look of the customer portal</small>
+        </div>
+        <div class="card-body">
+            <div class="field-hint mb-2" style="font-size:12px;">
+                Pick a ready-made look, similar to other hotspot systems. Click a theme to see it in the preview, then
+                <b>Use this theme</b> to put it on the portal. Coin, voucher and login work exactly the same in every theme.
+            </div>
+            <div id="theme-grid" class="theme-grid" role="radiogroup" aria-label="Portal theme">
+                <div class="field-hint">Loading themes&hellip;</div>
+            </div>
+            <div id="theme-desc" class="field-hint mt-2" style="font-size:12px;min-height:2.6em;"></div>
+            <div class="d-flex flex-wrap gap-2 align-items-center mt-2">
+                <button class="btn btn-primary" id="theme-apply" disabled>Use this theme</button>
+                <button class="btn btn-outline-secondary" id="theme-cancel" disabled>Cancel</button>
+                <span id="theme-status" class="field-hint" style="margin:0;"></span>
+            </div>
+            <details class="mt-3">
+                <summary style="cursor:pointer;font-size:12.5px;color:var(--text-secondary);">About themes</summary>
+                <div class="field-hint mt-2" style="font-size:12px;line-height:1.55;">
+                    <b>Your content stays.</b> Title, brand, logo, carousel slides, audio and the footer text are used by every theme.<br>
+                    <b>Custom CSS goes on top.</b> It loads after the theme, so colour variables work as usual. If a rule of yours has no effect
+                    on a theme, put <code>html body</code> in front of the selector, e.g. <code>html body .btn { &hellip; }</code>.<br>
+                    <b>Safe by design.</b> A theme can only change how the portal looks. If one ever hides the voucher box, Insert Coin or a
+                    pop-up button, customers' phones switch it off by themselves and show the stock look.<br>
+                    <b>Try it on your phone first.</b> Open the portal address with <code>?theme=pisofi</code> on the end (any installed theme id);
+                    <code>?notheme=1</code> shows the stock look. Nothing is saved.<br>
+                    <b>Customers</b> who already have the portal open get the new theme the next time the page loads.<br>
+                    <b>More themes:</b> each theme is a folder in <code>hotspot/themes/</code> on the device (<code>theme.info</code> + <code>theme.css</code>);
+                    see <code>THEMES.md</code> in the repository.
+                </div>
+            </details>
+        </div>
+    </div>
+
+    <!-- Custom CSS -->
     <div class="card mb-3">
         <div class="card-header d-flex align-items-center justify-content-between">
             <span>Custom CSS</span>
@@ -909,7 +966,11 @@ loadConfig();
 </script>
 
 <script>
-/* ═══════════════ Custom CSS editor ═══════════════
+/* ═══════════════ Theme picker + Custom CSS editor ═══════════════
+   Both drive the same live preview: the real portal in an iframe. Picking a theme only
+   changes what the preview shows until "Use this theme" is pressed (portal_theme_set);
+   the Custom CSS draft is layered on top of it, exactly as customers' phones will see it.
+
    - Every edit is sent (debounced) as a RAM-only DRAFT. The device validates it with
      the same checks Save uses, so errors show up while typing, and the preview iframe
      (the real portal, ?cssprev=1&cssdraft=1) reloads its stylesheet in place.
@@ -923,7 +984,7 @@ loadConfig();
     var ed = $('css-editor'), frame = $('css-frame'), frameMsg = $('css-frame-msg');
     var saved = '', seq = 0, draftTimer = null, busy = false, loaded = false;
     var info = { has_css: 0, enabled: 1, has_prev: 0 };
-    var pv = { ready: false, state: 'login', theme: 'dark', auditCb: null };
+    var pv = { ready: false, state: 'login', theme: 'dark', auditCb: null, base: '' };
 
     var SNIPS = {
         colors:
@@ -962,7 +1023,8 @@ loadConfig();
         insufficient_space: 'Not enough free storage on the device (3 MB must stay free). Nothing was changed.',
         write_incomplete: 'Writing to the device storage failed part-way. Nothing was changed.',
         write_failed: 'Writing to the device storage failed. Nothing was changed.',
-        no_previous: 'There is no earlier version to go back to.'
+        no_previous: 'There is no earlier version to go back to.',
+        no_such_theme: 'That theme is not installed (any more). The list has been refreshed.'
     };
     function errText(e) { return ERR[e] || ('Request failed' + (e ? ' (' + e + ')' : '') + '.'); }
 
@@ -1066,10 +1128,23 @@ loadConfig();
     }
     function runAudit(cb) {
         if (!pv.ready) { cb(null); return; }
-        pv.auditCb = cb;
+        // A preview scrolled out of view is not rendered by the browser, which freezes the pop-ups'
+        // fade-in and makes the check report them "invisible". Phones stack the preview below the
+        // editor, so bring it on screen for the check and then put the page back where it was.
+        var r = frame.getBoundingClientRect(), vh = window.innerHeight || document.documentElement.clientHeight,
+            y0 = window.pageYOffset, moved = false;
+        if (Math.min(r.bottom, vh) - Math.max(r.top, 0) < 60) {
+            try { frame.scrollIntoView({ block: 'center', behavior: 'instant' }); } catch (e) { frame.scrollIntoView(true); }
+            moved = true;
+        }
+        var done = function (bad) {
+            if (moved) { try { window.scrollTo({ top: y0, behavior: 'instant' }); } catch (e) { window.scrollTo(0, y0); } }
+            cb(bad);
+        };
+        pv.auditCb = done;
         $('css-audit-res').textContent = 'Checking\u2026'; $('css-audit-res').style.color = '';
-        post({ cmd: 'audit' });
-        setTimeout(function () { if (pv.auditCb === cb) { pv.auditCb = null; cb(null); } }, 9000);
+        setTimeout(function () { post({ cmd: 'audit' }); }, moved ? 400 : 0);
+        setTimeout(function () { if (pv.auditCb === done) { pv.auditCb = null; done(null); } }, 9000);
     }
     window.addEventListener('message', function (e) {
         var d = e.data;
@@ -1077,6 +1152,7 @@ loadConfig();
         if (d.lmeCssReady) {
             pv.ready = true; frameMsg.style.display = 'none'; $('css-audit').disabled = false;
             post({ cmd: 'theme', theme: pv.theme }); post({ cmd: 'state', state: pv.state });
+            if (th.sel !== th.cur) post({ cmd: 'portalTheme', id: th.sel });   // the iframe starts on the saved theme
         } else if (d.lmeCssGuard) { if (!pv.auditCb) showGuard(d.issues); }
         else if (d.lmeCssAudit) onAudit(d.results);
     });
@@ -1100,13 +1176,116 @@ loadConfig();
             var ip = c && c.portal_ip, port = c && c.portal_port;
             if (!ip) throw new Error('no portal ip');
             var base = 'http://' + ip + ((port && String(port) !== '80') ? ':' + port : '');
-            $('css-open-portal').href = base + '/';
+            pv.base = base; openLink();
             frame.src = base + '/?cssprev=1&cssdraft=1';
             setTimeout(function () {
                 if (!pv.ready) frameMsg.textContent = 'Preview unavailable from this connection (the portal is only reachable from the hotspot network). Your CSS is still validated here; use \u201cOpen portal\u201d from a hotspot device to see it.';
             }, 9000);
         }).catch(function () {
             frameMsg.textContent = 'Could not find the portal address, so there is no preview. Your CSS is still validated here.';
+        });
+    }
+
+    /* ── Theme picker ── */
+    var th = { list: [], cur: 'default', sel: 'default', loaded: false, busy: false };
+    var HEX = /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/;
+    function themeById(id) {
+        for (var i = 0; i < th.list.length; i++) if (th.list[i].id === id) return th.list[i];
+        return null;
+    }
+    function openLink() {
+        // "Open portal" shows an unsaved pick too, so it can be tried on a real phone first.
+        if (pv.base) $('css-open-portal').href = pv.base + '/' + (th.sel !== th.cur ? '?theme=' + encodeURIComponent(th.sel) : '');
+    }
+    function renderThemes() {
+        var grid = $('theme-grid');
+        grid.textContent = '';
+        if (!th.list.length) {
+            var none = document.createElement('div'); none.className = 'field-hint';
+            none.textContent = th.loaded ? 'No themes found.' : 'Loading themes…'; grid.appendChild(none);
+        }
+        th.list.forEach(function (t) {
+            var b = document.createElement('button'), sw = document.createElement('span'),
+                nm = document.createElement('span');
+            b.type = 'button'; b.className = 'theme-opt'; b.setAttribute('role', 'radio');
+            b.setAttribute('aria-checked', t.id === th.sel ? 'true' : 'false');
+            b.setAttribute('data-id', t.id);
+            sw.className = 'theme-sw';
+            (t.swatch || []).forEach(function (c) {
+                if (!HEX.test(c)) return;
+                var i = document.createElement('i'); i.style.background = c; sw.appendChild(i);
+            });
+            nm.className = 'theme-name'; nm.appendChild(document.createTextNode(t.name || t.id));
+            if (t.id === th.cur) {
+                var lv = document.createElement('span'); lv.className = 'theme-live'; lv.textContent = 'Live'; nm.appendChild(lv);
+            }
+            b.appendChild(sw); b.appendChild(nm); grid.appendChild(b);
+        });
+        var cur = themeById(th.sel), d = $('theme-desc');
+        d.textContent = '';
+        if (cur) {
+            d.appendChild(document.createTextNode(cur.description || ''));
+            var by = [];
+            if (cur.author) by.push('by ' + cur.author);
+            if (cur.license) by.push(cur.license);
+            if (by.length) {
+                var m = document.createElement('div'); m.style.opacity = '.75'; m.textContent = by.join(' · '); d.appendChild(m);
+            }
+        }
+        refreshTheme();
+    }
+    function refreshTheme() {
+        var changed = th.sel !== th.cur, st = $('theme-status');
+        $('theme-apply').disabled = !th.loaded || th.busy || !changed;
+        $('theme-cancel').disabled = !th.loaded || th.busy || !changed;
+        if (!th.loaded) { st.textContent = ''; return; }
+        if (changed) { st.textContent = 'Previewing — not live yet'; st.style.color = '#fbbf24'; }
+        else { st.textContent = 'Live on the portal'; st.style.color = '#4ade80'; }
+        openLink();
+    }
+    function pickTheme(id) {
+        if (th.busy || !themeById(id) || id === th.sel) return;
+        th.sel = id; renderThemes();
+        if (pv.ready) post({ cmd: 'portalTheme', id: id });
+    }
+    $('theme-grid').addEventListener('click', function (e) {
+        var b = e.target.closest ? e.target.closest('button[data-id]') : null;
+        if (b) pickTheme(b.getAttribute('data-id'));
+    });
+    $('theme-cancel').addEventListener('click', function () { pickTheme(th.cur); });
+    $('theme-apply').addEventListener('click', function () {
+        var id = th.sel, t = themeById(id);
+        if (!t || id === th.cur || th.busy) return;
+        th.busy = true; refreshTheme();
+        var done = function () { th.busy = false; refreshTheme(); };
+        // Same pre-flight as Save CSS: if this theme (plus your Custom CSS) would hide a control,
+        // phones would switch it off again, so say so before it goes live.
+        new Promise(function (res) {
+            setTimeout(function () { runAudit(function (bad) { res(bad || []); }); }, 600);
+        }).then(function (bad) {
+            if (bad.length && !window.confirm('Customers’ phones would switch this theme off on these screens:\n\n' + bad.join('\n') + '\n\nUse it anyway?')) { done(); return; }
+            return api('portal_theme_set', 'theme=' + encodeURIComponent(id)).then(function (r) {
+                if (r.ok) {
+                    th.cur = id; renderThemes();
+                    toastr.success((t.name || id) + ' is now live on the portal.');
+                } else {
+                    toastr.error(errText(r.error));
+                    if (r.error === 'no_such_theme') return loadThemes();
+                }
+            }).then(done);
+        }).catch(function () { toastr.error('Network error. The theme was not changed.'); done(); });
+    });
+    function loadThemes() {
+        return api('portal_theme_list').then(function (d) {
+            if (!d || !d.ok) throw new Error('list');
+            th.list = d.themes || []; th.cur = d.current || 'default';
+            if (!themeById(th.cur)) th.cur = 'default';
+            th.sel = (th.loaded && themeById(th.sel)) ? th.sel : th.cur;   // first load: start on the live theme
+            th.loaded = true; renderThemes();
+            if (pv.ready) post({ cmd: 'portalTheme', id: th.sel });
+        }).catch(function () {
+            th.loaded = false; th.list = []; renderThemes();
+            $('theme-grid').textContent = 'Could not load the theme list.';
         });
     }
 
@@ -1184,6 +1363,7 @@ loadConfig();
     });
 
     refresh();
+    loadThemes();
     loadAll().then(startPreview);
 })();
 </script>

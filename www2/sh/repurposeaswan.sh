@@ -33,6 +33,7 @@
 # `ip monitor` isn't supported.
 # Watchdog loop (every 15s) checks:
 #   0. DHCP anti-leak rules still in place
+#   0b. Interface exists at all (if not: wait quietly, don't spin)
 #   1. br0 re-binding (fixes it immediately if detected)
 #   2. Interface UP state
 #   3. udhcpc still alive
@@ -46,9 +47,34 @@ if [ -z "$1" ]; then
     exit 1
 fi
 
+# [fix: fused interface name] Shared registry / startup.sh helpers. The
+# registry used to be written inline here (and in revertwan.sh and
+# wan-repurpose.cgi), which could fuse two names into one that is not a real
+# interface (e.g. "eth0.5.0wlan0-vxd"); see repurpose_lib.sh.
+_RP_DIR="/lmepisowifi/www2/sh"
+case "$0" in */*) _RP_DIR="${0%/*}" ;; esac
+if [ ! -r "$_RP_DIR/repurpose_lib.sh" ]; then
+    echo "$0: $_RP_DIR/repurpose_lib.sh not found (deploy it together with this script)" >&2
+    exit 1
+fi
+. "$_RP_DIR/repurpose_lib.sh"
+
 TARGET_IFACE="$1"
 DEFAULT_ROUTE="${2:-1}"
 case "$DEFAULT_ROUTE" in 1) DEFAULT_ROUTE=1 ;; *) DEFAULT_ROUTE=0 ;; esac
+
+# [fix: fused interface name] Only the supported interfaces may run a
+# watchdog. A name that is not one — typically a fused "eth0.5.0wlan0-vxd"
+# persisted in startup.sh by an earlier build — can never exist as a netdev, so
+# its watchdog would just loop forever ("was UNKNOWN — brought back UP",
+# "udhcpc died — restarting"). Recover whatever valid interfaces it contains,
+# repair startup.sh, and stop. This runs BEFORE any pid/registry/log file is
+# created under the bad name.
+if ! rp_valid_iface "$TARGET_IFACE"; then
+    rp_recover_invalid_iface "$TARGET_IFACE" "$DEFAULT_ROUTE" "$0"
+    exit 0
+fi
+
 SCRIPT_PATH="/tmp/udhcpc_${TARGET_IFACE}.script"
 STATE_FILE="/tmp/repurpose_active"
 DEFROUTE_FILE="/tmp/repurpose_defroute_${TARGET_IFACE}"
@@ -66,20 +92,21 @@ _in_state_registry() {
 # ── Helper: remove only TARGET_IFACE's own line from STATE_FILE ──────────────
 # Never truncates or removes other interfaces' entries — safe to call while
 # other repurposeaswan.sh instances are running for different interfaces.
+# [fix: fused interface name] now locked + atomic, via repurpose_lib.sh.
 _remove_self_from_registry() {
-    [ -f "$STATE_FILE" ] || return
-    _RSFR_TMP="/tmp/repurpose_active.$$.tmp"
-    busybox grep -vx "$TARGET_IFACE" "$STATE_FILE" > "$_RSFR_TMP" 2>/dev/null
-    busybox mv "$_RSFR_TMP" "$STATE_FILE"
-    [ -s "$STATE_FILE" ] || rm -f "$STATE_FILE"
+    rp_registry_remove "$TARGET_IFACE"
 }
 
 # ── Write PID + register in the shared state file + record our default-route
 # flag immediately. Idempotent add: if this interface's line is already
 # present (e.g. re-launched by the CGI, which pre-registers synchronously
 # before backgrounding this script) it is not duplicated.
+# [fix: fused interface name] rp_registry_add is locked, rewrites the file
+# whole + atomically and always starts a fresh line, so two watchdogs launched
+# together at boot (startup.sh backgrounds them in parallel) cannot splice
+# their names together.
 echo $$ > "$PID_FILE"
-_in_state_registry || printf '%s\n' "$TARGET_IFACE" >> "$STATE_FILE"
+rp_registry_add "$TARGET_IFACE"
 printf '%s' "$DEFAULT_ROUTE" > "$DEFROUTE_FILE"
 printf '[%s] repurposeaswan started  iface=%s  pid=%s  default_route=%s\n' \
     "$(busybox date)" "$TARGET_IFACE" "$$" "$DEFAULT_ROUTE" > "$LOG"
@@ -459,6 +486,7 @@ printf '[%s] Setup complete — watchdog interval=%ds\n' \
 # the watchdog won't fire a spurious kick on the very first tick.
 _LAST_CARRIER=$(busybox cat "/sys/class/net/$TARGET_IFACE/carrier" 2>/dev/null | busybox tr -d '\r\n')
 _LAST_CARRIER="${_LAST_CARRIER:-0}"
+_IFACE_MISSING=0   # 1 while the netdev does not exist (see watchdog step 0b)
 
 # ── Event-driven re-enslavement watcher (near-instant, backstops the poll) ──
 # The 15s poll in the loop below can leave up to a 15s window where a
@@ -525,27 +553,57 @@ while true; do
     # re-apply, etc.) flushes iptables/ebtables between ticks.
     _apply_dhcp_antileak
 
+    # ── 0b. Interface must exist in the kernel ────────────────────────────────
+    # [fix: fused interface name] If the netdev is not there (a wlan*-vxd whose
+    # radio is off / mid-reconfigure, a LAN VLAN not created yet) there is
+    # nothing to bring UP and nothing for udhcpc to bind to. Previously every
+    # tick then logged "was UNKNOWN — brought back UP" + "udhcpc died —
+    # restarting" and respawned udhcpc, forever. Now: say so ONCE, then wait.
+    # When it comes back, redo the setup and kick DHCP straight away.
+    _kicked_this_tick=0
+    if [ ! -d "/sys/class/net/$TARGET_IFACE" ]; then
+        if [ "$_IFACE_MISSING" != "1" ]; then
+            _IFACE_MISSING=1
+            printf '[%s] Interface %s does not exist (yet) — waiting for it to appear, not restarting udhcpc\n' \
+                "$(busybox date)" "$TARGET_IFACE" >> "$LOG"
+        fi
+        _LAST_CARRIER=0
+        continue
+    fi
+    if [ "$_IFACE_MISSING" = "1" ]; then
+        _IFACE_MISSING=0
+        printf '[%s] Interface %s appeared — re-running setup\n' \
+            "$(busybox date)" "$TARGET_IFACE" >> "$LOG"
+        ip link set "$TARGET_IFACE" nomaster 2>/dev/null
+        ip link set "$TARGET_IFACE" up 2>/dev/null
+        _kick_udhcpc
+        _kicked_this_tick=1
+    fi
+
     # ── 1. br0 binding check (highest priority) ───────────────────────────────
     # _fix_br0 returns 0 when it actually had to remove the interface from br0
     # (vendor networking daemon re-enslaved it on link-up — the main reason
     # plugging in a cable after setup failed to obtain an IP).  On that event
     # kick udhcpc immediately; don't wait for the liveness check below, because
     # udhcpc is still alive — just silently stuck in background-retry mode.
-    _kicked_this_tick=0
     if _fix_br0; then
         _kick_udhcpc
         _kicked_this_tick=1
     fi
 
     # ── 2. Interface UP check ─────────────────────────────────────────────────
-    _S=$(ip link show "$TARGET_IFACE" 2>/dev/null \
-        | busybox grep -o "state [A-Z]*" \
-        | busybox awk '{print $2}' \
-        | head -1)
-    if [ "$_S" != "UP" ]; then
+    # [fix: fused interface name] Judge "up" by the administrative IFF_UP flag,
+    # not the `state` word of `ip link show`: virtual / vendor-driver netdevs
+    # (VLAN sub-ports, wlan*-vxd) routinely report operstate UNKNOWN, or DOWN
+    # with no cable, while being perfectly up — that logged a bogus "was
+    # UNKNOWN — brought back UP" every tick. IFF_UP is exactly what
+    # `ip link set ... up` changes (same test _target_awaiting_br0 uses).
+    _FL=""
+    read -r _FL < "/sys/class/net/$TARGET_IFACE/flags" 2>/dev/null
+    if [ -z "$_FL" ] || [ $((_FL & 1)) -ne 1 ]; then
         ip link set "$TARGET_IFACE" up 2>/dev/null
-        printf '[%s] Interface %s was %s — brought back UP\n' \
-            "$(busybox date)" "$TARGET_IFACE" "${_S:-UNKNOWN}" >> "$LOG"
+        printf '[%s] Interface %s was administratively down (flags=%s) — brought back UP\n' \
+            "$(busybox date)" "$TARGET_IFACE" "${_FL:-unreadable}" >> "$LOG"
     fi
 
     # ── 3. udhcpc liveness check ──────────────────────────────────────────────

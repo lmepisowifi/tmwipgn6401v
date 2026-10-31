@@ -1,0 +1,12 @@
+# ---------------------------------------------------------------------------
+# lmepisowifi — https://github.com/lmepisowifi/tmwipgn6401v
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 The lmepisowifi Project — see AUTHORS
+# ---------------------------------------------------------------------------
+# The stock portal look. It has no theme.css on purpose: "no theme" IS this
+# look, so the portal works the same with or without the themes feature.
+name=Default
+description=The built-in lmepisowifi look: one compact card with a dark/light switch, gold Insert Coin and blue WiFi Rates buttons.
+author=lmepisowifi
+license=AGPL-3.0-or-later
+swatch=#18181c,#f59e0b,#3b82f6,#ffffff
