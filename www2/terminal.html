@@ -25,17 +25,41 @@
     <link  href="/css/xterm.css?v=1.0.0"  rel="stylesheet"
            onerror="this.href='https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.css'">
     <style>
-        html, body { height: 100%; overflow: hidden; }
-
-        /* style.css forces `font-family: Nunito !important` on *, which also hits
-           xterm's rows and its cell-measure element. xterm sizes every cell from
-           that measurement, so a proportional font gives wide cells and spaced-out
-           letters. Pin the terminal back to a monospace font (same !important so
-           it wins; .xterm * is more specific than the global *). */
-        .xterm, .xterm *, .xterm *::before, .xterm *::after {
-            font-family: 'Cascadia Code', 'Fira Code', 'DejaVu Sans Mono',
-                         'Liberation Mono', 'Courier New', monospace !important;
+        /* Self-hosted monospace font. The device/phone's own "monospace" may not be
+           truly monospaced, and style.css forces Nunito everywhere, so xterm ended
+           up measuring one font and drawing another. font-display:block + the
+           document.fonts.load() below make xterm measure the real font. */
+        @font-face {
+            font-family: 'LME Mono';
+            src: url('/graphics/JetBrainsMono-Regular.woff2?v=1.0.0') format('woff2');
+            font-weight: 400; font-style: normal; font-display: block;
         }
+        @font-face {
+            font-family: 'LME Mono';
+            src: url('/graphics/JetBrainsMono-Bold.woff2?v=1.0.0') format('woff2');
+            font-weight: 700; font-style: normal; font-display: block;
+        }
+
+        html, body { height: 100%; overflow: hidden; overscroll-behavior-y: contain; }
+
+        /* style.css forces `font-family: Nunito !important` on *. That also hits
+           xterm's rows, its cell-measure element AND its per-glyph width cache
+           (a bare <div> appended to <body>, outside .xterm, positioned at
+           top:-50000px). xterm's DOM renderer sets letter-spacing on each glyph to
+           (cell width - measured glyph width), so measuring in Nunito while drawing
+           in a mono font gave wide gaps after i/l/t and jammed m/w. Pin all of them
+           to the same monospace font. !important + higher specificity beats `*`. */
+        .xterm, .xterm *, .xterm *::before, .xterm *::after,
+        body > div[style*="-50000px"], body > div[style*="-50000px"] * {
+            font-family: 'LME Mono', 'DejaVu Sans Mono', 'Liberation Mono', monospace !important;
+        }
+
+        /* Touch scrolling: xterm's DOM renderer rebuilds the row <span>s on every
+           scroll step. A touch keeps targeting the span it started on, so once that
+           span is detached all later touchmove/touchend events are lost and a swipe
+           moved exactly one line. Make the rows transparent to pointer events so the
+           (stable) .xterm-screen is the touch target. */
+        .xterm-rows, .xterm-rows * { pointer-events: none; }
 
         /* Fill exactly the VISIBLE viewport. 100vh is the largest viewport on mobile
            browsers (URL bar hidden), so calc(100vh - 56px) pushed the quick-action
@@ -256,7 +280,7 @@
             term = new Terminal({
                 cursorBlink:      true,
                 fontSize:         14,
-                fontFamily:       "'Cascadia Code', 'Fira Code', 'Courier New', monospace",
+                fontFamily:       "'LME Mono', monospace",
                 theme: {
                     background:   '#0d0d0d',
                     foreground:   '#e0e0e0',
@@ -319,12 +343,23 @@
             syncViewportHeight();
         }
 
+        // Open the terminal only once the monospace font is ready (max 3 s), so the
+        // cell size xterm measures is the one it actually draws with.
+        function startTerminal() {
+            if (!document.fonts || !document.fonts.load) return initTerminal();
+            let started = false;
+            const go = () => { if (!started) { started = true; initTerminal(); } };
+            Promise.all([document.fonts.load("14px 'LME Mono'"),
+                         document.fonts.load("bold 14px 'LME Mono'")]).then(go, go);
+            setTimeout(go, 3000);
+        }
+
         // 3. FINALLY, call loadAll AT THE VERY END, now that initTerminal actually exists!
         loadAll([
             ['/js/xterm.js',               'https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.js'],
             ['/js/xterm-addon-fit.js',      'https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.js'],
             ['/js/xterm-addon-web-links.js','https://cdn.jsdelivr.net/npm/xterm-addon-web-links@0.9.0/lib/xterm-addon-web-links.js'],
-        ], initTerminal);
+        ], startTerminal);
     </script>
     <script src="/js/bootstrap.bundle.min.js?v=1.0.0"></script>
 </body>
