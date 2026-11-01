@@ -14,6 +14,8 @@ name: release
 # Cuts a release when you push a tag like v1.0.0.
 # Builds the NodeMCU bin, packs the tarball, writes+commits manifest.txt,
 # and publishes the GitHub Release. Mirrors release.sh.
+# Modified: module versions in modules.txt only advance when that module's
+# files changed since its last published version (base still tracks the tag).
 on:
   push:
     tags: ["v*"]
@@ -78,20 +80,71 @@ jobs:
             startup.sh hotspot www2 lmehspt.sh ota.sh defaults.env module_ctl.sh sch iptables
           MD5=$(md5sum hotspot/firmware/coin_nodemcu.bin | awk '{print $1}')
 
-          # Hotspot MODULE bundle: exactly the files the Modules page installs
-          # from GitHub / removes on uninstall. hotspot_data/ and globals.env are
-          # intentionally excluded (operator data + settings, preserved on-device).
-          MODTAR="dist/lmepisowifi-hotspot-$VER.tar.gz"
-          tar -czf "$MODTAR" hotspot lmehspt.sh sch iptables www2/hotspot*.html www2/cgi-bin/hotspot.cgi
+          # --- Per-module versioning -------------------------------------------------
+          # The base bundle always takes the tag's version. A MODULE's version only
+          # advances when files in that module changed since the version currently
+          # published in modules.txt. Unchanged module -> modules.txt keeps its old
+          # version/url/sha256 (pointing at the old release's asset), no new asset is
+          # built or uploaded, and devices' do_auto_update() sees no version change so
+          # nothing is re-downloaded.
+          #
+          # Module file sets: single source of truth, used for BOTH the change check
+          # and the tarball.
+          #   Hotspot MODULE bundle: exactly the files the Modules page installs
+          #   from GitHub / removes on uninstall. hotspot_data/ and globals.env are
+          #   intentionally excluded (operator data + settings, preserved on-device).
+          #   Tailscale MODULE bundle: daemon+CLI binaries, its control script and
+          #   its www2 page + cgi. /config state is device-local (never shipped).
+          HS_PATHS=(hotspot lmehspt.sh sch iptables 'www2/hotspot*.html' www2/cgi-bin/hotspot.cgi)
+          TS_PATHS=(tailscale www2/tailscale.html www2/cgi-bin/tailscale.cgi)
 
-          # Tailscale MODULE bundle: daemon+CLI binaries, its control script and
-          # its www2 page + cgi. /config state is device-local (never shipped).
-          MODTAR_TS="dist/lmepisowifi-tailscale-$VER.tar.gz"
-          tar -czf "$MODTAR_TS" tailscale www2/tailscale.html www2/cgi-bin/tailscale.cgi
+          # reg_field <file> <id> <field>  — read a field from a modules.txt block
+          reg_field() {
+            awk -v id="$2" -v f="$3" '
+              /^id=/ { cur = substr($0, 4) }
+              cur == id && index($0, f "=") == 1 { print substr($0, length(f) + 2); exit }
+            ' "$1"
+          }
+
+          # resolve_module <id> <VAR_PREFIX> <paths...>
+          # Sets ${P}_CHANGED (1/0); when 0 also ${P}_VER/${P}_URL/${P}_SHA from the
+          # current modules.txt. Anything doubtful (no entry, tag or asset gone, git
+          # error) counts as CHANGED, so a failure here can only cause an extra bump,
+          # never a stale module.
+          resolve_module() {
+            local id="$1" p="$2"; shift 2
+            local ver url sha why="" assets x spec=()
+            ver=$(reg_field modules.txt "$id" version)
+            url=$(reg_field modules.txt "$id" url)
+            sha=$(reg_field modules.txt "$id" sha256)
+            if [ -z "$ver" ] || [ -z "$url" ] || [ -z "$sha" ]; then
+              why="no previous registry entry"
+            elif ! git rev-parse -q --verify "refs/tags/v$ver^{commit}" >/dev/null; then
+              why="tag v$ver not found"
+            elif ! assets=$(gh release view "v$ver" --json assets --jq '.assets[].name' 2>/dev/null) \
+                 || ! grep -qxF "${url##*/}" <<<"$assets"; then
+              why="release asset ${url##*/} missing"
+            else
+              for x in "$@"; do spec+=(":(glob)$x"); done
+              # hotspot/firmware/ is excluded: the NodeMCU .bin is rebuilt and committed
+              # by CI after each tag, so it always differs from the old tag's copy. A
+              # real firmware change always touches hotspot/nodemcucodeholder (covered).
+              git diff --quiet "v$ver" HEAD -- "${spec[@]}" ':(exclude)hotspot/firmware' \
+                || why="files changed since v$ver"
+            fi
+            if [ -n "$why" ]; then
+              echo "module $id: CHANGED ($why) -> v$VER"
+              declare -g "${p}_CHANGED=1"
+            else
+              echo "module $id: unchanged since v$ver -> keeping v$ver, no new asset"
+              declare -g "${p}_CHANGED=0" "${p}_VER=$ver" "${p}_URL=$url" "${p}_SHA=$sha"
+            fi
+          }
+
+          resolve_module hotspot   HS "${HS_PATHS[@]}"
+          resolve_module tailscale TS "${TS_PATHS[@]}"
 
           ASSET_URL="https://github.com/$REPO/releases/download/v$VER/lmepisowifi-$VER.tar.gz"
-          MOD_ASSET_URL="https://github.com/$REPO/releases/download/v$VER/lmepisowifi-hotspot-$VER.tar.gz"
-          MOD_TS_ASSET_URL="https://github.com/$REPO/releases/download/v$VER/lmepisowifi-tailscale-$VER.tar.gz"
           # jsDelivr mirror of the base bundle: committed into dist/ on main
           # below, so this resolves once this job's commit lands (same @main
           # pattern already used for manifest.txt/modules.txt/CHANGELOG.md).
@@ -100,47 +153,55 @@ jobs:
           # this ever 404s or fails.
           MIRROR_URL="https://cdn.jsdelivr.net/gh/$REPO@main/$TAR"
 
-          # --- Step 1: publish the release + tarball FIRST ---
+          ASSETS=("$TAR")
+          if [ "$HS_CHANGED" = 1 ]; then
+            HS_VER="$VER"
+            MODTAR="dist/lmepisowifi-hotspot-$VER.tar.gz"
+            tar -czf "$MODTAR" ${HS_PATHS[@]}   # unquoted on purpose: expands www2/hotspot*.html
+            HS_URL="https://github.com/$REPO/releases/download/v$VER/lmepisowifi-hotspot-$VER.tar.gz"
+            ASSETS+=("$MODTAR")
+          fi
+          if [ "$TS_CHANGED" = 1 ]; then
+            TS_VER="$VER"
+            MODTAR_TS="dist/lmepisowifi-tailscale-$VER.tar.gz"
+            tar -czf "$MODTAR_TS" ${TS_PATHS[@]}
+            TS_URL="https://github.com/$REPO/releases/download/v$VER/lmepisowifi-tailscale-$VER.tar.gz"
+            ASSETS+=("$MODTAR_TS")
+          fi
+
+          # --- Step 1: publish the release + tarball(s) FIRST ---
           # manifest.txt is not committed yet, so no device can see an sha256
           # that references a tarball that is not uploaded yet.
-          gh release create "v$VER" "$TAR" "$MODTAR" "$MODTAR_TS" --title "v$VER" --notes "Release $VER"
+          NOTES=$(printf 'Release %s\n\nModules:\n- hotspot %s%s\n- tailscale %s%s\n' \
+            "$VER" \
+            "$HS_VER" "$([ "$HS_CHANGED" = 1 ] || echo ' (unchanged)')" \
+            "$TS_VER" "$([ "$TS_CHANGED" = 1 ] || echo ' (unchanged)')")
+          gh release create "v$VER" "${ASSETS[@]}" --title "v$VER" --notes "$NOTES"
 
           # --- Step 2: re-download from the actual release URL and hash THAT ---
-          # Hashing what GitHub actually serves (not the local $TAR) guarantees
-          # the sha256 in manifest.txt matches exactly what every device downloads.
-          curl -fsSL -L "$ASSET_URL" -o /tmp/verify.tar.gz
-          SHA=$(sha256sum /tmp/verify.tar.gz | awk '{print $1}')
-          LOCAL_SHA=$(sha256sum "$TAR" | awk '{print $1}')
-          if [ "$SHA" != "$LOCAL_SHA" ]; then
-            echo "ERROR: GitHub served a different file than what was uploaded!"
-            echo "  uploaded sha256: $LOCAL_SHA"
-            echo "  served sha256:   $SHA"
-            exit 1
-          fi
+          # Hashing what GitHub actually serves (not the local file) guarantees
+          # the sha256 in manifest.txt/modules.txt matches exactly what every
+          # device downloads. Only assets uploaded by THIS release are re-checked;
+          # unchanged modules keep the sha256 already published (and verified) by
+          # the release that built them.
+          verify_served() {   # <label> <url> <local-file>  -> prints the served sha256
+            local label="$1" url="$2" local_file="$3" served local_sha
+            curl -fsSL -L "$url" -o /tmp/verify.tar.gz
+            served=$(sha256sum /tmp/verify.tar.gz | awk '{print $1}')
+            local_sha=$(sha256sum "$local_file" | awk '{print $1}')
+            if [ "$served" != "$local_sha" ]; then
+              echo "ERROR: GitHub served a different $label file than what was uploaded!" >&2
+              echo "  uploaded sha256: $local_sha" >&2
+              echo "  served sha256:   $served" >&2
+              exit 1
+            fi
+            echo "$served"
+          }
+          SHA=$(verify_served "base" "$ASSET_URL" "$TAR")
+          [ "$HS_CHANGED" = 1 ] && HS_SHA=$(verify_served "hotspot module" "$HS_URL" "$MODTAR")
+          [ "$TS_CHANGED" = 1 ] && TS_SHA=$(verify_served "tailscale module" "$TS_URL" "$MODTAR_TS")
 
-          # --- Step 2b: verify the served MODULE asset the same way ---
-          curl -fsSL -L "$MOD_ASSET_URL" -o /tmp/verify-mod.tar.gz
-          MOD_SHA=$(sha256sum /tmp/verify-mod.tar.gz | awk '{print $1}')
-          MOD_LOCAL_SHA=$(sha256sum "$MODTAR" | awk '{print $1}')
-          if [ "$MOD_SHA" != "$MOD_LOCAL_SHA" ]; then
-            echo "ERROR: GitHub served a different module file than uploaded!"
-            echo "  uploaded sha256: $MOD_LOCAL_SHA"
-            echo "  served sha256:   $MOD_SHA"
-            exit 1
-          fi
-
-          # --- Step 2c: verify the served TAILSCALE module asset ---
-          curl -fsSL -L "$MOD_TS_ASSET_URL" -o /tmp/verify-ts.tar.gz
-          MOD_TS_SHA=$(sha256sum /tmp/verify-ts.tar.gz | awk '{print $1}')
-          MOD_TS_LOCAL_SHA=$(sha256sum "$MODTAR_TS" | awk '{print $1}')
-          if [ "$MOD_TS_SHA" != "$MOD_TS_LOCAL_SHA" ]; then
-            echo "ERROR: GitHub served a different tailscale module file than uploaded!"
-            echo "  uploaded sha256: $MOD_TS_LOCAL_SHA"
-            echo "  served sha256:   $MOD_TS_SHA"
-            exit 1
-          fi
-
-          # --- Step 3: commit manifest.txt (base) + modules.txt (hotspot module) ---
+          # --- Step 3: commit manifest.txt (base) + modules.txt (modules) ---
           {
             echo "version=$VER"
             echo "url=$ASSET_URL"
@@ -152,25 +213,27 @@ jobs:
           } > manifest.txt
           {
             echo "# modules.txt — installable www2 modules (written by release CI)"
+            echo "# A module's version only advances when its files changed."
             echo "id=hotspot"
             echo "name=Hotspot / Piso-Wifi"
-            echo "version=$VER"
-            echo "url=$MOD_ASSET_URL"
-            echo "sha256=$MOD_SHA"
+            echo "version=$HS_VER"
+            echo "url=$HS_URL"
+            echo "sha256=$HS_SHA"
             echo "description=Captive portal, coin acceptor (NodeMCU), vouchers, WiFi rates, DHCP settings and QoS."
             echo ""
             echo "id=tailscale"
             echo "name=Tailscale VPN"
-            echo "version=$VER"
-            echo "url=$MOD_TS_ASSET_URL"
-            echo "sha256=$MOD_TS_SHA"
+            echo "version=$TS_VER"
+            echo "url=$TS_URL"
+            echo "sha256=$TS_SHA"
             echo "description=Tailscale VPN (kernel TUN when available, otherwise userspace mode) — advertise subnet routes and Tailscale SSH; configure on the www2 Tailscale page."
           } > modules.txt
           git config user.name  github-actions
           git config user.email github-actions@github.com
           git add -f manifest.txt modules.txt hotspot/firmware/coin_nodemcu.bin "$TAR"
-          git commit -m "release $VER (nodemcu fw $FW)" || echo "nothing to commit"
+          git commit -m "release $VER (nodemcu fw $FW; hotspot $HS_VER, tailscale $TS_VER)" || echo "nothing to commit"
           git push origin HEAD:main
+
           
       - name: Purge jsDelivr cache
         run: |

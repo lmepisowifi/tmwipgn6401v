@@ -96,7 +96,11 @@ COMPONENTS="hotspot www2 lmehspt.sh ota.sh defaults.env startup.sh module_ctl.sh
 # it on. And once migrated, the new per-unit nodemcu_ifaces.txt was equally
 # unpreserved, so the very next OTA after that would have reset it AGAIN.
 # Both are now carried across every swap like dashboard_layout.json above.
-PRESERVE="www2/data/dashboard_layout.json www2/data/nodemcu_iface.json www2/data/nodemcu_ifaces.txt www2/uploads hotspot/audio www2/tailscale.html www2/cgi-bin/tailscale.cgi"
+# www2/data/br0_static.env: the default gateway / DNS Quick Setup saves for a
+# static-IP Access Point or Extender (sh/br0static.sh re-applies it at boot).
+# Device-owned, never shipped in the repo, so without this line the next OTA
+# would silently drop the route and the device would lose internet access.
+PRESERVE="www2/data/dashboard_layout.json www2/data/nodemcu_iface.json www2/data/nodemcu_ifaces.txt www2/data/br0_static.env www2/uploads hotspot/audio www2/tailscale.html www2/cgi-bin/tailscale.cgi"
 
 # ---- config ----------------------------------------------------------------
 OTA_REPO=""

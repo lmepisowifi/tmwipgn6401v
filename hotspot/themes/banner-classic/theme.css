@@ -416,13 +416,29 @@ html body #btn-coin-status           { order: 3; }
 html body #v-login .d-flex .btn,
 html body #v-status .d-flex .btn     { width: 280px; max-width: 100%; }
 
+/* Button icons (banknote, pause bars, wifi mark).
+   They are an EMPTY inline-block with an explicit em size and the SVG as its
+   background, not `content: url(...)`: an image in `content` is wrapped in its
+   own line box (strut + the button's line-height), which makes the box taller
+   than the picture and leaves the picture stuck to its top, so it always
+   rendered a couple of pixels above the label, and `vertical-align: middle`
+   (which centres on the font's x-height, not on the capital letters this theme
+   uses) could not fix it. An empty inline-block has no inner line box and its
+   baseline is its bottom edge, so `vertical-align: -X` is exact: X is half the
+   icon height minus half the capital height (~.36em in every common UI font),
+   which centres the icon on the capitals. Sizes are in em so the icon follows
+   the button's font size. */
+
 /* Insert Coin: the big blue button, a banknote either side of the label */
 html body .btn-coin::before,
 html body .btn-coin::after {
-  content: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='20' height='20' viewBox='0 0 24 24' fill='none' stroke='%23fff' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect x='2' y='6' width='20' height='12' rx='2'/%3E%3Ccircle cx='12' cy='12' r='3'/%3E%3C/svg%3E");
+  content: "";
   display: inline-block;
-  vertical-align: middle;
-  margin: -3px 8px 0;
+  width: 1.15em;
+  height: 1.15em;
+  margin: 0 8px;
+  vertical-align: -.215em;
+  background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='20' height='20' viewBox='0 0 24 24' fill='none' stroke='%23fff' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Crect x='2' y='6' width='20' height='12' rx='2'/%3E%3Ccircle cx='12' cy='12' r='3'/%3E%3C/svg%3E") center / contain no-repeat;
 }
 
 /* Pause / Resume: yellow and green (the stock sheet makes both red, by id) */
@@ -437,10 +453,13 @@ html body #btn-pause:hover {
   color: #212529 !important;
 }
 html body #btn-pause::before {
-  content: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='18' height='18' viewBox='0 0 24 24'%3E%3Crect x='5' y='4' width='5' height='16' rx='1' fill='%23212529'/%3E%3Crect x='14' y='4' width='5' height='16' rx='1' fill='%23212529'/%3E%3C/svg%3E");
+  content: "";
   display: inline-block;
-  vertical-align: middle;
-  margin: -3px 8px 0 0;
+  width: 1.02em;
+  height: 1.02em;
+  margin: 0 8px 0 0;
+  vertical-align: -.15em;
+  background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='18' height='18' viewBox='0 0 24 24'%3E%3Crect x='5' y='4' width='5' height='16' rx='1' fill='%23212529'/%3E%3Crect x='14' y='4' width='5' height='16' rx='1' fill='%23212529'/%3E%3C/svg%3E") center / contain no-repeat;
 }
 html body #btn-resume {
   background: #28a745 !important;
@@ -464,10 +483,13 @@ html body .btn-rates {
 html body #v-login .d-flex .btn-rates,
 html body #v-status .d-flex .btn-rates { width: auto; }
 html body .btn-rates::before {
-  content: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='%2328a745' stroke-width='2.6' stroke-linecap='round'%3E%3Cpath d='M2.5 9.5A13 13 0 0 1 21.5 9.5'/%3E%3Cpath d='M6 13A8.5 8.5 0 0 1 18 13'/%3E%3Cpath d='M9.3 16.5A4 4 0 0 1 14.7 16.5'/%3E%3Ccircle cx='12' cy='20' r='1' fill='%2328a745'/%3E%3C/svg%3E");
+  content: "";
   display: inline-block;
-  vertical-align: middle;
-  margin: -2px 6px 0 0;
+  width: 1.12em;
+  height: 1.12em;
+  margin: 0 6px 0 0;
+  vertical-align: -.14em;   /* a touch less than the formula: the wifi arcs sit low in their viewBox */
+  background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='14' height='14' viewBox='0 0 24 24' fill='none' stroke='%2328a745' stroke-width='2.6' stroke-linecap='round'%3E%3Cpath d='M2.5 9.5A13 13 0 0 1 21.5 9.5'/%3E%3Cpath d='M6 13A8.5 8.5 0 0 1 18 13'/%3E%3Cpath d='M9.3 16.5A4 4 0 0 1 14.7 16.5'/%3E%3Ccircle cx='12' cy='20' r='1' fill='%2328a745'/%3E%3C/svg%3E") center / contain no-repeat;
 }
 
 /* Voucher box: a single row under the buttons */

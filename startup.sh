@@ -47,6 +47,13 @@
     chmod +x /lmepisowifi/www2/sh/startup.sh
     /lmepisowifi/www2/sh/startup.sh &
 
+    # Quick Setup (Access Point / Extender with a static br0 address): put the
+    # saved default gateway + DNS back. A no-op unless that file exists; the
+    # script itself waits for the SDK startup to finish before touching routes.
+    if [ -f /lmepisowifi/www2/data/br0_static.env ] && [ -f /lmepisowifi/www2/sh/br0static.sh ]; then
+        sh /lmepisowifi/www2/sh/br0static.sh boot >/dev/null 2>&1 &
+    fi
+
     # --- STEP 1.5b: Replay power-outage coin sessions ---
     # A Piso-Wifi unit and its coin slot share a power brick, so a blackout kills
     # both mid-session. The NodeMCU is now stateless (it no longer wears out its

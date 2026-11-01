@@ -171,12 +171,6 @@ REVERT_ROLLBACK_TP=/tmp/txpower_rollback
 REVERT_START=/tmp/ssid_revert_start
 REVERT_TIMEOUT=90
 
-# ---- MAC filter revert state files ----
-MAC_REVERT_PENDING=/tmp/macfilter_revert_pending
-MAC_REVERT_MODE=/tmp/macfilter_revert_mode
-MAC_REVERT_START=/tmp/macfilter_revert_start
-MAC_REVERT_TIMEOUT=90
-
 # ---- DHCP server revert state files ----
 DHCP_REVERT_PENDING=/tmp/dhcp_revert_pending
 DHCP_REVERT_MODE=/tmp/dhcp_revert_mode
@@ -411,60 +405,6 @@ ss_finish() {
     [ -z "$_f_res" ] && _f_res="{\"iface\":\"$1\",\"aps\":[],\"channels\":[]}"
     _f_cb='}'
     printf '%s,"host":%s}' "${_f_res%$_f_cb}" "$(ss_host_json "$1")"
-}
-
-# ---- MAC filter helper functions ----
-
-# Returns current mode (0/1/2) for WLAN1
-get_mac_mode() {
-    mib get WLAN1_MACAC_ENABLED \
-        | busybox grep "=" \
-        | busybox cut -d'=' -f2- \
-        | busybox tr -d '\r\n' \
-        | busybox sed 's/^[[:space:]]*//;s/[[:space:]]*$//'
-}
-
-# Emits a JSON array of {index, mac} objects from WLAN1_AC_TBL
-# MAC is formatted as uppercase colon-separated XX:XX:XX:XX:XX:XX
-get_mac_entries_json() {
-    RAW=$(mib get WLAN1_AC_TBL 2>/dev/null)
-    # Each record looks like:
-    #   WLAN1_AC_TBL.N:
-    #   wlanIdx = 1
-    #   MacAddr = aabbccddeeff
-    printf '['
-    FIRST=1
-    IDX=""
-    MAC_RAW=""
-    WLAN_IDX=""
-    echo "$RAW" | while IFS= read -r LINE; do
-        # New record header
-        HEADER=$(echo "$LINE" | busybox grep -E '^WLAN1_AC_TBL\.[0-9]+:')
-        if [ -n "$HEADER" ]; then
-            # Flush previous record if it belonged to wlan1 (wlanIdx=1)
-            if [ -n "$IDX" ] && [ "$WLAN_IDX" = "1" ] && [ -n "$MAC_RAW" ]; then
-                FORMATTED=$(echo "$MAC_RAW" | busybox tr 'a-z' 'A-Z' | busybox sed 's/\(..\)\(..\)\(..\)\(..\)\(..\)\(..\)/\1:\2:\3:\4:\5:\6/')
-                if [ "$FIRST" = "1" ]; then
-                    FIRST=0
-                else
-                    printf ','
-                fi
-                printf '{"index":%s,"mac":"%s"}' "$IDX" "$FORMATTED"
-            fi
-            IDX=$(echo "$HEADER" | busybox sed 's/WLAN1_AC_TBL\.\([0-9]*\):.*/\1/')
-            MAC_RAW=""
-            WLAN_IDX=""
-            continue
-        fi
-        VAL=$(echo "$LINE" | busybox sed 's/^[[:space:]]*//')
-        W=$(echo "$VAL" | busybox sed -n 's/wlanIdx[[:space:]]*=[[:space:]]*\([0-9]*\).*/\1/p')
-        [ -n "$W" ] && WLAN_IDX="$W"
-        M=$(echo "$VAL" | busybox sed -n 's/MacAddr[[:space:]]*=[[:space:]]*\([0-9a-fA-F]*\).*/\1/p')
-        [ -n "$M" ] && MAC_RAW="$M"
-    done
-    # Flush last record
-    # (The subshell from 'while … | while' means variables don't persist — handled below)
-    printf ']'
 }
 
 # ==========================================
@@ -993,88 +933,6 @@ if [ "$REQUEST_METHOD" = "GET" ]; then
             "$MEM_USED_MB" "$MEM_TOTAL_MB" "$MEM_PCT" \
             "$DISK_USED_MB" "$DISK_AVAIL_MB" "$DISK_TOTAL_MB" "$DISK_PCT" \
             "$CT_COUNT" "$CT_MAX" "$CT_PCT"
-        exit 0
-    fi
-
-    # --- action=macfilter_status: return mode + entry list as JSON ---
-    if echo "$QUERY_STRING" | busybox grep -q "action=macfilter_status"; then
-        CURRENT_MODE=$(get_mac_mode)
-        [ -z "$CURRENT_MODE" ] && CURRENT_MODE=0
-
-        # Parse WLAN1_AC_TBL into a JSON array.
-        # Because busybox sh pipelines run in subshells, we accumulate output
-        # into a temp file to avoid the variable-scope trap.
-        TMP_ENTRIES=/tmp/mac_entries_$$.json
-        printf '[' > "$TMP_ENTRIES"
-        FIRST_ENTRY=1
-
-        mib get WLAN1_AC_TBL 2>/dev/null | while IFS= read -r LINE; do
-            HEADER=$(echo "$LINE" | busybox grep -oE '^WLAN1_AC_TBL\.[0-9]+:')
-            if [ -n "$HEADER" ]; then
-                # Write a sentinel so the next iteration can detect a new record
-                printf '\037%s' "$(echo "$HEADER" | busybox tr -d ':')" >> "$TMP_ENTRIES"
-            fi
-            W=$(echo "$LINE" | busybox sed -n 's/.*wlanIdx[[:space:]]*=[[:space:]]*\([0-9]*\).*/\1/p')
-            [ -n "$W" ] && printf '\036WIDX=%s' "$W" >> "$TMP_ENTRIES"
-            M=$(echo "$LINE" | busybox sed -n 's/.*MacAddr[[:space:]]*=[[:space:]]*\([0-9a-fA-F]*\).*/\1/p')
-            [ -n "$M" ] && printf '\036MAC=%s' "$M" >> "$TMP_ENTRIES"
-        done
-
-        # Now post-process the temp file with awk to produce clean JSON
-        JSON_ENTRIES=$(
-            busybox awk '
-            BEGIN { RS="\037"; FS="\036"; first=1 }
-            NR==1 { next }   # skip the leading [ before first sentinel
-            {
-                idx=""; widx=""; mac=""
-                for (i=1;i<=NF;i++) {
-                    if ($i ~ /^WLAN1_AC_TBL\./) {
-                        idx = substr($i, index($i,".")+1)
-                    } else if ($i ~ /^WIDX=/) {
-                        widx = substr($i, 6)
-                    } else if ($i ~ /^MAC=/) {
-                        mac = substr($i, 5)
-                    }
-                }
-                # Only include entries belonging to wlan1 (wlanIdx=1)
-                # and skip all-zero placeholder MACs
-                if (widx == "1" && mac != "" && mac != "000000000000") {
-                    # Format MAC as XX:XX:XX:XX:XX:XX uppercase
-                    m = toupper(mac)
-                    formatted = substr(m,1,2)":"substr(m,3,2)":"substr(m,5,2)":"substr(m,7,2)":"substr(m,9,2)":"substr(m,11,2)
-                    if (!first) printf ","
-                    printf "{\"index\":%s,\"mac\":\"%s\"}", idx, formatted
-                    first=0
-                }
-            }
-            ' "$TMP_ENTRIES"
-        )
-        rm -f "$TMP_ENTRIES"
-
-        MAC_PENDING=false
-        MAC_REMAINING=0
-        if [ -f "$MAC_REVERT_PENDING" ] && [ -f "$MAC_REVERT_START" ]; then
-            MAC_START=$(cat "$MAC_REVERT_START")
-            MAC_NOW=$(date +%s)
-            MAC_ELAPSED=$((MAC_NOW - MAC_START))
-            MAC_REMAINING=$((MAC_REVERT_TIMEOUT - MAC_ELAPSED))
-            [ "$MAC_REMAINING" -lt 0 ] && MAC_REMAINING=0
-            MAC_PENDING=true
-        fi
-
-        printf "Status: 200 OK\r\n"
-        printf "Content-Type: application/json\r\n\r\n"
-        printf '{"mode":%s,"entries":[%s],"pending":%s,"remaining":%d}' \
-            "$CURRENT_MODE" "$JSON_ENTRIES" "$MAC_PENDING" "$MAC_REMAINING"
-        exit 0
-    fi
-
-    # --- action=macfilter_confirm: cancel the mode revert ---
-    if echo "$QUERY_STRING" | busybox grep -q "action=macfilter_confirm"; then
-        rm -f "$MAC_REVERT_PENDING" "$MAC_REVERT_MODE" "$MAC_REVERT_START"
-        printf "Status: 200 OK\r\n"
-        printf "Content-Type: text/plain\r\n\r\n"
-        printf "confirmed"
         exit 0
     fi
 
@@ -1872,7 +1730,7 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
         exit 0
     fi
 
-    # --- action=dhcp_enable: enable/disable DHCP server, mirrors macfilter_mode's revert-timer shape ---
+    # --- action=dhcp_enable: enable/disable DHCP server, rolled back by a revert timer unless confirmed ---
     if echo "$QUERY_STRING" | busybox grep -q "action=dhcp_enable"; then
         FORM_MODE=$(echo "$POST_DATA" \
             | busybox sed -n 's/.*mode=\([^&]*\).*/\1/p' \
@@ -1908,7 +1766,7 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
         mib commit
         sh "$DHCP_CONTROL" restart >/dev/null 2>&1
 
-        # Background revert timer (same shape as macfilter_mode's)
+        # Background revert timer
         (
             sleep $DHCP_REVERT_TIMEOUT
             if [ -f "$DHCP_REVERT_PENDING" ]; then
@@ -2244,157 +2102,6 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
 
         exit 0
     fi
-
-    # --- action=macfilter_mode: set WLAN1_MACAC_ENABLED with revert ---
-    if echo "$QUERY_STRING" | busybox grep -q "action=macfilter_mode"; then
-        FORM_MODE=$(echo "$POST_DATA" \
-            | busybox sed -n 's/.*mode=\([^&]*\).*/\1/p' \
-            | busybox tr -d '\r\n')
-        case "$FORM_MODE" in
-            0|1|2) ;;
-            *)
-                printf "Status: 400 Bad Request\r\n"
-                printf "Content-Type: text/plain\r\n\r\n"
-                printf "Invalid mode value"
-                exit 0
-                ;;
-        esac
-
-        OLD_MODE=$(get_mac_mode)
-        [ -z "$OLD_MODE" ] && OLD_MODE=0
-
-        # Save rollback state
-        rm -f "$MAC_REVERT_PENDING" "$MAC_REVERT_MODE" "$MAC_REVERT_START"
-        echo "$OLD_MODE" > "$MAC_REVERT_MODE"
-        touch "$MAC_REVERT_PENDING"
-        date +%s > "$MAC_REVERT_START"
-
-        mib set WLAN1_MACAC_ENABLED "$FORM_MODE"
-        mib commit
-        wlan_apply restart
-
-        # Background revert timer
-        (
-            sleep $MAC_REVERT_TIMEOUT
-            if [ -f "$MAC_REVERT_PENDING" ]; then
-                RB_MODE=$(cat "$MAC_REVERT_MODE")
-                mib set WLAN1_MACAC_ENABLED "$RB_MODE"
-                mib commit
-                wlan_apply restart
-                rm -f "$MAC_REVERT_PENDING" "$MAC_REVERT_MODE" "$MAC_REVERT_START"
-            fi
-        ) &
-
-        printf "Status: 200 OK\r\n"
-        printf "Content-Type: text/plain\r\n\r\n"
-        printf "OK"
-        exit 0
-    fi
-
-    # --- action=macfilter_add: add a new MAC to WLAN1_AC_TBL ---
-    if echo "$QUERY_STRING" | busybox grep -q "action=macfilter_add"; then
-        FORM_MAC=$(echo "$POST_DATA" \
-            | busybox sed -n 's/.*mac=\([^&]*\).*/\1/p' \
-            | busybox tr -d '\r\n' \
-            | busybox tr 'A-Z' 'a-z')
-
-        # Validate: exactly 12 hex chars (wire format, no colons)
-        case "$FORM_MAC" in
-            ''|*[!0-9a-f]*)
-                printf "Status: 400 Bad Request\r\n"
-                printf "Content-Type: text/plain\r\n\r\n"
-                printf "Invalid MAC address"
-                exit 0
-                ;;
-        esac
-        if [ ${#FORM_MAC} -ne 12 ]; then
-            printf "Status: 400 Bad Request\r\n"
-            printf "Content-Type: text/plain\r\n\r\n"
-            printf "Invalid MAC address length"
-            exit 0
-        fi
-
-        # Reject all-zero MAC
-        if [ "$FORM_MAC" = "000000000000" ]; then
-            printf "Status: 400 Bad Request\r\n"
-            printf "Content-Type: text/plain\r\n\r\n"
-            printf "Invalid MAC address"
-            exit 0
-        fi
-
-        # Duplicate check: scan existing wlanIdx=1 entries
-        EXISTING=$(mib get WLAN1_AC_TBL 2>/dev/null)
-        if echo "$EXISTING" | busybox grep -iq "MacAddr[[:space:]]*=[[:space:]]*$FORM_MAC"; then
-            printf "Status: 409 Conflict\r\n"
-            printf "Content-Type: text/plain\r\n\r\n"
-            printf "MAC already exists"
-            exit 0
-        fi
-
-        # Add new record: mib add returns new NUM, new index = NUM-1
-        ADD_OUT=$(mib add WLAN1_AC_TBL 2>&1)
-        NEW_NUM=$(echo "$ADD_OUT" | busybox sed -n 's/.*NUM=\([0-9]*\).*/\1/p' | busybox tr -d '\r\n')
-        if [ -z "$NEW_NUM" ]; then
-            printf "Status: 500 Internal Server Error\r\n"
-            printf "Content-Type: text/plain\r\n\r\n"
-            printf "Failed to allocate table entry"
-            exit 0
-        fi
-        NEW_IDX=$((NEW_NUM - 1))
-
-        mib set "WLAN1_AC_TBL.${NEW_IDX}.wlanIdx" 1
-        mib set "WLAN1_AC_TBL.${NEW_IDX}.MacAddr" "$FORM_MAC"
-        mib commit
-        wlan_apply restart
-
-        printf "Status: 200 OK\r\n"
-        printf "Content-Type: text/plain\r\n\r\n"
-        printf "OK"
-        exit 0
-    fi
-
-    # --- action=macfilter_del: delete a MAC entry by table index ---
-    if echo "$QUERY_STRING" | busybox grep -q "action=macfilter_del"; then
-        FORM_IDX=$(echo "$POST_DATA" \
-            | busybox sed -n 's/.*index=\([^&]*\).*/\1/p' \
-            | busybox tr -d '\r\n')
-
-        # Validate: non-negative integer
-        case "$FORM_IDX" in
-            ''|*[!0-9]*)
-                printf "Status: 400 Bad Request\r\n"
-                printf "Content-Type: text/plain\r\n\r\n"
-                printf "Invalid index"
-                exit 0
-                ;;
-        esac
-
-        # Verify the entry exists and belongs to wlan1
-        ENTRY=$(mib get "WLAN1_AC_TBL.${FORM_IDX}" 2>/dev/null)
-        if [ -z "$ENTRY" ]; then
-            printf "Status: 404 Not Found\r\n"
-            printf "Content-Type: text/plain\r\n\r\n"
-            printf "Entry not found"
-            exit 0
-        fi
-        ENTRY_WIDX=$(echo "$ENTRY" | busybox sed -n 's/.*wlanIdx[[:space:]]*=[[:space:]]*\([0-9]*\).*/\1/p' | busybox tr -d '\r\n')
-        if [ "$ENTRY_WIDX" != "1" ]; then
-            printf "Status: 403 Forbidden\r\n"
-            printf "Content-Type: text/plain\r\n\r\n"
-            printf "Entry does not belong to WLAN1"
-            exit 0
-        fi
-
-        mib del "WLAN1_AC_TBL.${FORM_IDX}"
-        mib commit
-        wlan_apply restart
-
-        printf "Status: 200 OK\r\n"
-        printf "Content-Type: text/plain\r\n\r\n"
-        printf "OK"
-        exit 0
-    fi
-
 
     # --- LAN port set: detected by presence of 'port=' in POST data ---
     if echo "$POST_DATA" | busybox grep -q "port="; then

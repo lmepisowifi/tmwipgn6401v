@@ -176,7 +176,10 @@ setInterval(function () {
             '      <ul class="navbar-nav me-auto">',
                        buildItems(filteredNAV, hotspotRunning),
             '      </ul>',
-            '      <button class="btn btn-outline-danger" onclick="logout()">Logout</button>',
+            '      <div class="d-flex gap-2">',
+            '        <button type="button" class="btn btn-outline-light" id="lme-quicksetup-btn">Quick Setup</button>',
+            '        <button class="btn btn-outline-danger" onclick="logout()">Logout</button>',
+            '      </div>',
             '    </div>',
             '  </div>',
             '</nav>',
@@ -205,6 +208,20 @@ setInterval(function () {
                 return { label: item.label, href: item.href, module: item.module, children: fc };
             });
         _script.insertAdjacentHTML('beforebegin', buildNavHtml(filteredNAV, hotspotRunning));
+        var qsBtn = document.getElementById('lme-quicksetup-btn');
+        if (qsBtn) qsBtn.addEventListener('click', openQuickSetup);
+    }
+
+    // Quick Setup wizard — js/quicksetup.js is only fetched the first time the
+    // button is pressed, so it costs nothing on every other page load.
+    function openQuickSetup() {
+        if (window.lmeQuickSetup) { window.lmeQuickSetup.open(); return; }
+        if (typeof bootstrap === 'undefined') { alert('Quick Setup needs the page to finish loading first. Try again in a moment.'); return; }
+        var s = document.createElement('script');
+        s.src = '/js/quicksetup.js';
+        s.onload = function () { if (window.lmeQuickSetup) window.lmeQuickSetup.open(); };
+        s.onerror = function () { alert('Could not load Quick Setup.'); };
+        document.head.appendChild(s);
     }
 
     // Fetch system_status (for GPON/EPON visibility) and hotspot status (for Hotspot sub-items)

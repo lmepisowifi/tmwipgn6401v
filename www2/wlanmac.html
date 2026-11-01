@@ -808,6 +808,59 @@
         }
 
         // ============================================================
+        // Live apply. Every change is sent with live=1: the CGI pushes the
+        // filter into the running driver (iwpriv) and disconnects only the
+        // devices it no longer allows, so there is no radio restart to wait
+        // for and everybody else stays connected. The reply says how it went:
+        //   "OK live"     applied
+        //   "OK"          nothing to apply (filter off, or that radio is disabled)
+        //   "OK restart"  the live push failed; the CGI is restarting that radio
+        //                 in the background, so wait for it like before
+        // ============================================================
+        function postAcl(action, body) {
+            return fetch(CGI + '?action=' + action, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                body: body + '&live=1'
+            }).then(function (r) {
+                return r.text().then(function (t) {
+                    if (!r.ok) {
+                        var e = new Error(t || (r.status === 409 ? 'MAC already in list' : 'Request failed'));
+                        e.status = r.status;
+                        throw e;
+                    }
+                    return t;
+                });
+            });
+        }
+
+        // true when any reply (a string, or an array of them) asked us to wait for a restart
+        function needsRestart(texts) {
+            return [].concat(texts).some(function (t) { return /restart/i.test(t); });
+        }
+
+        function waitForRestart(label, seconds) {
+            startCountdown(seconds, label);
+            setTimeout(function () { pollUntilBack(); }, 4000);
+        }
+
+        // Refresh the lists from the router, then show the result for a moment.
+        function applyDone(label) {
+            return fetch(CGI + '?action=status')
+                .then(function (r) { return r.json(); })
+                .then(function (status) {
+                    applyStatus(status);
+                    spinner.style.display = 'none';
+                    overlayTxt.textContent = label;
+                    setTimeout(hideOverlay, 1000);
+                })
+                .catch(function () {
+                    hideOverlay();
+                    toastr["warning"]("Error refreshing.", "Error");
+                });
+        }
+
+        // ============================================================
         // Lockout-risk warning modal
         // ============================================================
         var _pendingApplyFn = null;
@@ -914,20 +967,10 @@
                 lockAll();
                 showOverlay('Applying Mode.');
 
-                fetch(CGI + '?action=setmode', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-                    body: 'band=' + band + '&mode=' + mode
-                })
-                    .then(function (r) {
-                        if (!r.ok) return r.text().then(function (t) { throw new Error(t || 'Request failed'); });
-                        var wlanOff = bandState[band] && bandState[band].disabled;
-                        if (!wlanOff) {
-                            startCountdown(30, 'Applying Mode.');
-                            setTimeout(function () { pollUntilBack(); }, 4000);
-                        } else {
-                            setTimeout(function () { pollUntilBack(); }, 2000);
-                        }
+                postAcl('setmode', 'band=' + band + '&mode=' + mode)
+                    .then(function (t) {
+                        if (needsRestart(t)) waitForRestart('Applying Mode.', 30);
+                        else applyDone('Mode Applied.');
                     })
                     .catch(function (err) {
                         hideOverlay();
@@ -952,29 +995,14 @@
                 lockAll();
                 showOverlay('Applying Mode.');
 
-                fetch(CGI + '?action=setmode', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-                    body: 'band=24&mode=' + mode
-                })
-                    .then(function (r) {
-                        if (!r.ok) return r.text().then(function (t) { throw new Error(t || 'Request failed'); });
-                        return fetch(CGI + '?action=setmode', {
-                            method: 'POST',
-                            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-                            body: 'band=5&mode=' + mode
-                        });
+                postAcl('setmode', 'band=24&mode=' + mode)
+                    .then(function (t24) {
+                        return postAcl('setmode', 'band=5&mode=' + mode)
+                            .then(function (t5) { return [t24, t5]; });
                     })
-                    .then(function (r) {
-                        if (!r.ok) return r.text().then(function (t) { throw new Error(t || 'Request failed'); });
-                        var wlan24Off = bandState['24'] && bandState['24'].disabled;
-                        var wlan5Off  = bandState['5']  && bandState['5'].disabled;
-                        if (!(wlan24Off && wlan5Off)) {
-                            startCountdown(30, 'Applying Mode.');
-                            setTimeout(function () { pollUntilBack(); }, 4000);
-                        } else {
-                            setTimeout(function () { pollUntilBack(); }, 2000);
-                        }
+                    .then(function (texts) {
+                        if (needsRestart(texts)) waitForRestart('Applying Mode.', 30);
+                        else applyDone('Mode Applied.');
                     })
                     .catch(function (err) {
                         hideOverlay();
@@ -997,50 +1025,14 @@
                 return;
             }
 
-            // Use the *applied* mode (what the device actually has), not the UI switch state.
-            // The switch can be toggled without clicking Apply, so DOM state is unreliable here.
-            var isEnabled = bandState[band] && bandState[band].mode > 0;
-
             lockAll();
             showOverlay('Adding MAC\u2026');
 
-            fetch(CGI + '?action=addmac', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-                body: 'band=' + band + '&mac=' + encodeURIComponent(raw)
-            })
-                .then(function (r) {
-                    if (r.status === 409) {
-                        return r.text().then(function (t) { throw new Error(t || 'MAC already in list'); });
-                    }
-                    if (!r.ok) {
-                        return r.text().then(function (t) { throw new Error(t || 'Request failed'); });
-                    }
+            postAcl('addmac', 'band=' + band + '&mac=' + encodeURIComponent(raw))
+                .then(function (t) {
                     input.value = '';
-                    if (isEnabled) {
-                        // Filter active — CGI fires wlan_apply restart; skip countdown if radio is off
-                        var wlanOff = bandState[band] && bandState[band].disabled;
-                        if (!wlanOff) {
-                            startCountdown(15, 'Adding MAC.');
-                            setTimeout(function () { pollUntilBack(); }, 4000);
-                        } else {
-                            setTimeout(function () { pollUntilBack(); }, 2000);
-                        }
-                    } else {
-                        // Filter disabled — CGI only commits, no restart needed
-                        fetch(CGI + '?action=status')
-                            .then(function (r) { return r.json(); })
-                            .then(function (status) {
-                                applyStatus(status);
-                                spinner.style.display = 'none';
-                                overlayTxt.textContent = 'MAC Added.';
-                                setTimeout(hideOverlay, 1000);
-                            })
-                            .catch(function () {
-                                hideOverlay();
-                                toastr["warning"]("Error refreshing.", "Error");
-                            });
-                    }
+                    if (needsRestart(t)) waitForRestart('Adding MAC.', 15);
+                    else applyDone('MAC Added.');
                 })
                 .catch(function (err) {
                     hideOverlay();
@@ -1062,54 +1054,24 @@
                 return;
             }
 
-            // Use the *applied* mode (what the device actually has), not the UI switch state.
-            var isEnabled = (bandState['24'] && bandState['24'].mode > 0) ||
-                            (bandState['5']  && bandState['5'].mode  > 0);
-
             lockAll();
             showOverlay('Adding MAC\u2026');
 
             function addToBand(band) {
-                return fetch(CGI + '?action=addmac', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-                    body: 'band=' + band + '&mac=' + encodeURIComponent(raw)
-                }).then(function (r) {
-                    // 409 = already in list — that's acceptable in "both" mode
-                    if (r.status === 409) return;
-                    if (!r.ok) return r.text().then(function (t) { throw new Error(t || 'Request failed'); });
-                });
+                return postAcl('addmac', 'band=' + band + '&mac=' + encodeURIComponent(raw))
+                    .catch(function (err) {
+                        // 409 = already in list — that's acceptable in "both" mode
+                        if (err.status === 409) return '';
+                        throw err;
+                    });
             }
 
             addToBand('24')
-                .then(function () { return addToBand('5'); })
-                .then(function () {
+                .then(function (t24) { return addToBand('5').then(function (t5) { return [t24, t5]; }); })
+                .then(function (texts) {
                     input.value = '';
-                    if (isEnabled) {
-                        // Filter active — CGI fires wlan_apply restart; skip countdown if both radios are off
-                        var wlan24Off = bandState['24'] && bandState['24'].disabled;
-                        var wlan5Off  = bandState['5']  && bandState['5'].disabled;
-                        if (!(wlan24Off && wlan5Off)) {
-                            startCountdown(15, 'Adding MAC.');
-                            setTimeout(function () { pollUntilBack(); }, 4000);
-                        } else {
-                            setTimeout(function () { pollUntilBack(); }, 2000);
-                        }
-                    } else {
-                        // Filter disabled — CGI only commits, no restart needed
-                        fetch(CGI + '?action=status')
-                            .then(function (r) { return r.json(); })
-                            .then(function (status) {
-                                applyStatus(status);
-                                spinner.style.display = 'none';
-                                overlayTxt.textContent = 'MAC Added.';
-                                setTimeout(hideOverlay, 1000);
-                            })
-                            .catch(function () {
-                                hideOverlay();
-                                toastr["warning"]("Error refreshing.", "Error");
-                            });
-                    }
+                    if (needsRestart(texts)) waitForRestart('Adding MAC.', 15);
+                    else applyDone('MAC Added.');
                 })
                 .catch(function (err) {
                     hideOverlay();
@@ -1132,37 +1094,13 @@
             }
 
             function doDelete() {
-                var isEnabled = bandState[band] && bandState[band].mode > 0;
-                var wlanOff = bandState[band] && bandState[band].disabled;
                 lockAll();
                 showOverlay('Removing MAC\u2026');
 
-                fetch(CGI + '?action=delmac', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-                    body: 'band=' + band + '&idx=' + idx
-                })
-                    .then(function (r) {
-                        if (!r.ok) return r.text().then(function (t) { throw new Error(t || 'Request failed'); });
-                        if (isEnabled && !wlanOff) {
-                            // Filter active + radio up — restart will happen, wait for it
-                            startCountdown(15, 'Removing MAC.');
-                            setTimeout(function () { pollUntilBack(); }, 4000);
-                        } else {
-                            // Filter off or radio disabled — quick refresh
-                            fetch(CGI + '?action=status')
-                                .then(function (r) { return r.json(); })
-                                .then(function (status) {
-                                    applyStatus(status);
-                                    spinner.style.display = 'none';
-                                    overlayTxt.textContent = 'MAC Removed.';
-                                    setTimeout(hideOverlay, 1000);
-                                })
-                                .catch(function () {
-                                    hideOverlay();
-                                    toastr["warning"]("Error refreshing.", "Error");
-                                });
-                        }
+                postAcl('delmac', 'band=' + band + '&idx=' + idx)
+                    .then(function (t) {
+                        if (needsRestart(t)) waitForRestart('Removing MAC.', 15);
+                        else applyDone('MAC Removed.');
                     })
                     .catch(function (err) {
                         hideOverlay();
@@ -1213,54 +1151,17 @@
             var eitherWhitelist = (idx24 !== null && mode24 === 1) || (idx5 !== null && mode5 === 1);
 
             function doDelete() {
-                var isEnabled = (bandState['24'] && bandState['24'].mode > 0) ||
-                                (bandState['5']  && bandState['5'].mode  > 0);
-                var wlan24Off = bandState['24'] && bandState['24'].disabled;
-                var wlan5Off  = bandState['5']  && bandState['5'].disabled;
-                var allOff = wlan24Off && wlan5Off;
                 lockAll();
                 showOverlay('Removing MAC\u2026');
 
                 var reqs = [];
-                if (idx24 !== null) {
-                    reqs.push(fetch(CGI + '?action=delmac', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-                        body: 'band=24&idx=' + idx24
-                    }));
-                }
-                if (idx5 !== null) {
-                    reqs.push(fetch(CGI + '?action=delmac', {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-                        body: 'band=5&idx=' + idx5
-                    }));
-                }
+                if (idx24 !== null) reqs.push(postAcl('delmac', 'band=24&idx=' + idx24));
+                if (idx5  !== null) reqs.push(postAcl('delmac', 'band=5&idx=' + idx5));
 
                 Promise.all(reqs)
-                    .then(function (responses) {
-                        for (var i = 0; i < responses.length; i++) {
-                            if (!responses[i].ok) throw new Error('Delete failed');
-                        }
-                        if (isEnabled && !allOff) {
-                            // Filter active + at least one radio up — wait for restart
-                            startCountdown(15, 'Removing MAC.');
-                            setTimeout(function () { pollUntilBack(); }, 4000);
-                        } else {
-                            // Filter off or all radios down — quick refresh
-                            fetch(CGI + '?action=status')
-                                .then(function (r) { return r.json(); })
-                                .then(function (status) {
-                                    applyStatus(status);
-                                    spinner.style.display = 'none';
-                                    overlayTxt.textContent = 'MAC Removed.';
-                                    setTimeout(hideOverlay, 1000);
-                                })
-                                .catch(function () {
-                                    hideOverlay();
-                                    toastr["warning"]("Error refreshing.", "Error");
-                                });
-                        }
+                    .then(function (texts) {
+                        if (needsRestart(texts)) waitForRestart('Removing MAC.', 15);
+                        else applyDone('MAC Removed.');
                     })
                     .catch(function (err) {
                         hideOverlay();

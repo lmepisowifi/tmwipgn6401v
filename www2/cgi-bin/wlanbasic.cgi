@@ -750,24 +750,6 @@ if [ "$REQUEST_METHOD" = "GET" ]; then
         exit 0
     fi
 
-    # ── action=vxd_status: VXD (idx 5) BSSID lock + live connection/auth ──
-    if echo "$QUERY_STRING" | busybox grep -q "action=vxd_status"; then
-        dbg "GET vxd_status: band=$BAND vxd_if=$VXD_IF"
-        printf "Status: 200 OK\r\n"
-        printf "Content-Type: application/json\r\n\r\n"
-        emit_vxd_status_json "$VXD_IF" "$TBL_PFX"
-        exit 0
-    fi
-
-    # ── action=vxd_status: VXD (idx 5) BSSID lock + live connection/auth ──
-    if echo "$QUERY_STRING" | busybox grep -q "action=vxd_status"; then
-        dbg "GET vxd_status: band=$BAND vxd_if=$VXD_IF"
-        printf "Status: 200 OK\r\n"
-        printf "Content-Type: application/json\r\n\r\n"
-        emit_vxd_status_json "$VXD_IF" "$TBL_PFX"
-        exit 0
-    fi
-
     # ── action=status: return full per-band JSON ─────────────────────────────
     if echo "$QUERY_STRING" | busybox grep -q "action=status"; then
 

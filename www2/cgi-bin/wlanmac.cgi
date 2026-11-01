@@ -106,6 +106,172 @@ normalize_mac() {
     echo "$1" | busybox tr 'A-Z' 'a-z' | busybox tr -d '\r\n' | busybox sed 's/[^0-9a-f]//g'
 }
 
+# ---- Debug logging ----
+DBG_LOG="/tmp/wlanmac_debug.log"
+dbg() {
+    printf '[%s] wlanmac.cgi: %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$*" \
+        >> "$DBG_LOG" 2>/dev/null
+}
+
+# ---- Live apply --------------------------------------------------------------
+# `mib set` + `mib commit` only persist a change. The vendor makes it take effect
+# with `wlan_apply restart` (config_WLAN -> setupWLan -> set_wlan_acl), which stops
+# and starts BOTH radios and every SSID, so every client is dropped for a few
+# seconds. The Realtek driver reads the filter from the running interface at
+# auth/assoc time, and set_wlan_acl() fills it with plain iwpriv calls, so the
+# same can be done on a running radio (live=1 on the POST):
+#
+#   iwpriv <if> set_mib aclnum=0          empty the list
+#   iwpriv <if> set_mib aclmode=<0|1|2>   0 off, 1 allow (whitelist), 2 deny (blacklist)
+#   iwpriv <if> set_mib acladdr=<12 hex>  one call per MAC
+#
+# The driver gives every VAP its own mib struct, so it goes to the root netdev and
+# to each VAP / the repeater (VXD) that is up - the same set the vendor's
+# setupWLan() covers. The list is only consulted when a station authenticates or
+# associates, so stations that are already connected and are no longer allowed
+# (whitelist: not listed, blacklist: listed) are dropped with
+# `iwpriv <if> del_sta <mac>` (what wlansta.cgi's "disconnect" does); everybody
+# else stays connected. If any push fails, the band is restarted instead
+# (wlanapply = one radio, else the stock restart of everything), so a half-applied
+# filter is never left behind.
+#
+# The reply body tells the page what happened:
+#   "OK live"     applied to the running radio, nothing to wait for
+#   "OK"          nothing to apply (filter off, or the radio is disabled: it is
+#                 read from the MIB the next time the radio starts)
+#   "OK restart"  live apply failed, the band is being restarted in the background
+WLANAPPLY=/lmepisowifi/www2/tool/wlanapply
+
+# MACs of a band's access-control table as bare 12-digit lowercase hex, one per line
+get_mac_list() {
+    mib get "$1" 2>/dev/null | busybox awk '
+        /MacAddr[ \t]*=[ \t]*[0-9a-fA-F]/ {
+            m = $NF; gsub(/[^0-9a-fA-F]/, "", m)
+            if (length(m) == 12) print tolower(m)
+        }'
+}
+
+# acl_ifaces BAND [vxd] -> the band's netdevs that are up: root, VAP0-3 and, when
+# asked for, the repeater. 5 GHz = wlan0, 2.4 GHz = wlan1. A down netdev is left
+# alone: it gets the filter from the MIB when it is brought up.
+acl_ifaces() {
+    if [ "$1" = "24" ]; then _ai_root=wlan1; else _ai_root=wlan0; fi
+    _ai_set="$_ai_root $_ai_root-vap0 $_ai_root-vap1 $_ai_root-vap2 $_ai_root-vap3"
+    [ "$2" = "vxd" ] && _ai_set="$_ai_set $_ai_root-vxd"
+    for _ai_if in $_ai_set; do
+        [ -d "${WL_NETSYS:-/sys/class/net}/$_ai_if" ] || continue
+        # flags is hex ("0x1003"); bit 0 is IFF_UP. Unreadable -> treat as up.
+        _ai_fl=$(busybox cat "${WL_NETSYS:-/sys/class/net}/$_ai_if/flags" 2>/dev/null)
+        if [ -n "$_ai_fl" ] && [ $(( _ai_fl & 1 )) -eq 0 ]; then continue; fi
+        printf '%s ' "$_ai_if"
+    done
+}
+
+# acl_push_live BAND MODE -> 0 when every up netdev of the band now has the filter
+# (MODE 0/1/2 plus the band's MAC table as committed), 1 when anything failed.
+acl_push_live() {
+    _pl_band="$1"; _pl_mode="$2"
+    band_keys "$_pl_band"
+    if [ "$_pl_band" = "24" ]; then _pl_root=wlan1; else _pl_root=wlan0; fi
+    _pl_ifs=$(acl_ifaces "$_pl_band" vxd)
+    case " $_pl_ifs" in
+        *" $_pl_root "*) ;;
+        *) dbg "acl_push_live band=$_pl_band: $_pl_root is not up"; return 1 ;;
+    esac
+    _pl_list=$(get_mac_list "$TABLE_KEY")
+    for _pl_if in $_pl_ifs; do
+        if ! iwpriv "$_pl_if" set_mib aclnum=0 >/dev/null 2>&1; then
+            dbg "acl_push_live band=$_pl_band: $_pl_if aclnum=0 failed"; return 1
+        fi
+        if ! iwpriv "$_pl_if" set_mib "aclmode=$_pl_mode" >/dev/null 2>&1; then
+            dbg "acl_push_live band=$_pl_band: $_pl_if aclmode=$_pl_mode failed"; return 1
+        fi
+        if [ "$_pl_mode" != "0" ]; then
+            for _pl_mac in $_pl_list; do
+                if ! iwpriv "$_pl_if" set_mib "acladdr=$_pl_mac" >/dev/null 2>&1; then
+                    dbg "acl_push_live band=$_pl_band: $_pl_if acladdr=$_pl_mac failed"; return 1
+                fi
+            done
+        fi
+    done
+    dbg "acl_push_live band=$_pl_band mode=$_pl_mode: $(echo $_pl_list | busybox wc -w) MAC(s) pushed to $_pl_ifs"
+    return 0
+}
+
+# acl_kick_band BAND MODE -> disassociate the connected stations the filter no
+# longer allows. Nothing to do for MODE 0. The repeater (VXD) is the router's own
+# client link, not a place stations connect to, so it is not touched.
+acl_kick_band() {
+    _kb_band="$1"; _kb_mode="$2"
+    case "$_kb_mode" in 1|2) ;; *) return 0 ;; esac
+    band_keys "$_kb_band"
+    _kb_list=$(get_mac_list "$TABLE_KEY")
+    for _kb_if in $(acl_ifaces "$_kb_band"); do
+        [ -r "${WL_PROC:-/proc}/$_kb_if/sta_info" ] || continue
+        for _kb_sta in $(busybox awk '
+            /^[ \t]*hwaddr:/ {
+                v = $0; sub(/^[^:]*:[ \t]*/, "", v); gsub(/[^0-9a-fA-F]/, "", v)
+                if (length(v) == 12) print tolower(v)
+            }' "${WL_PROC:-/proc}/$_kb_if/sta_info" 2>/dev/null); do
+            if printf '%s\n' "$_kb_list" | busybox grep -qx "$_kb_sta"; then _kb_in=1; else _kb_in=0; fi
+            _kb_drop=0
+            [ "$_kb_mode" = "1" ] && [ "$_kb_in" = "0" ] && _kb_drop=1
+            [ "$_kb_mode" = "2" ] && [ "$_kb_in" = "1" ] && _kb_drop=1
+            if [ "$_kb_drop" = "1" ]; then
+                iwpriv "$_kb_if" del_sta "$_kb_sta" >/dev/null 2>&1
+                dbg "acl_kick_band band=$_kb_band mode=$_kb_mode: del_sta $_kb_if $_kb_sta rc=$?"
+            fi
+        done
+    done
+}
+
+# acl_restart_band BAND -> the fallback: restart one radio with wlanapply (the
+# vendor config_WLAN for that band), or everything with the stock wlan_apply if
+# the helper is missing or fails (same preflight as wlanadvanced.cgi).
+acl_restart_band() {
+    if [ "$1" = "24" ]; then _rb_bn=2g; else _rb_bn=5g; fi
+    if [ -f "$WLANAPPLY" ]; then
+        [ -x "$WLANAPPLY" ] || chmod +x "$WLANAPPLY" 2>/dev/null
+        if [ -x "$WLANAPPLY" ] && "$WLANAPPLY" check >/dev/null 2>&1 \
+           && "$WLANAPPLY" restart "$_rb_bn" all >/dev/null 2>&1; then
+            dbg "acl_restart_band: wlanapply restart $_rb_bn all ok"
+            return 0
+        fi
+        dbg "acl_restart_band: wlanapply restart $_rb_bn all unavailable or failed, using wlan_apply restart"
+    fi
+    wlan_apply restart
+}
+
+# acl_reply BAND MODE LIVE NEED -> send the reply for a change that is already
+# committed, and apply it. NEED=1 when the running radio has to learn about it.
+#   LIVE=1  push it into the driver now (the reply says how that went); the
+#           stations it no longer allows are dropped 1 s after the reply, so the
+#           admin's own page still gets its answer.
+#   LIVE=0  the old behaviour: reply, then a full `wlan_apply restart`.
+# The background jobs get /dev/null for stdin/stdout so they can't hold the
+# HTTP response open.
+acl_reply() {
+    _ar_band="$1"; _ar_mode="$2"; _ar_live="$3"; _ar_need="$4"
+    _ar_tag=""; _ar_bg=""
+    if [ "$_ar_need" = "1" ]; then
+        if [ "$_ar_live" != "1" ]; then
+            _ar_bg=legacy
+        elif acl_push_live "$_ar_band" "$_ar_mode"; then
+            _ar_tag=" live"; _ar_bg=kick
+        else
+            _ar_tag=" restart"; _ar_bg=restart
+        fi
+    fi
+    printf "Status: 200 OK\r\n"
+    printf "Content-Type: text/plain\r\n\r\n"
+    printf "OK%s" "$_ar_tag"
+    case "$_ar_bg" in
+        legacy)  ( wlan_apply restart ) & ;;
+        restart) ( acl_restart_band "$_ar_band" ) >/dev/null 2>&1 </dev/null & ;;
+        kick)    ( sleep 1; acl_kick_band "$_ar_band" "$_ar_mode" ) >/dev/null 2>&1 </dev/null & ;;
+    esac
+}
+
 # ==========================================
 # GET
 # ==========================================
@@ -202,6 +368,11 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
     ACTION=$(echo "$QUERY_STRING" \
         | busybox sed -n 's/.*action=\([^&]*\).*/\1/p' \
         | busybox tr -d '\r\n')
+    # live=1: apply to the running driver instead of restarting the radios
+    LIVE=$(echo "$POST_DATA" \
+        | busybox sed -n 's/.*live=\([^&]*\).*/\1/p' \
+        | busybox tr -d '\r\n')
+    [ "$LIVE" = "1" ] || LIVE=0
 
     # action=setmode
     if [ "$ACTION" = "setmode" ]; then
@@ -236,14 +407,11 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
         mib set "$MODE_KEY" "$MODE"
         mib commit
 
-        printf "Status: 200 OK\r\n"
-        printf "Content-Type: text/plain\r\n\r\n"
-        printf "OK"
-
+        # A disabled radio has nothing to apply to: it reads the MIB when it starts.
+        NEED=0
         WLAN_DIS=$(get_wlan_disabled "$BAND")
-        if [ "${WLAN_DIS:-0}" = "0" ]; then
-            ( wlan_apply restart ) &
-        fi
+        [ "${WLAN_DIS:-0}" = "0" ] && NEED=1
+        acl_reply "$BAND" "$MODE" "$LIVE" "$NEED"
         exit 0
     fi
 
@@ -298,17 +466,14 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
         mib set "${TABLE_KEY}.${NEW_IDX}.MacAddr" "$MAC_NORM"
         mib commit
 
-        printf "Status: 200 OK\r\n"
-        printf "Content-Type: text/plain\r\n\r\n"
-        printf "OK"
-
+        # Only an active filter (and a radio that is up) has anything to apply.
+        NEED=0
         CUR_MODE=$(get_mode "$BAND")
         if [ "${CUR_MODE:-0}" != "0" ]; then
             WLAN_DIS=$(get_wlan_disabled "$BAND")
-            if [ "${WLAN_DIS:-0}" = "0" ]; then
-                ( wlan_apply restart ) &
-            fi
+            [ "${WLAN_DIS:-0}" = "0" ] && NEED=1
         fi
+        acl_reply "$BAND" "${CUR_MODE:-0}" "$LIVE" "$NEED"
         exit 0
     fi
 
@@ -344,17 +509,14 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
         mib del "${TABLE_KEY}.${DEL_IDX}"
         mib commit
 
-        printf "Status: 200 OK\r\n"
-        printf "Content-Type: text/plain\r\n\r\n"
-        printf "OK"
-
+        # Only an active filter (and a radio that is up) has anything to apply.
+        NEED=0
         CUR_MODE=$(get_mode "$BAND")
         if [ "${CUR_MODE:-0}" != "0" ]; then
             WLAN_DIS=$(get_wlan_disabled "$BAND")
-            if [ "${WLAN_DIS:-0}" = "0" ]; then
-                ( wlan_apply restart ) &
-            fi
+            [ "${WLAN_DIS:-0}" = "0" ] && NEED=1
         fi
+        acl_reply "$BAND" "${CUR_MODE:-0}" "$LIVE" "$NEED"
         exit 0
     fi
 
