@@ -1,10 +1,9 @@
 # modules.txt — installable www2 modules (written by release CI)
-# A module's version only advances when its files changed.
 id=hotspot
 name=Hotspot / Piso-Wifi
-version=slot
-url=https://github.com/lmepisowifi/tmwipgn6401v/releases/download/vslot/lmepisowifi-hotspot-slot.tar.gz
-sha256=28011fd511eea7ef8ac7602ff060e06fcb00b28a2c55a52749d57b99009c74e5
+version=1.5.71
+url=https://github.com/lmepisowifi/tmwipgn6401v/releases/download/v1.5.71/lmepisowifi-hotspot-1.5.71.tar.gz
+sha256=0e409624354379c65d1f2239f5ff332257bce96e2ffd3caa56a70df8bc949ab0
 description=Captive portal, coin acceptor (NodeMCU), vouchers, WiFi rates, DHCP settings and QoS.
 
 id=tailscale
