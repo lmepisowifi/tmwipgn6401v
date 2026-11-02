@@ -85,6 +85,7 @@ setInterval(function () {
             { label: 'Timezone',         href: '/timezone.html'      },
             { label: 'Accounts',         href: '/accounts.html'      },
             { label: 'GPON Settings',    href: '/gpon.html'          },
+            { label: 'OMCI Settings',    href: '/omci.html'          },
             { label: 'EPON Settings',    href: '/epon.html'          },
             { label: 'Dashboard Layout', href: '/dashboard-layout.html' },
             { label: 'Modules',          href: '/modules.html'       },
@@ -176,7 +177,8 @@ setInterval(function () {
             '      <ul class="navbar-nav me-auto">',
                        buildItems(filteredNAV, hotspotRunning),
             '      </ul>',
-            '      <div class="d-flex gap-2">',
+            '      <div class="nav-actions">',
+            '        <span id="lme-theme-slot"></span>',
             '        <button type="button" class="btn btn-outline-light" id="lme-quicksetup-btn">Quick Setup</button>',
             '        <button class="btn btn-outline-danger" onclick="logout()">Logout</button>',
             '      </div>',
@@ -201,7 +203,7 @@ setInterval(function () {
                 if (!item.children) return item;
                 var fc = item.children.filter(function(c) {
                     if (!modOk(c.module)) return false;   // hide pages (e.g. Tailscale) whose module isn't installed
-                    if (c.href === '/gpon.html') return showGpon;
+                    if (c.href === '/gpon.html' || c.href === '/omci.html') return showGpon;
                     if (c.href === '/epon.html') return showEpon;
                     return true;
                 });
@@ -210,6 +212,10 @@ setInterval(function () {
         _script.insertAdjacentHTML('beforebegin', buildNavHtml(filteredNAV, hotspotRunning));
         var qsBtn = document.getElementById('lme-quicksetup-btn');
         if (qsBtn) qsBtn.addEventListener('click', openQuickSetup);
+
+        // Light/dark toggle (js/theme.js is loaded from each page's <head>)
+        var themeSlot = document.getElementById('lme-theme-slot');
+        if (themeSlot && window.lmeTheme) themeSlot.appendChild(window.lmeTheme.createButton());
     }
 
     // Quick Setup wizard — js/quicksetup.js is only fetched the first time the

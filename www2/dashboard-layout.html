@@ -14,6 +14,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <script src="/js/theme.js?v=1.0.0"></script>
     <link href="/css/bootstrap.min.css?v=1.0.0" rel="stylesheet">
     <link href="/css/style.css?v=1.0.0" rel="stylesheet">
     <link href="/css/toastr.min.css?v=1.0.0" rel="stylesheet">
@@ -36,25 +37,25 @@
         .layout-label { flex: 1; font-size: 14px; color: var(--text-primary); }
         .layout-vis-toggle {
             width: 42px; height: 24px; border-radius: 12px;
-            background: #555; position: relative; cursor: pointer;
+            background: var(--lme-toggle-off, #555); position: relative; cursor: pointer;
             transition: background .2s; flex-shrink: 0;
         }
-        .layout-vis-toggle.on { background: #fff; }
+        .layout-vis-toggle.on { background: var(--lme-toggle-on, #fff); }
         .layout-vis-knob {
             position: absolute; width: 16px; height: 16px;
-            border-radius: 50%; background: #fff;
+            border-radius: 50%; background: var(--lme-toggle-knob, #fff);
             top: 4px; left: 4px;
             transition: left .2s, background .2s;
             box-shadow: 0 1px 3px rgba(0,0,0,.4);
         }
-        .layout-vis-toggle.on .layout-vis-knob { left: 22px; background: #555; }
+        .layout-vis-toggle.on .layout-vis-knob { left: 22px; background: var(--lme-toggle-knob-on, #555); }
         .move-btn {
             background: none; border: 1px solid var(--border-color);
             color: var(--text-secondary); border-radius: 4px;
             width: 26px; height: 26px; font-size: 13px;
             cursor: pointer; line-height: 1; padding: 0; flex-shrink: 0;
         }
-        .move-btn:hover { border-color: #888; color: var(--text-primary); }
+        .move-btn:hover { border-color: var(--lme-border-strong, #888); color: var(--text-primary); }
         .move-btn:disabled { opacity: .25; cursor: default; }
         .preview-hint { font-size: 12px; color: var(--text-secondary); margin-top: 4px; }
     </style>

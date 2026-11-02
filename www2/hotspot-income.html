@@ -14,6 +14,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <script src="/js/theme.js?v=1.0.0"></script>
     <link href="/css/bootstrap.min.css?v=1.0.0" rel="stylesheet">
     <link href="/css/style.css?v=1.0.0" rel="stylesheet">
     <link href="/css/toastr.min.css?v=1.0.0" rel="stylesheet">
@@ -37,8 +38,8 @@
         .income-value .peso { font-size: 17px; font-weight: 600; color: var(--text-secondary); margin-right: 2px; }
         .income-card.total { background: rgba(13,110,253,.10); border-color: rgba(13,110,253,.35); }
         .meta-row { font-size: 12px; color: var(--text-secondary); margin-top: 12px; display:flex; gap:14px; flex-wrap:wrap; }
-        .sync-ok   { color:#81c784; }
-        .sync-warn { color:#ffb74d; }
+        .sync-ok   { color:var(--lme-ok, #81c784); }
+        .sync-warn { color:var(--lme-warn, #ffb74d); }
         .controls-row { display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
         .status-txt { font-size:12px; color:var(--text-secondary); margin-left:auto; }
         /* counter header row: label on the left, tiny reset button on the right */
@@ -49,19 +50,19 @@
             text-transform:uppercase; letter-spacing:.05em; transition:all .15s;
         }
         .inc-reset:hover  { color:var(--text-primary); border-color:var(--text-secondary); }
-        .inc-reset.danger:hover { color:#ff6b6b; border-color:#ff6b6b; }
+        .inc-reset.danger:hover { color:var(--lme-danger, #ff6b6b); border-color:var(--lme-danger, #ff6b6b); }
         .form-hint { font-size:11px; color:var(--text-secondary); margin-top:3px; }
         .field-row { margin-bottom:12px; }
         .field-row label { font-size:12px; color:var(--text-secondary); display:block; margin-bottom:4px; }
         /* toggle */
-        .wlan-toggle { width:50px; height:28px; border-radius:14px; background:#555;
+        .wlan-toggle { width:50px; height:28px; border-radius:14px; background:var(--lme-toggle-off, #555);
             position:relative; cursor:pointer; transition:background .25s; flex-shrink:0; user-select:none; }
-        .wlan-toggle.on { background:#ffffff; }
+        .wlan-toggle.on { background:var(--lme-toggle-on, #ffffff); }
         .wlan-toggle.disabled-ui { opacity:0.35; pointer-events:none; }
         .wlan-toggle-knob { position:absolute; width:20px; height:20px; border-radius:50%;
-            background:#fff; top:4px; left:4px; transition:left .25s,background .25s;
+            background:var(--lme-toggle-knob, #fff); top:4px; left:4px; transition:left .25s,background .25s;
             box-shadow:0 1px 4px rgba(0,0,0,.5); }
-        .wlan-toggle.on .wlan-toggle-knob { left:26px; background:#555; }
+        .wlan-toggle.on .wlan-toggle-knob { left:26px; background:var(--lme-toggle-knob-on, #555); }
     </style>
 </head>
 <body>

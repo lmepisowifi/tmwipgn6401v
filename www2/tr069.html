@@ -14,6 +14,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <script src="/js/theme.js?v=1.0.0"></script>
     <link href="/css/bootstrap.min.css?v=1.0.0" rel="stylesheet">
     <link href="/css/style.css?v=1.0.0" rel="stylesheet">
     <link href="/css/toastr.min.css?v=1.0.0" rel="stylesheet">
@@ -21,29 +22,29 @@
         .field-hint { font-size:12px; color:var(--text-secondary); margin-top:4px; line-height:1.5; }
         .invalid-feedback { display:block; }
         .form-control.is-invalid { border-color:#dc3545; }
-        code { color:#fff; font-size:12px; }
+        code { color:var(--accent-color, #fff); font-size:12px; }
 
         /* ── Toggle switch (matches other pages) ── */
         .wlan-toggle {
             width: 50px; height: 28px; border-radius: 14px;
-            background: #555; position: relative; cursor: pointer;
+            background: var(--lme-toggle-off, #555); position: relative; cursor: pointer;
             transition: background 0.25s; flex-shrink: 0; user-select: none;
         }
-        .wlan-toggle.on { background: #ffffff; }
+        .wlan-toggle.on { background: var(--lme-toggle-on, #ffffff); }
         .wlan-toggle.disabled-ui { opacity: 0.35; pointer-events: none; }
         .wlan-toggle-knob {
             position: absolute; width: 20px; height: 20px;
-            border-radius: 50%; background: #fff;
+            border-radius: 50%; background: var(--lme-toggle-knob, #fff);
             top: 4px; left: 4px;
             transition: left 0.25s, background 0.25s;
             box-shadow: 0 1px 4px rgba(0,0,0,0.5);
         }
-        .wlan-toggle.on .wlan-toggle-knob { left: 26px; background: #555; }
+        .wlan-toggle.on .wlan-toggle-knob { left: 26px; background: var(--lme-toggle-knob-on, #555); }
 
         .tr-badge { display:inline-block; padding:2px 9px; border-radius:3px; font-size:11px; font-weight:700; }
-        .tr-badge.on   { background:rgba(76,175,80,.2);   color:#81c784; }
-        .tr-badge.off  { background:rgba(220,53,69,.18);  color:#e17e88; }
-        .tr-badge.none { background:rgba(158,158,158,.18); color:#aaa; }
+        .tr-badge.on   { background:rgba(76,175,80,.2);   color:var(--lme-ok, #81c784); }
+        .tr-badge.off  { background:rgba(220,53,69,.18);  color:var(--lme-danger, #e17e88); }
+        .tr-badge.none { background:rgba(158,158,158,.18); color:var(--text-muted, #aaa); }
 
         .tr-section { font-size:12px; font-weight:700; letter-spacing:.06em; text-transform:uppercase;
                       color:var(--text-secondary); margin:18px 0 10px; }
@@ -52,7 +53,7 @@
         .tr-switch-row .tr-switch-text { min-width:0; }
         .tr-switch-title { font-size:14px; }
         .tr-note { font-size:12px; padding:8px 10px; border-radius:6px; margin-top:12px;
-                   background:rgba(255,193,7,.10); border:1px solid rgba(255,193,7,.28); color:#ffd54f; }
+                   background:rgba(255,193,7,.10); border:1px solid rgba(255,193,7,.28); color:var(--lme-warn, #ffd54f); }
     </style>
 </head>
 <body>
@@ -111,7 +112,7 @@
                 <label for="tr-url" class="form-label">URL</label>
                 <input type="text" class="form-control" id="tr-url" maxlength="256" autocomplete="off"
                        spellcheck="false" placeholder="http://acs.example.com:9090/">
-                <div class="field-hint">Must start with <code>http://</code> or <code>https://</code>.</div>
+                <div class="field-hint">Must start with <code>http://</code> or <code>https://</code>. Can be blank while the daemon or Enable CWMP is off.</div>
                 <div class="invalid-feedback" id="tr-url-err" style="display:none"></div>
             </div>
 
@@ -304,7 +305,12 @@
     function validate() {
         var errs = {};
         var url = byId('tr-url').value;
-        if (!/^https?:\/\/[^\s]+$/.test(url) || !PRINTABLE.test(url))
+        // A URL is only needed when the client will actually contact the ACS
+        // (daemon on AND Enable CWMP on). Otherwise a blank URL is fine.
+        var urlRequired = getToggle('tr-autoexec') === 1 && getToggle('tr-cwmp-enabled') === 1;
+        if (url === '' && !urlRequired) {
+            // blank allowed
+        } else if (!/^https?:\/\/[^\s]+$/.test(url) || !PRINTABLE.test(url))
             errs['tr-url'] = 'Enter a URL starting with http:// or https://';
         else if (url.length > 256)
             errs['tr-url'] = 'URL is too long (max 256 characters)';

@@ -14,6 +14,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <script src="/js/theme.js?v=1.0.0"></script>
     <link href="/css/bootstrap.min.css?v=1.0.0" rel="stylesheet">
     <link href="/css/style.css?v=1.0.0" rel="stylesheet">
     <link href="/css/toastr.min.css?v=1.0.0" rel="stylesheet">
@@ -34,8 +35,8 @@
             text-transform: uppercase;
             letter-spacing: 0.06em;
         }
-        .badge-lan  { background: rgba(13,110,253,.18); color: #6ea8fe; }
-        .badge-wlan { background: rgba(25,135,84,.18);  color: #75b798; }
+        .badge-lan  { background: rgba(13,110,253,.18); color: var(--lme-info, #6ea8fe); }
+        .badge-wlan { background: rgba(25,135,84,.18);  color: var(--lme-ok, #75b798); }
 
         /* ── Status indicator dots ── */
         .sdot {
@@ -53,8 +54,8 @@
         .spin-sm {
             display: inline-block;
             width: 11px; height: 11px;
-            border: 2px solid rgba(255,255,255,.2);
-            border-top-color: #6ea8fe;
+            border: 2px solid var(--lme-tint-3, rgba(255,255,255,.2));
+            border-top-color: var(--lme-info, #6ea8fe);
             border-radius: 50%;
             animation: rspin .75s linear infinite;
             vertical-align: middle;

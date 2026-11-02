@@ -14,6 +14,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <script src="/js/theme.js?v=1.0.0"></script>
     <link href="/css/bootstrap.min.css?v=1.0.0" rel="stylesheet">
     <link href="/css/style.css?v=1.0.0" rel="stylesheet">
     <style>
@@ -21,19 +22,19 @@
             width: 50px;
             height: 28px;
             border-radius: 14px;
-            background: #555;
+            background: var(--lme-toggle-off, #555);
             position: relative;
             cursor: pointer;
             transition: background 0.25s;
             flex-shrink: 0;
         }
-        .wlan-toggle.on { background: #ffffff; }
+        .wlan-toggle.on { background: var(--lme-toggle-on, #ffffff); }
         .wlan-toggle-knob {
             position: absolute;
             width: 20px;
             height: 20px;
             border-radius: 50%;
-            background: #fff;
+            background: var(--lme-toggle-knob, #fff);
             top: 4px;
             left: 4px;
             transition: left 0.25s, background 0.25s, box-shadow 0.25s;
@@ -41,7 +42,7 @@
         }
         .wlan-toggle.on .wlan-toggle-knob {
             left: 26px;
-            background: #555;
+            background: var(--lme-toggle-knob-on, #555);
             box-shadow: 0 1px 4px rgba(0,0,0,0.3);
         }
         .field-hint {
@@ -51,7 +52,7 @@
         }
         .invalid-feedback { display: block; }
         .form-control.is-invalid, .form-select.is-invalid { border-color: #dc3545; }
-        code { color: #fff; }
+        code { color: var(--accent-color, #fff); }
     </style>
     <link href="/css/toastr.min.css?v=1.0.0" rel="stylesheet">
 </head>

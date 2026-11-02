@@ -17,6 +17,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <script src="/js/theme.js?v=1.0.0"></script>
     <link href="/css/bootstrap.min.css?v=1.0.0" rel="stylesheet">
     <link href="/css/style.css?v=1.0.0" rel="stylesheet">
     <style>
@@ -24,21 +25,21 @@
         .wlan-toggle {
             width: 50px; height: 28px;
             border-radius: 14px;
-            background: #555;
+            background: var(--lme-toggle-off, #555);
             position: relative; cursor: pointer;
             transition: background 0.25s; flex-shrink: 0;
             user-select: none;
         }
-        .wlan-toggle.on { background: #ffffff; }
+        .wlan-toggle.on { background: var(--lme-toggle-on, #ffffff); }
         .wlan-toggle.disabled-ui { opacity: 0.35; pointer-events: none; }
         .wlan-toggle-knob {
             position: absolute; width: 20px; height: 20px;
-            border-radius: 50%; background: #fff;
+            border-radius: 50%; background: var(--lme-toggle-knob, #fff);
             top: 4px; left: 4px;
             transition: left 0.25s, background 0.25s;
             box-shadow: 0 1px 4px rgba(0,0,0,0.5);
         }
-        .wlan-toggle.on .wlan-toggle-knob { left: 26px; background: #555; }
+        .wlan-toggle.on .wlan-toggle-knob { left: 26px; background: var(--lme-toggle-knob-on, #555); }
 
         /* ── Band selector ── */
         #band-bar { display: flex; align-items: center; gap: 10px; margin-bottom: 14px; }
@@ -83,15 +84,15 @@
             padding: 8px 10px; margin-bottom: 12px;
         }
         .msg-box ul { margin: 0; padding-left: 16px; }
-        .msg-bad  { background: rgba(255,87,34,.12);  border: 1px solid rgba(255,87,34,.35);  color: #ffab91; }
-        .msg-warn { background: rgba(255,193,7,.10);  border: 1px solid rgba(255,193,7,.30);  color: #ffe082; }
+        .msg-bad  { background: rgba(255,87,34,.12);  border: 1px solid rgba(255,87,34,.35);  color: var(--lme-orange, #ffab91); }
+        .msg-warn { background: rgba(255,193,7,.10);  border: 1px solid rgba(255,193,7,.30);  color: var(--lme-warn, #ffe082); }
 
         .win-box { font-size: 13px; border-radius: 4px; padding: 8px 10px; margin-top: 12px;
-                   background: rgba(13,110,253,.12); border: 1px solid rgba(13,110,253,.35); color: #9ec5fe; }
-        .win-bar { height: 4px; border-radius: 2px; background: rgba(255,255,255,.1); margin-top: 6px; overflow: hidden; }
-        .win-bar > div { height: 100%; background: #6ea8fe; transition: width 1s linear; }
+                   background: rgba(13,110,253,.12); border: 1px solid rgba(13,110,253,.35); color: var(--lme-info, #9ec5fe); }
+        .win-bar { height: 4px; border-radius: 2px; background: var(--lme-tint-3, rgba(255,255,255,.1)); margin-top: 6px; overflow: hidden; }
+        .win-bar > div { height: 100%; background: var(--lme-info, #6ea8fe); transition: width 1s linear; }
 
-        .pin-divider { border-top: 1px solid rgba(255,255,255,.08); margin: 14px 0; }
+        .pin-divider { border-top: 1px solid var(--lme-tint-2, rgba(255,255,255,.08)); margin: 14px 0; }
     </style>
     <link href="/css/toastr.min.css?v=1.0.0" rel="stylesheet">
 </head>
@@ -421,7 +422,7 @@
         var v = el.value.replace(/\D/g, '').slice(0, 8);
         if (el.value !== v) el.value = v;
         if (!v || v.length < 4) { h.textContent = ''; return; }
-        h.style.color = pinValid(v) ? '#81c784' : '#ff8a65';
+        h.style.color = pinValid(v) ? 'var(--lme-ok, #81c784)' : 'var(--lme-orange, #ff8a65)';
         h.textContent = pinValid(v) ? 'Valid PIN' : 'Invalid PIN';
     }
     // keep digits only (drops spaces/dashes, also from pasted "1234-5670"), max 8

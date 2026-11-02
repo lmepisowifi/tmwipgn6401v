@@ -15,6 +15,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <script src="/js/theme.js?v=1.0.0"></script>
 
     <link href="/css/bootstrap.min.css?v=1.0.0" rel="stylesheet">
     <link href="/css/style.css?v=1.0.0" rel="stylesheet">
@@ -24,7 +25,7 @@
             width: 46px;
             height: 26px;
             border-radius: 13px;
-            background: #444;
+            background: var(--lme-toggle-off, #444);
             position: relative;
             cursor: pointer;
             transition: background 0.25s;
@@ -32,7 +33,7 @@
         }
 
         .wlan-toggle.on {
-            background: #ffffff;
+            background: var(--lme-toggle-on, #ffffff);
         }
 
         .wlan-toggle.disabled-ui {
@@ -45,7 +46,7 @@
             width: 18px;
             height: 18px;
             border-radius: 50%;
-            background: #fff;
+            background: var(--lme-toggle-knob, #fff);
             top: 4px;
             left: 4px;
             transition: left 0.25s, background 0.25s, box-shadow 0.25s;
@@ -54,7 +55,7 @@
 
         .wlan-toggle.on .wlan-toggle-knob {
             left: 24px;
-            background: #555;
+            background: var(--lme-toggle-knob-on, #555);
             box-shadow: 0 1px 4px rgba(0, 0, 0, 0.3);
         }
 
@@ -92,7 +93,7 @@
             height: 22px !important;
             font-size: 11px !important;
             line-height: 1 !important;
-            color: #ff6b6b !important;
+            color: var(--lme-danger, #ff6b6b) !important;
             border-color: rgba(255, 107, 107, 0.3) !important;
             background: transparent !important;
             border-radius: 3px !important;
@@ -101,7 +102,7 @@
 
         .mac-del-btn:hover {
             background: rgba(255, 107, 107, 0.12) !important;
-            border-color: #ff6b6b !important;
+            border-color: var(--lme-danger, #ff6b6b) !important;
         }
 
         .mac-empty {
@@ -121,11 +122,11 @@
         }
 
         .filter-state.state-whitelist {
-            color: #50c878;
+            color: var(--lme-ok, #50c878);
         }
 
         .filter-state.state-blacklist {
-            color: #ff6b6b;
+            color: var(--lme-danger, #ff6b6b);
         }
 
         /* ---- Card divider ---- */
@@ -159,7 +160,7 @@
         /* ---- Error strip ---- */
         .inline-err {
             font-size: 11px;
-            color: #ff6b6b;
+            color: var(--lme-danger, #ff6b6b);
             background: rgba(255, 107, 107, 0.08);
             border: 1px solid rgba(255, 107, 107, 0.25);
             border-radius: 3px;
@@ -194,7 +195,7 @@
             padding: 1px 6px;
             border-radius: 8px;
             letter-spacing: 0.04em;
-            background: rgba(255, 255, 255, 0.08);
+            background: var(--lme-tint-2, rgba(255, 255, 255, 0.08));
             color: var(--text-secondary);
             border: 1px solid var(--border-color);
             margin-left: 3px;
@@ -226,7 +227,7 @@
         }
 
         .warn-modal {
-            background: #1a1a1a;
+            background: var(--lme-modal-bg, #1a1a1a);
             border: 1px solid rgba(255, 107, 107, 0.45);
             border-radius: 10px;
             padding: 28px 28px 22px;
@@ -243,7 +244,7 @@
         .warn-modal-title {
             font-size: 16px;
             font-weight: 700;
-            color: #ff6b6b;
+            color: var(--lme-danger, #ff6b6b);
             margin-bottom: 8px;
         }
 
@@ -283,7 +284,7 @@
         .warn-modal-actions .btn-apply-anyway {
             background: rgba(255, 107, 107, 0.15);
             border: 1px solid rgba(255, 107, 107, 0.5);
-            color: #ff6b6b;
+            color: var(--lme-danger, #ff6b6b);
             border-radius: 6px;
             padding: 6px 18px;
             font-size: 13px;

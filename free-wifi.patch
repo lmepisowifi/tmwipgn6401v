@@ -1,0 +1,857 @@
+diff --git a/THEMES.md b/THEMES.md
+index d41f6e9..38150f9 100644
+--- a/THEMES.md
++++ b/THEMES.md
+@@ -91,7 +91,8 @@ two colour modes. The rules below are what makes a theme behave.
+   are the same in both modes under `:root, :root[data-theme="dark"], :root[data-theme="light"]`,
+   then the rest under each mode on its own. Variable names are listed in the admin
+   *Custom CSS > Tips* box (`--bg-body`, `--bg-surface`, `--btn-primary-*`, `--btn-coin-*`,
+-  `--btn-rates-*`, `--btn-danger-*`, `--coin-sym-color`, ...).
++  `--btn-rates-*`, `--btn-free-*` (optional; the Free WiFi button falls back to a built-in
++  green when a theme doesn't set them), `--btn-danger-*`, `--coin-sym-color`, ...).
+ * **Never hide, shrink or cover a control a customer needs.** No `display:none` on the voucher
+   box, Insert Coin, Resume, Submit or the pop-up buttons; no `position:fixed` / `sticky` bars
+   (they can sit on top of a button once the page is scrolled: an absolutely positioned header is
+diff --git a/defaults.env b/defaults.env
+index 24c4b0b..15d1015 100644
+--- a/defaults.env
++++ b/defaults.env
+@@ -151,5 +151,23 @@ VOUCHER_COOLDOWN="60"
+ # default so existing installs keep today's always-available behavior.
+ VOUCHER_ENABLED="1"
+ 
++# ── Free WiFi ─────────────────────────────────────────────
++# "Free WiFi networks"-style one-tap access: the captive portal shows a Free
++# WiFi button, and a device that taps it gets FREE_WIFI_MINUTES of internet
++# with no coins or voucher. OFF by default - this gives internet away, so the
++# operator opts in. Toggle + settings: www2 > Hotspot > Free WiFi.
++FREE_WIFI_ENABLED="0"
++# Length of one free session, in minutes.
++FREE_WIFI_MINUTES="10"
++# How long (minutes) a device must wait after a claim before it can claim
++# again; 0 = once per device, never again (until the admin resets claims).
++# Must be 0 or >= FREE_WIFI_MINUTES (the admin page enforces this).
++FREE_WIFI_COOLDOWN="1440"
++# When "1" (default), a claim is refused while the router has no internet
++# (/tmp/internet_up, same flag the coin/voucher gates use) so a customer
++# doesn't burn their claim during an outage. Set "0" for WANs where the
++# watchdog's ICMP check can't pass even though browsing works.
++FREE_WIFI_REQUIRE_INTERNET="1"
++
+ # ── Time sync ─────────────────────────────────────────────
+ NTP_SERVERS="pool.ntp.org time.google.com time.cloudflare.com"
+diff --git a/hotspot/cgi-bin/login.sh b/hotspot/cgi-bin/login.sh
+index ffb7fe4..6af1f78 100755
+--- a/hotspot/cgi-bin/login.sh
++++ b/hotspot/cgi-bin/login.sh
+@@ -30,6 +30,8 @@ AUTO_PAUSED_FILE="/lmepisowifi/hotspot_data/auto_paused.txt"
+ [ -f /lmepisowifi/hotspot/macfix.sh ] && . /lmepisowifi/hotspot/macfix.sh
+ # WiFi Rates expiry/validity bucket tracking - see ratevalidity.sh.
+ [ -f /lmepisowifi/hotspot/ratevalidity.sh ] && . /lmepisowifi/hotspot/ratevalidity.sh
++# Free WiFi one-tap claim + per-device cooldown tracking - see freewifi.sh.
++[ -f /lmepisowifi/hotspot/freewifi.sh ] && . /lmepisowifi/hotspot/freewifi.sh
+ 
+ _unlock() { rm -f /tmp/hotspot_session.lock/pid 2>/dev/null; rmdir /tmp/hotspot_session.lock 2>/dev/null; }
+ _lock() {
+@@ -219,6 +221,14 @@ RESUME=$(
+     | $BB tr -dc '0-9'
+ )
+ 
++FREE=$(
++    $BB echo "$POST_DATA" \
++    | $BB tr '&' '\n' \
++    | $BB grep '^free=' \
++    | $BB cut -d '=' -f 2- \
++    | $BB tr -dc '0-9'
++)
++
+ if [ -z "$CLIENT_MAC" ] || [ "$CLIENT_MAC" = "00:00:00:00:00:00" ]; then
+     echo '{"ok":false,"error":"no_mac"}'
+     exit 0
+@@ -286,6 +296,61 @@ if [ -n "$RESUME" ] && [ "$RESUME" = "1" ]; then
+     fi
+     NEW_EXPIRY=$(( NOW + DURATION ))
+     NEW_TOTAL=$TOTAL
++elif [ "$FREE" = "1" ]; then
++    # --- Free WiFi: one-tap claim of FREE_WIFI_MINUTES, once per cooldown ---
++    # Master switch (off by default - this hands out internet for nothing,
++    # so the admin opts in under www2 > Hotspot > Free WiFi). Also fails
++    # closed if freewifi.sh didn't load, rather than granting time with no
++    # cooldown tracking behind it.
++    if [ "${FREE_WIFI_ENABLED:-0}" != "1" ] || ! command -v fw_record >/dev/null 2>&1; then
++        echo '{"ok":false,"error":"free_disabled"}'
++        exit 0
++    fi
++
++    # Someone already online (paid, voucher, or an earlier free claim) has
++    # nothing to claim - refuse instead of silently stacking free time onto
++    # a live session. A *paused* balance is fine: it falls through to the
++    # shared stacking code below exactly like a voucher redeemed onto one.
++    if [ -n "$EXISTING" ]; then
++        _FEXP=$($BB echo "$EXISTING" | $BB awk '{print $2}')
++        if [ "${_FEXP:-0}" -gt "$NOW" ] 2>/dev/null; then
++            echo '{"ok":false,"error":"already_online"}'
++            exit 0
++        fi
++    fi
++
++    # Don't burn a customer's claim (and start their cooldown) while the
++    # router can't actually reach the internet. Same /tmp/internet_up flag
++    # the coin/voucher gates use. On by default; FREE_WIFI_REQUIRE_INTERNET=0
++    # for WANs where the watchdog's ICMP check can't pass but HTTP works.
++    if [ "${FREE_WIFI_REQUIRE_INTERNET:-1}" = "1" ] && [ ! -f "${INTERNET_UP_FILE:-/tmp/internet_up}" ]; then
++        echo '{"ok":false,"error":"no_internet"}'
++        exit 0
++    fi
++
++    # The cooldown is wall-clock based (it has to survive a reboot), so
++    # refuse until NTP has set the clock rather than stamp a 1970 time.
++    if ! fw_clock_ok; then
++        echo '{"ok":false,"error":"clock_not_ready"}'
++        exit 0
++    fi
++
++    fw_wait "$CLIENT_MAC"
++    if [ "${FW_WAIT:-0}" -ne 0 ]; then
++        echo "{\"ok\":false,\"error\":\"free_wait\",\"wait\":${FW_WAIT}}"
++        exit 0
++    fi
++
++    _FMIN=$(_fw_num "${FREE_WIFI_MINUTES:-10}" 10)
++    [ "$_FMIN" -ge 1 ] || _FMIN=10
++
++    # Stamp the claim BEFORE granting (same fail-closed order as burning a
++    # voucher): if the record can't be written, no time is handed out.
++    if ! fw_record "$CLIENT_MAC"; then
++        echo '{"ok":false,"error":"try_again"}'
++        exit 0
++    fi
++    DURATION=$(( _FMIN * 60 ))
+ else
+     # Master switch: voucher input entirely disabled by the admin. Checked
+     # before anything else in this branch (strikes, internet gate, code
+diff --git a/hotspot/cgi-bin/status.sh b/hotspot/cgi-bin/status.sh
+index a45a2da..92c686d 100755
+--- a/hotspot/cgi-bin/status.sh
++++ b/hotspot/cgi-bin/status.sh
+@@ -28,6 +28,8 @@ HOTSPOT_BR="br1"
+ [ -f /lmepisowifi/hotspot/macfix.sh ] && . /lmepisowifi/hotspot/macfix.sh
+ # WiFi Rates expiry/validity bucket tracking - see ratevalidity.sh.
+ [ -f /lmepisowifi/hotspot/ratevalidity.sh ] && . /lmepisowifi/hotspot/ratevalidity.sh
++# Free WiFi claim eligibility - see freewifi.sh.
++[ -f /lmepisowifi/hotspot/freewifi.sh ] && . /lmepisowifi/hotspot/freewifi.sh
+ 
+ # Admin-configured (see hotspot.cgi's config_set / RELOAD_AFTER_TIME_ADDED_ENABLED).
+ # Surfaced on every status poll, logged-in or not, so index.html has it
+@@ -94,6 +96,19 @@ case "$AVAIL_COINS" in ''|*[!0-9]*) AVAIL_COINS=0 ;; esac
+ AVAIL_JSON=""
+ [ "$AVAIL_COINS" -gt 0 ] && AVAIL_JSON=",\"available_coins\":$AVAIL_COINS"
+ 
++# Free WiFi (see freewifi.sh / login.sh's free=1 branch). Only emitted while
++# the admin has it switched on, and only ever read by the portal's
++# disconnected/paused views - a device with a live session doesn't need it.
++# free_wait: 0 = the button is available, >0 = seconds until this device can
++# claim again, -1 = it already used its one claim (cooldown set to "once").
++FREE_JSON=""
++if [ "${FREE_WIFI_ENABLED:-0}" = "1" ] && command -v fw_wait >/dev/null 2>&1; then
++    fw_wait "$CLIENT_MAC"
++    _FMIN=$(_fw_num "${FREE_WIFI_MINUTES:-10}" 10)
++    [ "$_FMIN" -ge 1 ] || _FMIN=10
++    FREE_JSON=",\"free_minutes\":$_FMIN,\"free_wait\":${FW_WAIT:-0}"
++fi
++
+ # -- CONNECTION DETECTION (Run for everyone regardless of session) --
+ WLAN_IFACE=""
+ WLAN_BAND=""
+@@ -213,8 +228,8 @@ if [ -n "$PAUSED" ]; then
+     if [ "${AUTO_RESUME_ENABLED:-0}" = "1" ] && [ "${AUTO_PAUSE_ENABLED:-1}" = "1" ]; then
+         [ -f "$AUTO_PAUSED_FILE" ] && $BB grep -qx "$CLIENT_MAC" "$AUTO_PAUSED_FILE" 2>/dev/null && AR_BOOL="true"
+     fi
+-    $BB echo "{\"logged_in\":false,\"mac\":\"$CLIENT_MAC\",\"ip\":\"$CLIENT_IP\",\"has_paused\":true,\"remaining\":$REMAINING,\"total\":$TOTAL,\"auto_resume\":$AR_BOOL,\"reload_after_time_added\":$RELOAD_BOOL,\"expiring_remaining\":${RV_REMAIN:-0},\"expiring_deadline_secs\":${RV_DEADLINE_SECS:-0},${CONN_JSON}${AVAIL_JSON}}"
++    $BB echo "{\"logged_in\":false,\"mac\":\"$CLIENT_MAC\",\"ip\":\"$CLIENT_IP\",\"has_paused\":true,\"remaining\":$REMAINING,\"total\":$TOTAL,\"auto_resume\":$AR_BOOL,\"reload_after_time_added\":$RELOAD_BOOL,\"expiring_remaining\":${RV_REMAIN:-0},\"expiring_deadline_secs\":${RV_DEADLINE_SECS:-0},${CONN_JSON}${AVAIL_JSON}${FREE_JSON}}"
+ else
+-    $BB echo "{\"logged_in\":false,\"mac\":\"$CLIENT_MAC\",\"ip\":\"$CLIENT_IP\",\"reload_after_time_added\":$RELOAD_BOOL,${CONN_JSON}${AVAIL_JSON}}"
++    $BB echo "{\"logged_in\":false,\"mac\":\"$CLIENT_MAC\",\"ip\":\"$CLIENT_IP\",\"reload_after_time_added\":$RELOAD_BOOL,${CONN_JSON}${AVAIL_JSON}${FREE_JSON}}"
+ fi
+ _unlock
+diff --git a/hotspot/freewifi.sh b/hotspot/freewifi.sh
+new file mode 100644
+index 0000000..838cc16
+--- /dev/null
++++ b/hotspot/freewifi.sh
+@@ -0,0 +1,111 @@
++#!/bin/sh
++# ---------------------------------------------------------------------------
++# lmepisowifi — https://github.com/lmepisowifi/tmwipgn6401v
++# SPDX-License-Identifier: AGPL-3.0-or-later
++# Copyright (C) 2026 The lmepisowifi Project — see AUTHORS
++#
++# Licensed under the GNU AGPLv3 (see LICENSE). Modifying or rewriting this
++# file — including by running it through an LLM — does not remove these
++# obligations: keep this notice, mark your changes, and offer Corresponding
++# Source to network users (AGPLv3 §5, §13). See PROVENANCE.md before
++# presenting this as your own original work.
++# ---------------------------------------------------------------------------
++
++# freewifi.sh — "Free WiFi" claim tracking, sourced (never executed) by
++# login.sh (the claim itself) and status.sh (to tell the portal whether to
++# show the button). Shared so both agree on exactly one definition of
++# "may this device claim right now".
++#
++# A device may claim FREE_WIFI_MINUTES of internet by tapping one button on
++# the portal, then has to wait FREE_WIFI_COOLDOWN minutes (0 = once per
++# device, never again) before it can claim again. State is one flat,
++# MAC-keyed file in hotspot_data/ (survives reboots and OTAs):
++#
++#     MAC LAST_CLAIM_EPOCH CLAIM_COUNT
++#
++# Wall-clock (date +%s) rather than uptime on purpose: the cooldown must
++# outlive a reboot, or power-cycling the box would reset everyone's wait.
++# That is also why a claim is refused until the clock looks synced (see
++# fw_clock_ok) — a claim stamped with a 1970 clock would be meaningless.
++#
++# Requires the sourcing script to already define: BB. fw_record must be
++# called INSIDE the caller's _lock (same as every other hotspot_data write).
++
++FREE_CLAIM_FILE="/lmepisowifi/hotspot_data/free_claims.txt"
++# Anything earlier than 2025-01-01 can only be an unsynced RTC/boot clock.
++FW_MIN_EPOCH=1735689600
++# Hard cap on the file when FREE_WIFI_COOLDOWN=0 (rows never expire then),
++# so a flood of randomized MACs can't grow it forever. Oldest rows go first.
++FW_MAX_ROWS=5000
++
++# _fw_num <value> <fallback>: digits-only, leading zeros stripped (so "010" is
++# ten, never octal 8 / a crash in busybox ash arithmetic), else <fallback>.
++_fw_num() {
++    case "$1" in ''|*[!0-9]*) echo "$2"; return ;; esac
++    local v="$1"
++    v="${v#"${v%%[!0]*}"}"
++    echo "${v:-0}"
++}
++_fw_now() { _fw_num "$(date +%s 2>/dev/null)" 0; }
++
++fw_clock_ok() { [ "$(_fw_now)" -ge "$FW_MIN_EPOCH" ]; }
++
++# fw_wait <mac>  ->  sets FW_WAIT:
++#    0  = this device may claim now
++#   >0  = seconds until it may claim again
++#   -1  = already claimed and the admin set "once per device"
++fw_wait() {
++    local mac="$1" row last cd now el
++    FW_WAIT=0
++    row=$($BB grep "^${mac} " "$FREE_CLAIM_FILE" 2>/dev/null | $BB head -1)
++    [ -n "$row" ] || return 0
++    last=$(_fw_num "$(printf '%s' "$row" | $BB awk '{print $2}')" "")
++    [ -n "$last" ] || return 0
++    cd=$(_fw_num "${FREE_WIFI_COOLDOWN:-1440}" 1440)
++    if [ "$cd" -eq 0 ]; then FW_WAIT=-1; return 0; fi
++    cd=$(( cd * 60 ))
++    now=$(_fw_now)
++    # Clock behind the stored stamp (not synced yet after a reboot, or
++    # stepped backwards): fail closed with the full cooldown instead of
++    # treating a tiny "elapsed" as permission.
++    if [ "$now" -lt "$last" ]; then FW_WAIT=$cd; return 0; fi
++    el=$(( now - last ))
++    [ "$el" -ge "$cd" ] || FW_WAIT=$(( cd - el ))
++    return 0
++}
++
++# fw_record <mac>  — stamp "claimed just now" (count+1) for this MAC and
++# prune rows whose cooldown has long since elapsed. Returns 1, leaving the
++# file untouched, if it can't be read/rewritten safely (same read-error
++# guard as login.sh's _users_file_stage_excl: a transient flash read glitch
++# must not be committed over the file as an empty result, which would
++# silently forgive every device's cooldown).
++fw_record() {
++    local mac="$1" now cd cutoff cnt existed=0 rc=0 tmp="${FREE_CLAIM_FILE}.tmp"
++    now=$(_fw_now)
++    cd=$(_fw_num "${FREE_WIFI_COOLDOWN:-1440}" 1440)
++    cutoff=0
++    [ "$cd" -gt 0 ] && cutoff=$(( now - cd * 60 ))
++    [ "$cutoff" -lt 0 ] && cutoff=0
++    [ -e "$FREE_CLAIM_FILE" ] && existed=1
++    cnt=$(_fw_num "$($BB grep "^${mac} " "$FREE_CLAIM_FILE" 2>/dev/null | $BB head -1 | $BB awk '{print $3}')" 0)
++    cnt=$(( cnt + 1 ))
++    $BB awk -v m="$mac" -v cut="$cutoff" '$1 != m && $2 + 0 >= cut' "$FREE_CLAIM_FILE" > "$tmp" 2>/dev/null || rc=$?
++    if [ "$existed" -eq 1 ] && [ "$rc" -ne 0 ]; then
++        rm -f "$tmp" 2>/dev/null
++        logger -t lmehspt "free_claims.txt: refused rewrite after read error (rc=$rc) - kept existing file" 2>/dev/null
++        return 1
++    fi
++    printf '%s %s %s\n' "$mac" "$now" "$cnt" >> "$tmp" 2>/dev/null || { rm -f "$tmp" 2>/dev/null; return 1; }
++    if [ "$cd" -eq 0 ]; then
++        $BB tail -n "$FW_MAX_ROWS" "$tmp" > "${tmp}2" 2>/dev/null && $BB mv "${tmp}2" "$tmp"
++    fi
++    $BB mv "$tmp" "$FREE_CLAIM_FILE" || { rm -f "$tmp" 2>/dev/null; return 1; }
++    # Links a real customer MAC to a timestamp — same 600 as users.txt,
++    # re-applied on every commit because mv carries over the .tmp's mode.
++    $BB chmod 600 "$FREE_CLAIM_FILE" 2>/dev/null
++    # Force it to NAND now: a power cut right after a claim must not roll
++    # the cooldown back and hand the same device another free session.
++    sync
++    return 0
++}
+diff --git a/hotspot/index.html b/hotspot/index.html
+index b2fc043..e7eecf4 100644
+--- a/hotspot/index.html
++++ b/hotspot/index.html
+@@ -559,6 +559,28 @@
+       color: var(--btn-rates-hover-color) !important;
+     }
+ 
++    /* Green Free WiFi button. Colours fall back to built-in greens so every
++       theme (including third-party ones written before this button existed)
++       gets a sensible look; a theme can override via --btn-free-*. */
++    .btn-free {
++      background: var(--btn-free-bg, rgba(34, 197, 94, 0.14)) !important;
++      border: 1px solid var(--btn-free-border, #22c55e) !important;
++      color: var(--btn-free-color, #22c55e) !important;
++    }
++    .btn-free:hover {
++      background: var(--btn-free-hover-bg, #22c55e) !important;
++      border-color: var(--btn-free-hover-border, #22c55e) !important;
++      color: var(--btn-free-hover-color, #ffffff) !important;
++    }
++    .btn-free:disabled { opacity: 0.6; cursor: wait; }
++    .free-hint {
++      display: none;
++      margin-top: 8px;
++      font-size: 0.85rem;
++      text-align: center;
++      opacity: 0.75;
++    }
++
+     /* Red styled Pause & Resume Buttons */
+     #btn-resume, #btn-pause {
+       background: var(--btn-danger-bg) !important;
+@@ -1021,11 +1043,14 @@
+ 
+         <!-- Flexbox container perfectly spaces visible buttons by 8px without interfering margins -->
+         <div class="d-flex flex-column gap-2">
++          <button class="btn btn-free" id="btn-free-login" onclick="doFreeWifi()" style="display:none;">Free WiFi</button>
+           <button class="btn btn-coin" id="btn-coin-login" onclick="startCoinFlow(false)" style="display:none;">Insert Coin</button>
+           <button class="btn btn-primary" id="btn-resume" onclick="doResume()" style="display:none;">Resume Time</button>
+           <button class="btn btn-rates" id="btn-rates-login" onclick="openRatesModal()" style="display:none;">WiFi Rates</button>
+         </div>
+ 
++        <div class="free-hint" id="free-hint"></div>
++
+         <div class="add-panel" id="login-panel" style="display:block;">
+           <label class="form-label" for="login-code">Voucher Code</label>
+           <div class="input-group mb-0">
+@@ -1803,6 +1828,9 @@ function checkStatus() {
+         updateExpiryNotice('status-expiry-notice', d.expiring_remaining, d.expiring_deadline_secs);
+       } else {
+         renderDeviceInfo(d, 'l');
++        // Free WiFi button/hint (status.sh only sends free_* while the admin
++        // has it on). Returns true when this device can claim right now.
++        var freeAvail = updateFreeUI(d);
+ 
+         // Auto-Resume switch (admin-configured): skip the paused screen
+         // entirely and fire the same resume=1 request the button below
+@@ -1842,7 +1870,9 @@ function checkStatus() {
+           document.getElementById('btn-resume').style.display = 'block';
+         } else {
+           loginTitle.textContent = 'Disconnected';
+-          loginSub.textContent   = 'Insert Coins or Enter a voucher code to get online.';
++          loginSub.textContent   = freeAvail
++            ? 'Tap Free WiFi, insert coins or enter a voucher code to get online.'
++            : 'Insert Coins or Enter a voucher code to get online.';
+           
+           document.getElementById('resume-progress-wrap').style.display = 'none';
+           document.getElementById('btn-resume').style.display = 'none';
+@@ -1855,6 +1885,109 @@ function checkStatus() {
+     });
+ }
+ 
++/* ────────────────────────────────────────────────────────────────
++   Free WiFi — one-tap free session (see freewifi.sh / login.sh free=1)
++──────────────────────────────────────────────────────────────── */
++var _freeBusy = false;
++var _freeRecheckID = null;
++
++function fmtFreeLen(mins) {
++  mins = Math.max(1, parseInt(mins, 10) || 0);
++  var h = Math.floor(mins / 60), m = mins % 60;
++  if (h > 0 && m > 0) return h + ' hr ' + m + ' min';
++  if (h > 0)          return h + (h === 1 ? ' hr' : ' hrs');
++  return m + ' min';
++}
++
++function fmtFreeWait(secs) {
++  var d = Math.floor(secs / 86400);
++  var h = Math.floor((secs % 86400) / 3600);
++  var m = Math.ceil((secs % 3600) / 60);
++  if (m === 60) { m = 0; h += 1; }
++  if (d > 0) return d + 'd ' + h + 'h';
++  if (h > 0) return h + 'h ' + m + 'm';
++  return Math.max(1, m) + 'm';
++}
++
++// Shows the Free WiFi button when this device may claim, or a one-line hint
++// while it is waiting out its cooldown. Returns true only when it may claim.
++function updateFreeUI(d) {
++  var btn  = document.getElementById('btn-free-login');
++  var hint = document.getElementById('free-hint');
++  if (!btn || !hint) return false;
++  if (_freeRecheckID) { clearTimeout(_freeRecheckID); _freeRecheckID = null; }
++  btn.style.display  = 'none';
++  hint.style.display = 'none';
++  var mins = parseInt(d.free_minutes, 10);
++  if (!(mins > 0)) return false;               // admin has Free WiFi off
++
++  var wait = parseInt(d.free_wait, 10) || 0;
++  if (wait === 0) {
++    btn.textContent   = 'Free WiFi (' + fmtFreeLen(mins) + ')';
++    btn.style.display = 'block';
++    return true;
++  }
++  if (wait < 0) {
++    hint.textContent = 'Free WiFi has already been used on this device.';
++  } else {
++    hint.textContent = 'Free WiFi is available again in ' + fmtFreeWait(wait) + '.';
++    // Re-check when the wait is over so the button comes back by itself.
++    // Capped: setTimeout overflows past ~24 days.
++    _freeRecheckID = setTimeout(checkStatus, Math.min(wait + 2, 2000000) * 1000);
++  }
++  hint.style.display = 'block';
++  return false;
++}
++
++function doFreeWifi() {
++  if (_freeBusy) return;
++  _freeBusy = true;
++  var btn = document.getElementById('btn-free-login');
++  if (btn) btn.disabled = true;
++
++  fetch('/cgi-bin/login.sh', {
++    method: 'POST',
++    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
++    body: 'free=1'
++  })
++  .then(function(r) { return r.json(); })
++  .then(function(d) {
++    _freeBusy = false;
++    if (btn) btn.disabled = false;
++    if (d.ok) {
++      show('v-status');
++      // Same captive-portal-compatibility reload as a coin/resume success.
++      if (_reloadAfterTimeAdded) { location.reload(); return; }
++      checkStatus();
++      toastr.success('\u2714\ufe0f Connected! ' + fmtCountdown(d.remaining) + ' of free WiFi.');
++    } else {
++      var msgs = {
++        no_mac:          "Can't detect your device MAC yet \u2014 wait a few seconds and try again.",
++        free_disabled:   'Free WiFi is not available right now.',
++        already_online:  'You are already online.',
++        no_internet:     'No internet connection right now \u2014 Free WiFi is temporarily unavailable.',
++        clock_not_ready: 'The router is still starting up \u2014 please try again in a minute.',
++        try_again:       'Something went wrong \u2014 please try again.',
++        cooldown:        'Too many attempts. Please wait a moment.'
++      };
++      if (d.error === 'free_wait') {
++        toastr.error(d.wait < 0
++          ? 'Free WiFi has already been used on this device.'
++          : 'You can claim Free WiFi again in ' + fmtFreeWait(d.wait) + '.');
++      } else {
++        toastr.error(msgs[d.error] || 'Something went wrong \u2014 please try again.');
++      }
++      // Refresh so the button/hint (or the connected view) matches the server.
++      if (d.error !== 'cooldown') checkStatus();
++    }
++  })
++  .catch(function() {
++    _freeBusy = false;
++    if (btn) btn.disabled = false;
++    toastr.error('Connection error. Please try again.');
++  });
++}
++
+ function doResume(auto) {
+   fetch('/cgi-bin/login.sh', {
+     method: 'POST',
+diff --git a/hotspot/macfix.sh b/hotspot/macfix.sh
+index 62ba971..6251077 100755
+--- a/hotspot/macfix.sh
++++ b/hotspot/macfix.sh
+@@ -78,6 +78,10 @@ MACFIX_MAP_FILE="/lmepisowifi/hotspot_data/device_fp.txt"
+ # already repeats e.g. USERS_FILE's path across lmehspt.sh/coin_result.sh/
+ # status.sh instead of centralizing it.
+ MACFIX_BANK_FILE="/lmepisowifi/hotspot_data/coin_bank.txt"
++# Same idea for freewifi.sh's FREE_CLAIM_FILE: without migrating it, a phone
++# that re-randomizes its MAC would look like a brand-new device and could
++# claim Free WiFi again on every reconnect, defeating the cooldown.
++MACFIX_FREE_FILE="/lmepisowifi/hotspot_data/free_claims.txt"
+ MACFIX_COOKIE_NAME="lme_fp"
+ MACFIX_COOKIE_MAXAGE=2678400   # ~31 days — was 1 year, but MACFIX_MAP_MAX_AGE below prunes the
+                                 # fp->MAC row after 30 days anyway, so a cookie that outlives it
+@@ -325,11 +329,28 @@ _mf_reconcile_row() {
+                 [ -n "$n_amt" ] || n_amt=0
+                 printf '%s %d\n' "$new" "$(( o_amt + n_amt ))" >> "${file}.tmp"
+                 ;;
++            free)
++                # "MAC LAST_CLAIM_EPOCH CLAIM_COUNT" - on collision keep the
++                # MOST RECENT claim time (the stricter cooldown wins, so
++                # merging two MACs can never shorten anyone's wait) and
++                # sum the counts.
++                local o_ts n_ts o_cnt n_cnt
++                o_ts=$($BB echo "$old_row" | $BB awk '{print $2}')
++                n_ts=$($BB echo "$new_row" | $BB awk '{print $2}')
++                o_cnt=$($BB echo "$old_row" | $BB awk '{print $3}')
++                n_cnt=$($BB echo "$new_row" | $BB awk '{print $3}')
++                case "$o_ts" in ''|*[!0-9]*) o_ts=0 ;; esac
++                case "$n_ts" in ''|*[!0-9]*) n_ts=0 ;; esac
++                case "$o_cnt" in ''|*[!0-9]*) o_cnt=0 ;; esac
++                case "$n_cnt" in ''|*[!0-9]*) n_cnt=0 ;; esac
++                [ "$o_ts" -gt "$n_ts" ] && n_ts=$o_ts
++                printf '%s %d %d\n' "$new" "$n_ts" "$(( o_cnt + n_cnt ))" >> "${file}.tmp"
++                ;;
+         esac
+     fi
+ 
+     $BB mv "${file}.tmp" "$file"
+-    # $file is always SESSION_FILE/USERS_FILE/MACFIX_BANK_FILE - every one of
++    # $file is always SESSION_FILE/USERS_FILE/MACFIX_BANK_FILE/MACFIX_FREE_FILE - every one of
+     # them MAC-linked, and every one of them already chmod 600'd by its own
+     # writer elsewhere (login.sh/logout.sh/coin.sh/coin_result.sh). Without
+     # re-applying it here too, a migration landing right after one of those
+@@ -447,6 +468,7 @@ mf_reconcile() {
+         fi
+         _mf_reconcile_row "$USERS_FILE" "$PREV_MAC" "$CLIENT_MAC" users
+         _mf_reconcile_row "$MACFIX_BANK_FILE" "$PREV_MAC" "$CLIENT_MAC" bank
++        _mf_reconcile_row "$MACFIX_FREE_FILE" "$PREV_MAC" "$CLIENT_MAC" free
+         command -v rv_reconcile_mac >/dev/null 2>&1 && rv_reconcile_mac "$PREV_MAC" "$CLIENT_MAC"
+         _mf_log_migration "applied" "$MF_FP_ID" "$PREV_MAC" "$CLIENT_MAC"
+     fi
+diff --git a/lmehspt.sh b/lmehspt.sh
+index 1f07de7..512dc1e 100755
+--- a/lmehspt.sh
++++ b/lmehspt.sh
+@@ -232,6 +232,12 @@ VOUCHER_COOLDOWN="60"
+ # already-paused session untouched. On by default (matches the system's
+ # original always-available behavior).
+ VOUCHER_ENABLED="1"
++# Free WiFi one-tap access - see defaults.env for the full rationale. Read by
++# login.sh (the claim) and status.sh (button visibility) via coin_config.env.
++FREE_WIFI_ENABLED="0"
++FREE_WIFI_MINUTES="10"
++FREE_WIFI_COOLDOWN="1440"
++FREE_WIFI_REQUIRE_INTERNET="1"
+ # Flag file: present = internet reachable as of the last check, absent = not
+ # reachable. Written by the watchdog loop's internet-check tick; read by
+ # coin.sh and login.sh. A plain existence check keeps those per-request reads
+@@ -2368,6 +2374,14 @@ write_coin_config() {
+         printf 'VOUCHER_STRIKE_THRESHOLD="%s"\n' "${VOUCHER_STRIKE_THRESHOLD:-3}"
+         printf 'VOUCHER_COOLDOWN="%s"\n'    "${VOUCHER_COOLDOWN:-60}"
+         printf 'VOUCHER_ENABLED="%s"\n'     "${VOUCHER_ENABLED:-1}"
++        # Same "without this line" reasoning as VOUCHER_STRIKE_* above: login.sh
++        # and status.sh only ever see these via this cache file, so leaving
++        # them out would reset the admin's Free WiFi settings (back to off)
++        # on every write_coin_config() call - hotspot restart, boot, etc.
++        printf 'FREE_WIFI_ENABLED="%s"\n'   "${FREE_WIFI_ENABLED:-0}"
++        printf 'FREE_WIFI_MINUTES="%s"\n'   "${FREE_WIFI_MINUTES:-10}"
++        printf 'FREE_WIFI_COOLDOWN="%s"\n'  "${FREE_WIFI_COOLDOWN:-1440}"
++        printf 'FREE_WIFI_REQUIRE_INTERNET="%s"\n' "${FREE_WIFI_REQUIRE_INTERNET:-1}"
+         printf 'INTERNET_UP_FILE="%s"\n'    "${INTERNET_UP_FILE:-/tmp/internet_up}"
+         printf 'HOTSPOT_BR="%s"\n'          "$HOTSPOT_BR"
+         printf 'SESSION_FILE="%s"\n'        "$SESSION_FILE"
+diff --git a/www2/cgi-bin/hotspot.cgi b/www2/cgi-bin/hotspot.cgi
+index 7faad01..e579f31 100755
+--- a/www2/cgi-bin/hotspot.cgi
++++ b/www2/cgi-bin/hotspot.cgi
+@@ -80,6 +80,8 @@ AUTO_PAUSED_FILE="$HDATA/auto_paused.txt"
+ # Below-minimum-tier coin balances banked per-MAC by coin_result.sh — see
+ # that file's COIN_BANK_FILE comment for the full explanation.
+ COIN_BANK_FILE="$HDATA/coin_bank.txt"
++# Free WiFi per-device claim/cooldown records - see hotspot/freewifi.sh.
++FREE_CLAIM_FILE="$HDATA/free_claims.txt"
+ # WiFi Rates expiry/validity bucket tracking - see ratevalidity.sh.
+ [ -f /lmepisowifi/hotspot/ratevalidity.sh ] && . /lmepisowifi/hotspot/ratevalidity.sh
+ 
+@@ -738,6 +740,15 @@ if echo "$QS" | $BB grep -q "action=config_get"; then
+     VSE_BOOL="false"; [ "${VSE:-0}" = "1" ] && VSE_BOOL="true"
+     VST="${VOUCHER_STRIKE_THRESHOLD:-$(read_lmehspt_var VOUCHER_STRIKE_THRESHOLD)}"
+     VCD="${VOUCHER_COOLDOWN:-$(read_lmehspt_var VOUCHER_COOLDOWN)}"
++    FWE="${FREE_WIFI_ENABLED:-$(read_lmehspt_var FREE_WIFI_ENABLED)}"
++    FWE_BOOL="false"; [ "${FWE:-0}" = "1" ] && FWE_BOOL="true"
++    FWM="${FREE_WIFI_MINUTES:-$(read_lmehspt_var FREE_WIFI_MINUTES)}"
++    FWC="${FREE_WIFI_COOLDOWN:-$(read_lmehspt_var FREE_WIFI_COOLDOWN)}"
++    FWR="${FREE_WIFI_REQUIRE_INTERNET:-$(read_lmehspt_var FREE_WIFI_REQUIRE_INTERNET)}"
++    FWR_BOOL="true"; [ "${FWR:-1}" = "0" ] && FWR_BOOL="false"
++    FW_CLAIMS=0
++    [ -f "$FREE_CLAIM_FILE" ] && FW_CLAIMS=$($BB grep -c '.' "$FREE_CLAIM_FILE" 2>/dev/null)
++    case "$FW_CLAIMS" in ''|*[!0-9]*) FW_CLAIMS=0 ;; esac
+ 
+     HSP_RUNNING="false"; hotspot_running && HSP_RUNNING="true"
+     COIN_ON="false"; [ -f /tmp/coin_enabled ] && COIN_ON="true"
+@@ -786,6 +797,11 @@ if echo "$QS" | $BB grep -q "action=config_get"; then
+ \"voucher_strike_enabled\":$VSE_BOOL,
+ \"voucher_strike_threshold\":\"$(esc_json "$VST")\",
+ \"voucher_cooldown\":\"$(esc_json "$VCD")\",
++\"free_wifi_enabled\":$FWE_BOOL,
++\"free_wifi_minutes\":\"$(esc_json "${FWM:-10}")\",
++\"free_wifi_cooldown\":\"$(esc_json "${FWC:-1440}")\",
++\"free_wifi_require_internet\":$FWR_BOOL,
++\"free_wifi_claims\":$FW_CLAIMS,
+ \"internet_up\":$INET_UP,
+ \"hotspot_running\":$HSP_RUNNING}"
+ fi
+@@ -2385,6 +2401,93 @@ if echo "$QS" | $BB grep -q "action=pause_on_boot_set"; then
+     esac
+ fi
+ 
++# ================================================================
++# POST ?action=free_wifi_set
++#   body: any subset of  enabled=1|0  minutes=N  cooldown=N  require_internet=1|0
++# Free WiFi (one-tap free session — see hotspot/freewifi.sh, login.sh's
++# free=1 branch, status.sh's free_minutes/free_wait). Same three-way
++# persistence as every other simple setting here (coin_config.env for the
++# live CGIs, lmehspt.sh inline default, globals.env for the flash copy).
++# Rules: minutes 1..1440; cooldown is 0 ("once per device") or minutes..
++# 525600, and never shorter than the session itself — otherwise a device
++# could pause a free session and claim a second one on top of it.
++# ================================================================
++if echo "$QS" | $BB grep -q "action=free_wifi_set"; then
++    read -n "${CONTENT_LENGTH:-0}" POST_DATA
++    _fwf() { printf '&%s' "$POST_DATA" | $BB sed -n "s/.*&$1=\([^&]*\).*/\1/p"; }
++    _FW_EN=$(_fwf enabled);  _FW_MIN=$(_fwf minutes)
++    _FW_CD=$(_fwf cooldown); _FW_RI=$(_fwf require_internet)
++
++    case "$_FW_EN" in ""|0|1) ;; *) err_json "bad_value" ;; esac
++    case "$_FW_RI" in ""|0|1) ;; *) err_json "bad_value" ;; esac
++    case "$_FW_MIN" in *[!0-9]*) err_json "bad_minutes" ;; esac
++    case "$_FW_CD"  in *[!0-9]*) err_json "bad_cooldown" ;; esac
++
++    _FW_CUR_MIN="${FREE_WIFI_MINUTES:-$(read_lmehspt_var FREE_WIFI_MINUTES)}"
++    _FW_CUR_CD="${FREE_WIFI_COOLDOWN:-$(read_lmehspt_var FREE_WIFI_COOLDOWN)}"
++    case "$_FW_CUR_MIN" in ""|*[!0-9]*) _FW_CUR_MIN=10 ;; esac
++    case "$_FW_CUR_CD"  in ""|*[!0-9]*) _FW_CUR_CD=1440 ;; esac
++    _FW_NEW_MIN="${_FW_MIN:-$_FW_CUR_MIN}"
++    _FW_NEW_CD="${_FW_CD:-$_FW_CUR_CD}"
++    # Strip leading zeros so "007" can never be read as octal by shell
++    # arithmetic later (busybox ash crashes on 08/09), and bound the digit
++    # count so a huge number can't overflow the comparisons below.
++    _FW_NEW_MIN=$(printf '%s' "$_FW_NEW_MIN" | $BB sed 's/^0*\([0-9]\)/\1/')
++    _FW_NEW_CD=$(printf '%s' "$_FW_NEW_CD"  | $BB sed 's/^0*\([0-9]\)/\1/')
++    [ -n "$_FW_NEW_MIN" ] || _FW_NEW_MIN=0
++    [ -n "$_FW_NEW_CD" ]  || _FW_NEW_CD=0
++    [ "${#_FW_NEW_MIN}" -le 6 ] || err_json "bad_minutes"
++    [ "${#_FW_NEW_CD}" -le 7 ]  || err_json "bad_cooldown"
++
++    [ "$_FW_NEW_MIN" -ge 1 ] && [ "$_FW_NEW_MIN" -le 1440 ] || err_json "bad_minutes"
++    [ "$_FW_NEW_CD" -le 525600 ] || err_json "bad_cooldown"
++    if [ "$_FW_NEW_CD" -ne 0 ] && [ "$_FW_NEW_CD" -lt "$_FW_NEW_MIN" ]; then
++        err_json "cooldown_shorter_than_session"
++    fi
++
++    if [ -n "$_FW_MIN" ]; then
++        save_coin_env_var "FREE_WIFI_MINUTES" "$_FW_NEW_MIN"
++        set_lmehspt_var   "FREE_WIFI_MINUTES" "$_FW_NEW_MIN"
++        set_globals_var   "FREE_WIFI_MINUTES" "$_FW_NEW_MIN"
++    fi
++    if [ -n "$_FW_CD" ]; then
++        save_coin_env_var "FREE_WIFI_COOLDOWN" "$_FW_NEW_CD"
++        set_lmehspt_var   "FREE_WIFI_COOLDOWN" "$_FW_NEW_CD"
++        set_globals_var   "FREE_WIFI_COOLDOWN" "$_FW_NEW_CD"
++    fi
++    if [ -n "$_FW_EN" ]; then
++        save_coin_env_var "FREE_WIFI_ENABLED" "$_FW_EN"
++        set_lmehspt_var   "FREE_WIFI_ENABLED" "$_FW_EN"
++        set_globals_var   "FREE_WIFI_ENABLED" "$_FW_EN"
++    fi
++    if [ -n "$_FW_RI" ]; then
++        save_coin_env_var "FREE_WIFI_REQUIRE_INTERNET" "$_FW_RI"
++        set_lmehspt_var   "FREE_WIFI_REQUIRE_INTERNET" "$_FW_RI"
++        set_globals_var   "FREE_WIFI_REQUIRE_INTERNET" "$_FW_RI"
++    fi
++
++    _FW_NOW_EN="${_FW_EN:-${FREE_WIFI_ENABLED:-$(read_lmehspt_var FREE_WIFI_ENABLED)}}"
++    _FW_NOW_RI="${_FW_RI:-${FREE_WIFI_REQUIRE_INTERNET:-$(read_lmehspt_var FREE_WIFI_REQUIRE_INTERNET)}}"
++    _FW_EN_B="false"; [ "${_FW_NOW_EN:-0}" = "1" ] && _FW_EN_B="true"
++    _FW_RI_B="true";  [ "${_FW_NOW_RI:-1}" = "0" ] && _FW_RI_B="false"
++    ok_json "{\"ok\":true,\"free_wifi_enabled\":$_FW_EN_B,\"free_wifi_minutes\":\"$_FW_NEW_MIN\",\"free_wifi_cooldown\":\"$_FW_NEW_CD\",\"free_wifi_require_internet\":$_FW_RI_B}"
++fi
++
++# ================================================================
++# POST ?action=free_wifi_reset
++# Forgets every device's Free WiFi claim so everyone can claim again
++# (e.g. a new day, an event, or after switching cooldown to "once only").
++# Doesn't touch any session that is already running.
++# ================================================================
++if echo "$QS" | $BB grep -q "action=free_wifi_reset"; then
++    cleared=0
++    [ -f "$FREE_CLAIM_FILE" ] && cleared=$($BB grep -c '.' "$FREE_CLAIM_FILE" 2>/dev/null)
++    case "$cleared" in ''|*[!0-9]*) cleared=0 ;; esac
++    $BB rm -f "$FREE_CLAIM_FILE" "${FREE_CLAIM_FILE}.tmp" "${FREE_CLAIM_FILE}.tmp2" 2>/dev/null
++    sync
++    ok_json "{\"ok\":true,\"cleared\":$cleared}"
++fi
++
+ # ================================================================
+ # POST ?action=coin_internet_set   body: enabled=1|0
+ # When on, coin.sh's "start" action refuses to open a brand new coin
+diff --git a/www2/hotspot.html b/www2/hotspot.html
+index 3de5880..32e7b09 100644
+--- a/www2/hotspot.html
++++ b/www2/hotspot.html
+@@ -416,6 +416,70 @@
+         </div>
+     </div>
+ 
++    <!-- ═══ Free WiFi ═══ -->
++    <div class="card mb-3">
++        <div class="card-header d-flex align-items-center justify-content-between gap-2">
++            <span>Free WiFi</span>
++            <div class="d-flex align-items-center gap-2">
++                <span style="font-size:12px;color:var(--text-secondary);" id="fw-toggle-label">Free WiFi: Off</span>
++                <div class="wlan-toggle" id="fw-toggle" onclick="toggleFreeWifi()" title="Toggle the one-tap Free WiFi button on the captive portal">
++                    <div class="wlan-toggle-knob"></div>
++                </div>
++            </div>
++        </div>
++        <div class="card-body">
++            <div class="field-hint mb-3">Shows a <b>Free WiFi</b> button on the captive portal. A device that taps it gets a short free session with no coins or voucher, then has to wait out the cooldown before it can claim again. Limits are per device (MAC); a phone that rotates its MAC and clears its cookies can claim again, same as everything else here.</div>
++            <div class="row g-3">
++                <div class="col-sm-6">
++                    <label class="form-label" for="fw-minutes">Free Session Length <span class="field-hint d-inline">(minutes)</span></label>
++                    <input type="number" class="form-control" id="fw-minutes" placeholder="10" min="1" max="1440">
++                    <div class="field-hint">How much internet one tap gives (1&ndash;1440).</div>
++                </div>
++                <div class="col-sm-6">
++                    <label class="form-label" for="fw-cooldown">Wait Before Claiming Again</label>
++                    <select class="form-select" id="fw-cooldown">
++                        <option value="0">Once per device (never again)</option>
++                        <option value="60">1 hour</option>
++                        <option value="180">3 hours</option>
++                        <option value="360">6 hours</option>
++                        <option value="720">12 hours</option>
++                        <option value="1440">24 hours</option>
++                        <option value="4320">3 days</option>
++                        <option value="10080">7 days</option>
++                    </select>
++                    <div class="field-hint">Counted from the moment of the claim. Can't be shorter than the session itself.</div>
++                </div>
++            </div>
++            <hr class="my-3" style="border-color:var(--border-color);">
++            <!-- Require internet -->
++            <div class="d-flex align-items-start justify-content-between gap-3">
++                <div style="min-width:0;">
++                    <div style="font-weight:500;">Require Internet</div>
++                    <div class="field-hint">Refuse a claim while the router has no WAN access, so a customer doesn't use up their free session (and start their wait) during an outage. Turn off only if the status above stays Offline even though browsing works.</div>
++                </div>
++                <div class="d-flex align-items-center gap-2 flex-shrink-0">
++                    <span id="fwi-badge" class="at-badge on">On</span>
++                    <div id="fwi-toggle" class="wlan-toggle on" onclick="toggleFreeWifiInternet()" title="Require internet to claim Free WiFi">
++                        <div class="wlan-toggle-knob"></div>
++                    </div>
++                </div>
++            </div>
++            <hr class="my-3" style="border-color:var(--border-color);">
++            <div class="d-flex align-items-start justify-content-between gap-3">
++                <div style="min-width:0;">
++                    <div style="font-weight:500;">Claims Recorded</div>
++                    <div class="field-hint"><span id="fw-claims">0</span> device(s) are currently waiting out their cooldown (or used their one claim). Resetting lets every device claim again; sessions already running aren't affected.</div>
++                </div>
++                <button class="btn btn-outline-danger flex-shrink-0" onclick="resetFreeWifiClaims()">Reset Claims</button>
++            </div>
++            <hr class="my-3" style="border-color:var(--border-color);">
++            <div class="d-flex gap-2 flex-wrap">
++                <button class="btn btn-primary" onclick="saveFreeWifi()">Save Free WiFi Settings</button>
++                <button class="btn btn-outline-secondary" onclick="loadConfig()">Discard</button>
++            </div>
++        </div>
++    </div>
++
+ </div><!-- /container -->
+ 
+ <script src="/js/bootstrap.bundle.min.js?v=1.0.0"></script>
+@@ -522,6 +586,7 @@ function loadConfig(){
+             document.getElementById('v-cooldown').value          = d.voucher_cooldown||'';
+             setVoucherStrikeUI(d.voucher_strike_enabled===true||d.voucher_strike_enabled==='1'||d.voucher_strike_enabled===1);
+             setInetStatusUI(d.internet_up===true||d.internet_up==='1'||d.internet_up===1);
++            setFreeWifiUI(d);
+         })
+         .catch(function(){toastr.error('Network error loading config');});
+ }
+@@ -890,6 +955,81 @@ function toggleVoucherInternet(){
+ }
+ 
+ /* ── Shared fetch helper ── */
++/* ── Free WiFi ── */
++function setFreeWifiToggleUI(on){
++    var tog=document.getElementById('fw-toggle'); var lbl=document.getElementById('fw-toggle-label');
++    if(on){ tog.classList.add('on'); lbl.textContent='Free WiFi: On'; }
++    else  { tog.classList.remove('on'); lbl.textContent='Free WiFi: Off'; }
++}
++function setFreeWifiInternetUI(on){
++    var tog=document.getElementById('fwi-toggle'); var badge=document.getElementById('fwi-badge');
++    if(on){ tog.classList.add('on'); badge.textContent='On'; badge.className='at-badge on'; }
++    else  { tog.classList.remove('on'); badge.textContent='Off'; badge.className='at-badge off'; }
++}
++function setFreeWifiCooldownUI(mins){
++    var sel=document.getElementById('fw-cooldown'); var v=String(mins==null||mins===''?'1440':mins);
++    var has=false; for(var i=0;i<sel.options.length;i++){ if(sel.options[i].value===v){ has=true; break; } }
++    if(!has){   // a value set outside the presets (older config / manual edit): keep it selectable
++        var o=document.createElement('option'); o.value=v; o.textContent=v+' minutes'; sel.appendChild(o);
++    }
++    sel.value=v;
++}
++function setFreeWifiUI(d){
++    setFreeWifiToggleUI(d.free_wifi_enabled===true||d.free_wifi_enabled==='1'||d.free_wifi_enabled===1);
++    document.getElementById('fw-minutes').value = d.free_wifi_minutes||'10';
++    setFreeWifiCooldownUI(d.free_wifi_cooldown);
++    setFreeWifiInternetUI(!(d.free_wifi_require_internet===false||d.free_wifi_require_internet==='0'||d.free_wifi_require_internet===0));
++    document.getElementById('fw-claims').textContent = d.free_wifi_claims||0;
++}
++function freeWifiErr(e){
++    var m={
++        bad_minutes:'Free session length must be between 1 and 1440 minutes.',
++        bad_cooldown:'Invalid wait time.',
++        cooldown_shorter_than_session:"The wait can't be shorter than the free session itself.",
++        bad_value:'Invalid value.'
++    };
++    return m[e]||('Failed: '+(e||'unknown'));
++}
++function toggleFreeWifi(){
++    var tog=document.getElementById('fw-toggle'); if(tog.classList.contains('busy')) return;
++    tog.classList.add('busy');
++    var newVal=tog.classList.contains('on')?0:1;
++    postForm('free_wifi_set','enabled='+newVal,function(d){
++        tog.classList.remove('busy');
++        if(d.ok){ setFreeWifiToggleUI(d.free_wifi_enabled); toastr.success('Free WiFi '+(d.free_wifi_enabled?'enabled':'disabled')); }
++        else toastr.error(freeWifiErr(d.error));
++    });
++}
++function toggleFreeWifiInternet(){
++    var tog=document.getElementById('fwi-toggle'); if(tog.classList.contains('busy')) return;
++    tog.classList.add('busy');
++    var newVal=tog.classList.contains('on')?0:1;
++    postForm('free_wifi_set','require_internet='+newVal,function(d){
++        tog.classList.remove('busy');
++        if(d.ok){ setFreeWifiInternetUI(d.free_wifi_require_internet); toastr.success('Free WiFi internet requirement '+(d.free_wifi_require_internet?'on':'off')); }
++        else toastr.error(freeWifiErr(d.error));
++    });
++}
++function saveFreeWifi(){
++    var mins=document.getElementById('fw-minutes').value.trim();
++    var cd=document.getElementById('fw-cooldown').value;
++    if(!/^[0-9]+$/.test(mins)||+mins<1||+mins>1440){ toastr.error(freeWifiErr('bad_minutes')); return; }
++    if(+cd!==0&&+cd<+mins){ toastr.error(freeWifiErr('cooldown_shorter_than_session')); return; }
++    showOverlay('Saving Free WiFi settings…');
++    postForm('free_wifi_set','minutes='+encodeURIComponent(mins)+'&cooldown='+encodeURIComponent(cd),function(d){
++        hideOverlay();
++        if(d.ok){ document.getElementById('fw-minutes').value=d.free_wifi_minutes; setFreeWifiCooldownUI(d.free_wifi_cooldown); toastr.success('Free WiFi settings saved'); }
++        else toastr.error(freeWifiErr(d.error));
++    });
++}
++function resetFreeWifiClaims(){
++    if(!confirm('Let every device claim Free WiFi again? Sessions already running are not affected.')) return;
++    postForm('free_wifi_reset','',function(d){
++        if(d.ok){ document.getElementById('fw-claims').textContent='0'; toastr.success('Cleared '+d.cleared+' claim'+(d.cleared===1?'':'s')); }
++        else toastr.error(freeWifiErr(d.error));
++    });
++}
++
+ function postForm(action,body,cb){
+     fetch('/cgi-bin/hotspot.cgi?action='+action,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:body})
+     .then(function(r){return r.json();}).then(cb)

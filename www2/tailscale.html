@@ -14,6 +14,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <script src="/js/theme.js?v=1.0.0"></script>
     <link href="/css/bootstrap.min.css?v=1.0.0" rel="stylesheet">
     <link href="/css/style.css?v=1.0.0" rel="stylesheet">
     <link href="/css/toastr.min.css?v=1.0.0" rel="stylesheet">
@@ -22,24 +23,24 @@
         /* ── Toggle switch (matches other pages) ── */
         .wlan-toggle {
             width: 50px; height: 28px; border-radius: 14px;
-            background: #555; position: relative; cursor: pointer;
+            background: var(--lme-toggle-off, #555); position: relative; cursor: pointer;
             transition: background 0.25s; flex-shrink: 0; user-select: none;
         }
-        .wlan-toggle.on { background: #ffffff; }
+        .wlan-toggle.on { background: var(--lme-toggle-on, #ffffff); }
         .wlan-toggle.disabled-ui { opacity: 0.35; pointer-events: none; }
         .wlan-toggle-knob {
             position: absolute; width: 20px; height: 20px;
-            border-radius: 50%; background: #fff;
+            border-radius: 50%; background: var(--lme-toggle-knob, #fff);
             top: 4px; left: 4px;
             transition: left 0.25s, background 0.25s;
             box-shadow: 0 1px 4px rgba(0,0,0,0.5);
         }
-        .wlan-toggle.on .wlan-toggle-knob { left: 26px; background: #555; }
+        .wlan-toggle.on .wlan-toggle-knob { left: 26px; background: var(--lme-toggle-knob-on, #555); }
         .ts-stat { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
         .ts-badge { display:inline-block; padding:2px 9px; border-radius:3px; font-size:11px; font-weight:700; }
-        .ts-badge.on  { background:rgba(76,175,80,.2);  color:#81c784; }
-        .ts-badge.off { background:rgba(220,53,69,.18); color:#e17e88; }
-        .ts-ip { font-family:monospace; font-size:13px; color:#ccc; }
+        .ts-badge.on  { background:rgba(76,175,80,.2);  color:var(--lme-ok, #81c784); }
+        .ts-badge.off { background:rgba(220,53,69,.18); color:var(--lme-danger, #e17e88); }
+        .ts-ip { font-family:monospace; font-size:13px; color:var(--text-soft, #ccc); }
         .setup-box { border:1px solid var(--accent-color,#3d6fd6); background:rgba(61,111,214,.10);
                      border-radius:8px; padding:12px 14px; margin-top:14px; font-size:13px; }
         .setup-box a { word-break:break-all; }
@@ -56,20 +57,20 @@
         .route-cidr { font-family: "Nunito", monospace !important; font-size: 12px; color: var(--text-primary); letter-spacing: 0.04em; }
         .route-del-btn {
             padding: 0 6px !important; height: 22px !important; font-size: 11px !important; line-height: 1 !important;
-            color: #ff6b6b !important; border-color: rgba(255,107,107,0.3) !important;
+            color: var(--lme-danger, #ff6b6b) !important; border-color: rgba(255,107,107,0.3) !important;
             background: transparent !important; border-radius: 3px !important; flex-shrink: 0;
         }
-        .route-del-btn:hover { background: rgba(255,107,107,0.12) !important; border-color: #ff6b6b !important; }
+        .route-del-btn:hover { background: rgba(255,107,107,0.12) !important; border-color: var(--lme-danger, #ff6b6b) !important; }
         .route-empty { font-size: 12px; color: var(--text-secondary); text-align: center; padding: 8px 0; }
         .inline-err {
-            font-size: 11px; color: #ff6b6b; background: rgba(255,107,107,0.08);
+            font-size: 11px; color: var(--lme-danger, #ff6b6b); background: rgba(255,107,107,0.08);
             border: 1px solid rgba(255,107,107,0.25); border-radius: 3px; padding: 3px 8px;
             margin-top: 5px; display: none;
         }
 
         /* ── Account block ── */
         .ts-account { display:flex; align-items:center; gap:10px; }
-        .ts-avatar { width:40px; height:40px; border-radius:50%; object-fit:cover; background:#3a3a3a; flex-shrink:0; }
+        .ts-avatar { width:40px; height:40px; border-radius:50%; object-fit:cover; background:var(--lme-tint-3, #3a3a3a); flex-shrink:0; }
         .ts-account-name { font-weight:600; font-size:14px; }
         .ts-account-email { font-size:12px; color:var(--text-secondary); }
 
@@ -81,7 +82,7 @@
         /* ── Health warnings from tailscaled ── */
         .ts-health-item {
             font-size:12px; padding:6px 10px; border-radius:6px; margin-top:6px;
-            background:rgba(255,193,7,.12); border:1px solid rgba(255,193,7,.3); color:#ffd54f;
+            background:rgba(255,193,7,.12); border:1px solid rgba(255,193,7,.3); color:var(--lme-warn, #ffd54f);
         }
     </style>
 </head>

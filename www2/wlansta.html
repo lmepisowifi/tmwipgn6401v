@@ -14,6 +14,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <script src="/js/theme.js?v=1.0.0"></script>
     <link href="/css/bootstrap.min.css?v=1.0.0" rel="stylesheet">
     <link href="/css/style.css?v=1.0.0" rel="stylesheet">
     <style>
@@ -36,7 +37,7 @@
         }
         .sta-table td {
             padding: 9px 12px;
-            border-bottom: 1px solid rgba(255,255,255,.04);
+            border-bottom: 1px solid var(--lme-tint-1, rgba(255,255,255,.04));
             color: var(--text-primary);
             vertical-align: middle;
             white-space: nowrap;
@@ -60,10 +61,10 @@
             font-size: 11px;
             font-weight: 700;
         }
-        .sig-ex   { background: rgba(76,175,80,.18);  color: #81c784; }
-        .sig-good { background: rgba(139,195,74,.18); color: #aed581; }
-        .sig-fair { background: rgba(255,193,7,.18);  color: #ffd54f; }
-        .sig-weak { background: rgba(255,87,34,.18);  color: #ff8a65; }
+        .sig-ex   { background: rgba(76,175,80,.18);  color: var(--lme-ok, #81c784); }
+        .sig-good { background: rgba(139,195,74,.18); color: var(--lme-ok, #aed581); }
+        .sig-fair { background: rgba(255,193,7,.18);  color: var(--lme-warn, #ffd54f); }
+        .sig-weak { background: rgba(255,87,34,.18);  color: var(--lme-orange, #ff8a65); }
         .sub      { font-size: 11px; color: var(--text-secondary); }
         /* ── Tags ── */
         .tag {
@@ -71,13 +72,13 @@
             padding: 1px 6px;
             border-radius: 3px;
             font-size: 11px;
-            background: rgba(255,255,255,.07);
+            background: var(--lme-tint-2, rgba(255,255,255,.07));
             color: var(--text-secondary);
         }
-        .tag-band24 { background: rgba(255,193,7,.16);  color: #ffd54f; }
-        .tag-band5  { background: rgba(13,110,253,.18); color: #6ea8fe; }
-        .tag-bf-yes { background: rgba(76,175,80,.18);  color: #81c784; }
-        .tag-bf-no  { background: rgba(255,255,255,.06); color: var(--text-secondary); }
+        .tag-band24 { background: rgba(255,193,7,.16);  color: var(--lme-warn, #ffd54f); }
+        .tag-band5  { background: rgba(13,110,253,.18); color: var(--lme-info, #6ea8fe); }
+        .tag-bf-yes { background: rgba(76,175,80,.18);  color: var(--lme-ok, #81c784); }
+        .tag-bf-no  { background: var(--lme-tint-2, rgba(255,255,255,.06)); color: var(--text-secondary); }
         /* ── Controls ── */
         .controls-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
         .status-txt   { font-size: 12px; color: var(--text-secondary); margin-left: auto; }
@@ -85,7 +86,7 @@
         .sel-radio    { width: 16px; height: 16px; cursor: pointer; }
         .btn-spinner {
             display: inline-block; width: 13px; height: 13px;
-            border: 2px solid rgba(255,255,255,.4); border-top-color: #fff;
+            border: 2px solid var(--lme-tint-3, rgba(255,255,255,.4)); border-top-color: var(--accent-color, #fff);
             border-radius: 50%; animation: spin .7s linear infinite;
             margin-right: 7px; vertical-align: -2px;
         }

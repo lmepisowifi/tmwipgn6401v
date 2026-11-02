@@ -199,12 +199,18 @@ if [ "$ACT" = "save" ]; then
     case "$CWMP_ENABLED"  in 0|1) ;; *) err_json "bad_request" ;; esac
     case "$INFORM"        in 0|1) ;; *) err_json "bad_request" ;; esac
 
-    is_text "$URL" 256 || err_json "bad_url"
-    case "$URL" in
-        http://?*|https://?*) ;;
-        *) err_json "bad_url" ;;
-    esac
-    case "$URL" in *\ *) err_json "bad_url" ;; esac
+    # A blank URL is allowed when the client won't contact the ACS anyway
+    # (daemon off, or Enable CWMP off). Anything non-blank is still validated.
+    if [ -z "$URL" ] && { [ "$AUTOEXEC" = "0" ] || [ "$CWMP_ENABLED" = "0" ]; }; then
+        :
+    else
+        is_text "$URL" 256 || err_json "bad_url"
+        case "$URL" in
+            http://?*|https://?*) ;;
+            *) err_json "bad_url" ;;
+        esac
+        case "$URL" in *\ *) err_json "bad_url" ;; esac
+    fi
 
     is_text "$USERNAME" 256 || err_json "bad_username"
     is_text "$PASSWORD" 256 || err_json "bad_password"

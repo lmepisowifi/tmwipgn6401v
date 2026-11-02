@@ -14,6 +14,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <script src="/js/theme.js?v=1.0.0"></script>
     <link href="/css/bootstrap.min.css?v=1.0.0" rel="stylesheet">
     <link href="/css/style.css?v=1.0.0" rel="stylesheet">
     <style>
@@ -24,7 +25,7 @@
         }
         .invalid-feedback { display: block; }
         .form-control.is-invalid { border-color: #dc3545; }
-        code { color: #fff; }
+        code { color: var(--accent-color, #fff); }
         .llid-table th, .llid-table td { vertical-align: middle; font-size: 13px; }
         .llid-table td.mono { font-family: monospace; }
         .llid-table input.llid-mac { font-family: monospace; min-width: 150px; }

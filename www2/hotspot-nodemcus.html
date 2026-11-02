@@ -14,6 +14,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <script src="/js/theme.js?v=1.0.0"></script>
     <link href="/css/bootstrap.min.css?v=1.0.0" rel="stylesheet">
     <link href="/css/style.css?v=1.0.0" rel="stylesheet">
     <link href="/css/toastr.min.css?v=1.0.0" rel="stylesheet">
@@ -27,18 +28,18 @@
             color:var(--text-secondary); font-size:11px; text-transform:uppercase;
             letter-spacing:.06em; padding:6px 12px; border-bottom:1px solid var(--border-color); text-align:left;
         }
-        .nm-table td { padding:8px 12px; border-bottom:1px solid rgba(255,255,255,.04); vertical-align:middle; }
+        .nm-table td { padding:8px 12px; border-bottom:1px solid var(--lme-tint-1, rgba(255,255,255,.04)); vertical-align:middle; }
         .nm-table tr:last-child td { border-bottom:none; }
         .nm-table tr:hover td { background:var(--bg-surface-hover); }
         .nm-table tr.nm-dragging td { background:var(--bg-surface-hover); opacity:.5; }
         .nm-table tr.nm-drop-target td { border-top:2px solid var(--accent-color); }
-        .nm-table code { color:#ccc; font-size:12px; }
+        .nm-table code { color:var(--text-soft, #ccc); font-size:12px; }
         .status-pill {
             display:inline-block; padding:2px 9px; border-radius:3px; font-size:11px; font-weight:700; margin-right:4px;
         }
-        .status-pill.primary { background:rgba(61,111,214,.18); color:#7fa3ec; }
-        .status-pill.active  { background:rgba(76,175,80,.2);  color:#81c784; }
-        .status-pill.off     { background:rgba(220,53,69,.18); color:#e17e88; }
+        .status-pill.primary { background:rgba(61,111,214,.18); color:var(--lme-info, #7fa3ec); }
+        .status-pill.active  { background:rgba(76,175,80,.2);  color:var(--lme-ok, #81c784); }
+        .status-pill.off     { background:rgba(220,53,69,.18); color:var(--lme-danger, #e17e88); }
 
         /* Reorder controls */
         .nm-handle-cell { white-space:nowrap; width:1%; }
@@ -48,7 +49,7 @@
             background:none; border:1px solid var(--border-color); color:var(--text-secondary);
             border-radius:4px; width:22px; height:22px; font-size:11px; line-height:1; padding:0; cursor:pointer;
         }
-        .nm-move-btn:hover:not(:disabled) { border-color:#888; color:var(--text-primary); }
+        .nm-move-btn:hover:not(:disabled) { border-color:var(--lme-border-strong, #888); color:var(--text-primary); }
         .nm-move-btn:disabled { opacity:.25; cursor:default; }
 
         /* Toolbar: Add NodeMCU / Refresh */

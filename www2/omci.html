@@ -1,0 +1,434 @@
+<!DOCTYPE html>
+<!--
+  lmepisowifi — https://github.com/lmepisowifi/tmwipgn6401v
+  SPDX-License-Identifier: AGPL-3.0-or-later
+  Copyright (C) 2026 The lmepisowifi Project — see AUTHORS
+
+  Licensed under the GNU AGPLv3 (see LICENSE). Modifying or rewriting this
+  file — including by running it through an LLM — does not remove these
+  obligations: keep this notice, mark your changes, and offer Corresponding
+  Source to network users (AGPLv3 §5, §13). See PROVENANCE.md before
+  presenting this as your own original work.
+-->
+<html lang="en" data-bs-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link href="/css/bootstrap.min.css?v=1.0.0" rel="stylesheet">
+    <link href="/css/style.css?v=1.0.0" rel="stylesheet">
+    <style>
+        .field-hint { font-size: 11.5px; color: var(--text-secondary); margin-top: 3px; }
+        .invalid-feedback { display: block; }
+        .form-control.is-invalid, .form-select.is-invalid { border-color: #dc3545; }
+        code { color: #fff; }
+        .section-title { font-size: 0.8em; text-transform: uppercase; letter-spacing: .06em;
+                         color: var(--text-secondary); margin: 18px 0 8px; }
+        .section-title:first-child { margin-top: 0; }
+        #adv-details summary { cursor: pointer; padding: 6px 0; }
+        .unsupported { opacity: .55; }
+    </style>
+    <link href="/css/toastr.min.css?v=1.0.0" rel="stylesheet">
+</head>
+<body>
+
+    <div id="overlay">
+        <div id="overlay-blur"></div>
+        <div id="overlay-msg">
+            <div id="overlay-spinner"></div>
+            <span id="overlay-text"></span>
+        </div>
+    </div>
+
+    <script src="/js/nav.js?v=1.0.0"></script>
+
+    <div class="container mt-5">
+        <div class="row justify-content-center">
+            <div class="col-md-6">
+
+                <div class="card mb-3">
+                    <div class="card-body" style="font-size:0.85em;">
+                        <strong>Heads up:</strong> these values control how <code>omci_app</code>
+                        presents this ONU to the OLT. Wrong values can make the OLT reject or
+                        mis-provision the ONU and drop your PON link. Change one thing at a
+                        time and keep your original values handy.
+                    </div>
+                </div>
+
+                <div class="card">
+                    <div class="card-header">OMCI Settings</div>
+                    <div class="card-body">
+
+                        <div class="section-title">Logging</div>
+
+                        <div class="mb-2">
+                            <label for="dbg_level" class="form-label">Debug level</label>
+                            <select class="form-select" id="dbg_level" data-field>
+                                <option value="0">0 &ndash; Errors only</option>
+                                <option value="1">1 &ndash; Errors only</option>
+                                <option value="2">2 &ndash; Warnings</option>
+                                <option value="3">3 &ndash; Info</option>
+                                <option value="4">4 &ndash; Debug</option>
+                            </select>
+                            <div class="field-hint">Applied live &mdash; no <code>omci_app</code> restart when this is the only change.</div>
+                        </div>
+
+                        <div class="mb-2">
+                            <label for="logfile" class="form-label">OMCI message log</label>
+                            <select class="form-select" id="logfile" data-field>
+                                <option value="0">Off</option>
+                                <option value="1">Raw</option>
+                                <option value="2">Parsed</option>
+                                <option value="3">Raw + parsed</option>
+                                <option value="7">With timestamps</option>
+                                <option value="8">Console</option>
+                            </select>
+                        </div>
+
+                        <div class="mb-2">
+                            <label for="logfile_mask" class="form-label">Message log action mask</label>
+                            <input type="text" class="form-control" id="logfile_mask" data-field
+                                   inputmode="numeric" autocomplete="off" placeholder="0">
+                            <div class="field-hint">Decimal, 0 &ndash; 4294967295. <code>0</code> = default (all actions).</div>
+                            <div class="invalid-feedback" id="logfile_mask-err" style="display:none"></div>
+                        </div>
+
+                        <div class="section-title">Identity reported to the OLT</div>
+
+                        <div class="mb-2">
+                            <label for="sw_ver1" class="form-label">Software version (image 0)</label>
+                            <input type="text" class="form-control" id="sw_ver1" data-field maxlength="14"
+                                   autocomplete="off" placeholder="e.g. V1.7.1">
+                            <div class="field-hint">Up to 14 characters: letters, digits and <code>. _ + / -</code> and space.</div>
+                            <div class="invalid-feedback" id="sw_ver1-err" style="display:none"></div>
+                        </div>
+
+                        <div class="mb-2">
+                            <label for="sw_ver2" class="form-label">Software version (image 1)</label>
+                            <input type="text" class="form-control" id="sw_ver2" data-field maxlength="14"
+                                   autocomplete="off" placeholder="e.g. V1.7.1">
+                            <div class="invalid-feedback" id="sw_ver2-err" style="display:none"></div>
+                        </div>
+
+                        <div class="mb-2">
+                            <label for="vpc" class="form-label">Vendor product code</label>
+                            <input type="text" class="form-control" id="vpc" data-field
+                                   inputmode="numeric" autocomplete="off" placeholder="0">
+                            <div class="field-hint">0 &ndash; 65535</div>
+                            <div class="invalid-feedback" id="vpc-err" style="display:none"></div>
+                        </div>
+
+                        <div class="mb-2">
+                            <label for="tm_opt" class="form-label">Traffic management option</label>
+                            <select class="form-select" id="tm_opt" data-field>
+                                <option value="0">0 &ndash; Priority controlled</option>
+                                <option value="1">1 &ndash; Rate controlled</option>
+                                <option value="2">2 &ndash; Priority and rate controlled</option>
+                            </select>
+                        </div>
+
+                        <div class="section-title">Management</div>
+
+                        <div class="mb-2">
+                            <label for="dual_mgmt" class="form-label">Dual management mode</label>
+                            <select class="form-select" id="dual_mgmt" data-field>
+                                <option value="0">0 &ndash; Disabled</option>
+                                <option value="1">1 &ndash; Enabled (WQ)</option>
+                                <option value="2">2 &ndash; Enabled (broadcast / multicast)</option>
+                                <option value="3">3 &ndash; Enabled (WQ + broadcast / multicast)</option>
+                            </select>
+                        </div>
+
+                        <div class="mb-2">
+                            <label for="veip_slot" class="form-label">VEIP slot ID</label>
+                            <input type="text" class="form-control" id="veip_slot" data-field
+                                   inputmode="numeric" autocomplete="off" placeholder="255">
+                            <div class="field-hint">0 &ndash; 255</div>
+                            <div class="invalid-feedback" id="veip_slot-err" style="display:none"></div>
+                        </div>
+
+                        <details id="adv-details" class="mt-3">
+                            <summary>Advanced</summary>
+
+                            <div class="section-title">Customization flags (decimal)</div>
+                            <div class="field-hint mb-2">
+                                Passed to <code>omci_app</code> as <code>-cb / -cr / -cmc / -cme</code>.
+                                Default bridge flag is <code>128</code> (0x80).
+                            </div>
+                            <div class="row g-2 mb-2">
+                                <div class="col-6">
+                                    <label for="custom_bdp" class="form-label">Bridge data path</label>
+                                    <input type="text" class="form-control" id="custom_bdp" data-field inputmode="numeric" autocomplete="off">
+                                    <div class="invalid-feedback" id="custom_bdp-err" style="display:none"></div>
+                                </div>
+                                <div class="col-6">
+                                    <label for="custom_rdp" class="form-label">Router data path</label>
+                                    <input type="text" class="form-control" id="custom_rdp" data-field inputmode="numeric" autocomplete="off">
+                                    <div class="invalid-feedback" id="custom_rdp-err" style="display:none"></div>
+                                </div>
+                                <div class="col-6">
+                                    <label for="custom_mcast" class="form-label">Multicast</label>
+                                    <input type="text" class="form-control" id="custom_mcast" data-field inputmode="numeric" autocomplete="off">
+                                    <div class="invalid-feedback" id="custom_mcast-err" style="display:none"></div>
+                                </div>
+                                <div class="col-6">
+                                    <label for="custom_me" class="form-label">Managed entities</label>
+                                    <input type="text" class="form-control" id="custom_me" data-field inputmode="numeric" autocomplete="off">
+                                    <div class="invalid-feedback" id="custom_me-err" style="display:none"></div>
+                                </div>
+                            </div>
+
+                            <div class="section-title">IOT VLAN</div>
+                            <div class="mb-2">
+                                <label for="vlan_cfg_type" class="form-label">VLAN configuration</label>
+                                <select class="form-select" id="vlan_cfg_type" data-field>
+                                    <option value="0">0 &ndash; Automatic (from OLT)</option>
+                                    <option value="1">1 &ndash; Manual</option>
+                                </select>
+                            </div>
+                            <div class="mb-2">
+                                <label for="vlan_manu_mode" class="form-label">Manual VLAN mode</label>
+                                <select class="form-select" id="vlan_manu_mode" data-field>
+                                    <option value="0">0 &ndash; Transparent</option>
+                                    <option value="1">1 &ndash; Tagging</option>
+                                    <option value="2">2 &ndash; Remote access control</option>
+                                    <option value="3">3 &ndash; Special</option>
+                                </select>
+                                <div class="field-hint">Only used when VLAN configuration is Manual.</div>
+                            </div>
+                            <div class="row g-2 mb-2">
+                                <div class="col-6">
+                                    <label for="vlan_manu_vid" class="form-label">Tag VID</label>
+                                    <input type="text" class="form-control" id="vlan_manu_vid" data-field inputmode="numeric" autocomplete="off" placeholder="65535">
+                                    <div class="field-hint">0 &ndash; 4094, or <code>65535</code> = unset</div>
+                                    <div class="invalid-feedback" id="vlan_manu_vid-err" style="display:none"></div>
+                                </div>
+                                <div class="col-6">
+                                    <label for="vlan_manu_pri" class="form-label">Tag priority</label>
+                                    <input type="text" class="form-control" id="vlan_manu_pri" data-field inputmode="numeric" autocomplete="off" placeholder="255">
+                                    <div class="field-hint">0 &ndash; 7, or <code>255</code> = unset</div>
+                                    <div class="invalid-feedback" id="vlan_manu_pri-err" style="display:none"></div>
+                                </div>
+                            </div>
+                        </details>
+
+                        <div class="d-grid mt-4">
+                            <button class="btn btn-primary" id="apply-btn" onclick="applyOmciSettings()">Apply</button>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="card mt-3">
+                    <div class="card-body" style="font-size:0.82em; color:var(--text-secondary)">
+                        <strong style="color:var(--bs-body-color)">On Apply:</strong>
+                        changed values are written to flash (<code>mib set</code> + <code>mib commit</code>).
+                        A debug-level-only change is applied live with <code>omcicli</code>; anything else restarts
+                        <code>omci_app</code> (and <code>igmpd</code> if it was running), which makes the OLT
+                        re-read this ONU and can interrupt traffic for a short while.
+                        Settings this firmware build doesn&rsquo;t have are greyed out.
+                        The device type itself is deliberately not editable here &mdash; it also drives
+                        bridge/router behaviour outside OMCI.
+                    </div>
+                </div>
+
+            </div>
+        </div>
+    </div>
+
+<script src="/js/bootstrap.bundle.min.js?v=1.0.0"></script>
+<script>
+    // ---------------------------------------------------------------
+    // Overlay
+    // ---------------------------------------------------------------
+    var overlay        = document.getElementById('overlay');
+    var overlayTxt     = document.getElementById('overlay-text');
+    var overlaySpinner = document.getElementById('overlay-spinner');
+
+    function showOverlay(msg, spinning) {
+        overlayTxt.textContent = msg;
+        overlaySpinner.style.display = (spinning === false) ? 'none' : '';
+        overlay.classList.add('visible');
+    }
+
+    function hideOverlay(cb) {
+        overlay.classList.remove('visible');
+        if (cb) setTimeout(cb, 360);
+    }
+
+    // ---------------------------------------------------------------
+    // Fields
+    // ---------------------------------------------------------------
+    var FIELDS = [
+        'dbg_level', 'logfile', 'logfile_mask',
+        'sw_ver1', 'sw_ver2', 'vpc', 'tm_opt',
+        'dual_mgmt', 'veip_slot',
+        'custom_bdp', 'custom_rdp', 'custom_mcast', 'custom_me',
+        'vlan_cfg_type', 'vlan_manu_mode', 'vlan_manu_vid', 'vlan_manu_pri'
+    ];
+    var supported = {};   // field -> true when this firmware build has the MIB key
+    var loaded    = {};   // field -> value as last read from the device
+
+    function el(id) { return document.getElementById(id); }
+
+    function setFormLocked(locked) {
+        FIELDS.forEach(function(f) {
+            var e = el(f);
+            if (!e) return;
+            if (locked || !supported[f]) e.setAttribute('disabled', '');
+            else e.removeAttribute('disabled');
+        });
+        if (locked) el('apply-btn').setAttribute('disabled', '');
+        else el('apply-btn').removeAttribute('disabled');
+    }
+
+    // ---------------------------------------------------------------
+    // Validation (mirrors the checks in lme.cgi action=omci_cfg_set)
+    // ---------------------------------------------------------------
+    function isUInt(v, min, max) {
+        if (!/^[0-9]{1,10}$/.test(v)) return false;
+        var n = parseInt(v, 10);
+        return n >= min && n <= max;
+    }
+
+    var VALIDATORS = {
+        logfile_mask:  function(v) { return isUInt(v, 0, 4294967295) ? null : 'Enter a number from 0 to 4294967295'; },
+        veip_slot:     function(v) { return isUInt(v, 0, 255) ? null : 'Enter a number from 0 to 255'; },
+        vpc:           function(v) { return isUInt(v, 0, 65535) ? null : 'Enter a number from 0 to 65535'; },
+        custom_bdp:    function(v) { return isUInt(v, 0, 4294967295) ? null : 'Enter a number from 0 to 4294967295'; },
+        custom_rdp:    function(v) { return isUInt(v, 0, 4294967295) ? null : 'Enter a number from 0 to 4294967295'; },
+        custom_mcast:  function(v) { return isUInt(v, 0, 4294967295) ? null : 'Enter a number from 0 to 4294967295'; },
+        custom_me:     function(v) { return isUInt(v, 0, 4294967295) ? null : 'Enter a number from 0 to 4294967295'; },
+        vlan_manu_vid: function(v) { return (isUInt(v, 0, 4094) || v === '65535') ? null : 'Enter 0\u20134094, or 65535 for unset'; },
+        vlan_manu_pri: function(v) { return (isUInt(v, 0, 7) || v === '255') ? null : 'Enter 0\u20137, or 255 for unset'; },
+        sw_ver1:       swVerCheck,
+        sw_ver2:       swVerCheck
+    };
+
+    function swVerCheck(v) {
+        if (v.length < 1 || v.length > 14) return 'Must be 1\u201314 characters';
+        if (/[^A-Za-z0-9._+\/ -]/.test(v)) return 'Only letters, digits and . _ + / - and space';
+        return null;
+    }
+
+    function setFieldError(id, msg) {
+        var inp = el(id), err = el(id + '-err');
+        if (msg) {
+            inp.classList.add('is-invalid');
+            if (err) { err.textContent = msg; err.style.display = 'block'; }
+        } else {
+            inp.classList.remove('is-invalid');
+            if (err) err.style.display = 'none';
+        }
+    }
+
+    // ---------------------------------------------------------------
+    // Load current values
+    // ---------------------------------------------------------------
+    function loadSettings() {
+        setFormLocked(true);
+        showOverlay('Loading\u2026');
+        fetch('/cgi-bin/lme.cgi?action=omci_cfg_get', { cache: 'no-store' })
+            .then(function(r) { return r.json(); })
+            .then(function(d) {
+                var isGpon = (String(d.pon_auto) === '1' || String(d.pon_mode) === '1');
+                if (!isGpon) {
+                    overlaySpinner.style.display = 'none';
+                    overlayTxt.textContent = 'OMCI Settings are only available when the device is in GPON mode. Change the PON mode in System \u2192 Settings.';
+                    return; // leave overlay up, form stays locked
+                }
+                FIELDS.forEach(function(f) {
+                    var info = d[f] || { ok: false, v: '' };
+                    supported[f] = !!info.ok;
+                    loaded[f] = info.v;
+                    var e = el(f);
+                    e.value = info.v;
+                    // a <select> keeps the first option when the value isn't listed
+                    if (e.tagName === 'SELECT' && e.value !== info.v) e.selectedIndex = -1;
+                    e.closest('.mb-2, .col-6').classList.toggle('unsupported', !info.ok);
+                    setFieldError(f, null);
+                });
+                hideOverlay(function() { setFormLocked(false); });
+            })
+            .catch(function() {
+                hideOverlay(function() { setFormLocked(false); });
+                toastr['warning']('Failed to load OMCI settings.', 'Error');
+            });
+    }
+
+    // ---------------------------------------------------------------
+    // Apply
+    // ---------------------------------------------------------------
+    function applyOmciSettings() {
+        var bad = false;
+        var parts = [];
+        FIELDS.forEach(function(f) {
+            if (!supported[f]) return;
+            var e = el(f);
+            var v = String(e.value).trim();
+            if (VALIDATORS[f]) {
+                var msg = VALIDATORS[f](v);
+                setFieldError(f, msg);
+                if (msg) { bad = true; return; }
+            }
+            if (e.tagName === 'SELECT' && e.selectedIndex === -1) return; // untouched unknown value
+            if (v === String(loaded[f]).trim()) return;                  // unchanged: don't send
+            parts.push(f + '=' + encodeURIComponent(v));
+        });
+        if (bad) {
+            toastr['warning']('Fix the highlighted fields first.', 'Invalid input');
+            return;
+        }
+        if (parts.length === 0) {
+            toastr['info']('Nothing changed.', 'OMCI Settings');
+            return;
+        }
+
+        showOverlay('Applying OMCI settings\u2026');
+        setFormLocked(true);
+
+        var controller = new AbortController();
+        var timeoutId  = setTimeout(function() { controller.abort(); }, 10000);
+
+        function done(msg, reload) {
+            clearTimeout(timeoutId);
+            overlaySpinner.style.display = 'none';
+            overlayTxt.textContent = msg;
+            setTimeout(function() {
+                hideOverlay(function() { setFormLocked(false); });
+            }, 1800);
+            if (reload) setTimeout(loadSettings, reload);
+        }
+
+        function failed(msg) {
+            clearTimeout(timeoutId);
+            hideOverlay(function() { setFormLocked(false); });
+            toastr['warning'](msg || 'Request failed.', 'Error');
+        }
+
+        fetch('/cgi-bin/lme.cgi?action=omci_cfg_set', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: parts.join('&'),
+            signal: controller.signal
+        })
+        .then(function(r) { return r.text().then(function(t) { return { ok: r.ok, text: t.trim() }; }); })
+        .then(function(res) {
+            if (!res.ok) { failed(res.text || 'Unknown error'); return; }
+            if (res.text === 'OK:nochange') done('Nothing to change.', 0);
+            else if (res.text === 'OK:live')    done('Applied live.', 1500);
+            else if (res.text === 'OK:saved')   done('Saved. omci_app is not running, so it takes effect on the next start.', 1500);
+            else                                done('Applied. omci_app is restarting\u2026', 6000);
+        })
+        .catch(function(err) {
+            // The restart can drop the connection after the response was queued;
+            // treat an abort as "applied", anything else as a real failure.
+            if (err.name === 'AbortError') done('Applied. omci_app is restarting\u2026', 6000);
+            else failed('Request failed.');
+        });
+    }
+
+    loadSettings();
+</script>
+    <script src="/js/jquery-3.7.1.min.js?v=1.0.0"></script>
+    <script src="/js/toastr.min.js?v=1.0.0"></script>
+</body>
+</html>

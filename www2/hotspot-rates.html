@@ -14,6 +14,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <script src="/js/theme.js?v=1.0.0"></script>
     <link href="/css/bootstrap.min.css?v=1.0.0" rel="stylesheet">
     <link href="/css/style.css?v=1.0.0" rel="stylesheet">
     <link href="/css/toastr.min.css?v=1.0.0" rel="stylesheet">
@@ -27,7 +28,7 @@
             border-radius:8px; padding:10px 34px 10px 12px;
             transition:border-color .15s;
         }
-        .coin-rate-entry:hover{ border-color:#444; }
+        .coin-rate-entry:hover{ border-color:var(--lme-border-strong, #444); }
 
         /* Peso amount */
         .cr-peso-wrap{
@@ -35,7 +36,7 @@
             background:var(--bg-input); border:1px solid var(--border-color); border-radius:6px;
             padding:0 9px; height:34px;
         }
-        .cr-peso-wrap:focus-within{ border-color:var(--accent-color); box-shadow:0 0 0 3px rgba(255,255,255,.08); }
+        .cr-peso-wrap:focus-within{ border-color:var(--accent-color); box-shadow:0 0 0 3px var(--lme-tint-2, rgba(255,255,255,.08)); }
         .cr-peso-sign{ color:var(--text-secondary); font-size:13px; font-weight:700; margin-right:4px; }
         .cr-peso{
             border:none !important; background:transparent !important; color:var(--text-primary) !important;
@@ -52,7 +53,7 @@
             background:var(--bg-input); border:1px solid var(--border-color); border-radius:6px;
             padding:0 8px; height:34px;
         }
-        .cr-dur-field:focus-within{ border-color:var(--accent-color); box-shadow:0 0 0 3px rgba(255,255,255,.08); }
+        .cr-dur-field:focus-within{ border-color:var(--accent-color); box-shadow:0 0 0 3px var(--lme-tint-2, rgba(255,255,255,.08)); }
         .cr-dur-field input{
             border:none !important; background:transparent !important; color:var(--text-primary) !important;
             font-size:14px !important; font-weight:700; width:32px; text-align:center; padding:0 !important; height:32px !important;
@@ -76,10 +77,10 @@
             display:flex; align-items:center; justify-content:center;
             transition:background .15s, color .15s;
         }
-        .cr-remove:hover{ background:rgba(255,107,107,.15); color:#ff6b6b; }
+        .cr-remove:hover{ background:rgba(255,107,107,.15); color:var(--lme-danger, #ff6b6b); }
 
         .add-rate-btn{ background:none;border:1px dashed var(--border-color);color:var(--text-secondary);border-radius:6px;padding:5px 12px;font-size:12px;cursor:pointer;width:100%;margin-top:4px;transition:border-color .18s,color .18s; }
-        .add-rate-btn:hover{ border-color:#888;color:var(--text-primary); }
+        .add-rate-btn:hover{ border-color:var(--lme-border-strong, #888);color:var(--text-primary); }
         .empty-state{ color:var(--text-secondary);font-size:13px;text-align:center;padding:14px 0; }
     </style>
 </head>

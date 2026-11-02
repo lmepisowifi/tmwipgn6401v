@@ -14,6 +14,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <script src="/js/theme.js?v=1.0.0"></script>
     <link href="/css/bootstrap.min.css?v=1.0.0" rel="stylesheet">
     <link href="/css/style.css?v=1.0.0" rel="stylesheet">
     <link href="/css/toastr.min.css?v=1.0.0" rel="stylesheet">
@@ -33,7 +34,7 @@
         .voucher-meta { font-size:12px; color:var(--text-secondary); margin-top:4px; line-height:1.5; }
         .voucher-tag  {
             display:inline-block; padding:1px 7px; border-radius:3px; font-size:10px;
-            font-weight:700; margin-top:5px; background:rgba(255,255,255,.08); color:#aaa;
+            font-weight:700; margin-top:5px; background:var(--lme-tint-2, rgba(255,255,255,.08)); color:var(--text-muted, #aaa);
         }
 
         /* ── Quick generate panel ──────────────────────────────── */
@@ -43,7 +44,7 @@
             background:var(--bg-input); color:var(--text-secondary); font-size:12px;
             cursor:pointer; transition:border-color .15s, color .15s;
         }
-        .gen-preset:hover { border-color:#888; color:var(--text-primary); }
+        .gen-preset:hover { border-color:var(--lme-border-strong, #888); color:var(--text-primary); }
     </style>
 </head>
 <body>

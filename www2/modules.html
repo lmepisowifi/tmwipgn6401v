@@ -14,6 +14,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <script src="/js/theme.js?v=1.0.0"></script>
     <link href="/css/bootstrap.min.css?v=1.0.0" rel="stylesheet">
     <link href="/css/style.css?v=1.0.0" rel="stylesheet">
     <link href="/css/toastr.min.css?v=1.0.0" rel="stylesheet">
@@ -24,19 +25,19 @@
         .mod-head { display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:10px; }
         .mod-name { font-size:16px; font-weight:700; display:flex; align-items:center; gap:8px; }
         .mod-pill { display:inline-block; padding:2px 9px; border-radius:3px; font-size:11px; font-weight:700; }
-        .mod-pill.on  { background:rgba(76,175,80,.2);  color:#81c784; }
-        .mod-pill.off { background:rgba(220,53,69,.18); color:#e17e88; }
+        .mod-pill.on  { background:rgba(76,175,80,.2);  color:var(--lme-ok, #81c784); }
+        .mod-pill.off { background:rgba(220,53,69,.18); color:var(--lme-danger, #e17e88); }
         .mod-ver { font-size:12px; color:var(--text-secondary); font-family:monospace; }
         .mod-desc { font-size:13px; color:var(--text-primary); margin-top:10px; }
         .mod-actions { margin-top:14px; display:flex; gap:8px; flex-wrap:wrap; }
         /* toggle (same as ota.html) */
-        .wlan-toggle { width:50px; height:28px; border-radius:14px; background:#555;
+        .wlan-toggle { width:50px; height:28px; border-radius:14px; background:var(--lme-toggle-off, #555);
             position:relative; cursor:pointer; transition:background .25s; flex-shrink:0; user-select:none; }
-        .wlan-toggle.on { background:#ffffff; }
+        .wlan-toggle.on { background:var(--lme-toggle-on, #ffffff); }
         .wlan-toggle-knob { position:absolute; width:20px; height:20px; border-radius:50%;
-            background:#fff; top:4px; left:4px; transition:left .25s,background .25s;
+            background:var(--lme-toggle-knob, #fff); top:4px; left:4px; transition:left .25s,background .25s;
             box-shadow:0 1px 4px rgba(0,0,0,.5); }
-        .wlan-toggle.on .wlan-toggle-knob { left:26px; background:#555; }
+        .wlan-toggle.on .wlan-toggle-knob { left:26px; background:var(--lme-toggle-knob-on, #555); }
     </style>
 </head>
 <body>

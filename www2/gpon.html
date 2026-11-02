@@ -14,6 +14,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <script src="/js/theme.js?v=1.0.0"></script>
     <link href="/css/bootstrap.min.css?v=1.0.0" rel="stylesheet">
     <link href="/css/style.css?v=1.0.0" rel="stylesheet">
     <style>
@@ -24,7 +25,19 @@
         }
         .invalid-feedback { display: block; }
         .form-control.is-invalid { border-color: #dc3545; }
-        code { color: #fff; }
+        code { color: var(--accent-color, #fff); }
+        .omci-pre {
+            margin: 6px 0 0;
+            padding: 8px 10px;
+            background: rgba(0, 0, 0, .25);
+            border-radius: 6px;
+            color: #fff;
+            font-size: 12px;
+            white-space: pre-wrap;
+            word-break: break-all;
+        }
+        #omci-sections summary { cursor: pointer; font-size: 0.9em; padding: 4px 0; }
+        #omci-summary th { width: 42%; font-weight: 500; color: var(--text-secondary); }
     </style>
     <link href="/css/toastr.min.css?v=1.0.0" rel="stylesheet">
 </head>
@@ -106,6 +119,22 @@
                         <code>omci_app</code> is restarted with the new parameters.
                         If the Serial Number is changed, the ONT is deactivated and
                         re-activated immediately without a reboot.
+                    </div>
+                </div>
+
+                <!-- OMCI information (read-only) -->
+                <div class="card mt-3" id="omci-card">
+                    <div class="card-header d-flex justify-content-between align-items-center">
+                        <span>OMCI Information</span>
+                        <button class="btn btn-sm btn-outline-secondary" id="omci-refresh"
+                                onclick="loadOmciInfo()">Refresh</button>
+                    </div>
+                    <div class="card-body">
+                        <div class="field-hint mb-2" id="omci-msg">Loading&hellip;</div>
+                        <table class="table table-sm mb-3" id="omci-summary">
+                            <tbody></tbody>
+                        </table>
+                        <div id="omci-sections"></div>
                     </div>
                 </div>
             </div>
@@ -210,6 +239,7 @@
                 if (!isGpon) {
                     overlaySpinner.style.display = 'none';
                     overlayTxt.textContent = 'GPON Settings are only available when the device is in GPON mode. Change the PON mode in System \u2192 Settings.';
+                    document.getElementById('omci-card').style.display = 'none';
                     return; // leave overlay up, form stays locked
                 }
                 document.getElementById('gpon-sn').value      = d.gpon_sn     || '';
@@ -217,6 +247,7 @@
                 document.getElementById('loid-passwd').value  = d.loid_passwd || '';
                 document.getElementById('ploam-passwd').value = d.ploam_passwd || '';
                 hideOverlay(function() { setFormLocked(false); });
+                loadOmciInfo();
             })
             .catch(function() {
                 hideOverlay(function() { setFormLocked(false); });
@@ -262,6 +293,8 @@
             setTimeout(function() {
                 hideOverlay(function() { setFormLocked(false); });
             }, 1500);
+            // omci_app was just restarted; re-read its state once it is back up
+            setTimeout(loadOmciInfo, 6000);
         }
 
         function onFailed(msg) {
@@ -298,6 +331,90 @@
                 onFailed('Request failed.');
             }
         });
+    }
+
+    // ---------------------------------------------------------------
+    // OMCI information (read-only)
+    // ---------------------------------------------------------------
+    var ONU_STATES = {
+        O1: 'Initial', O2: 'Standby', O3: 'Serial Number',
+        O4: 'Ranging', O5: 'Operation', O6: 'Intermittent LODS',
+        O7: 'Emergency Stop'
+    };
+
+    var OMCI_SECTIONS = [
+        { key: 'olt_g',    title: 'OLT-G (ME 131)' },
+        { key: 'ont_g',    title: 'ONT-G (ME 256)' },
+        { key: 'ont2_g',   title: 'ONT2-G (ME 257)' },
+        { key: 'sw_image', title: 'Software Image (ME 7)' }
+    ];
+
+    function omciAddRow(tbody, label, value) {
+        if (value === undefined || value === null || String(value).trim() === '') return;
+        var tr = document.createElement('tr');
+        var th = document.createElement('th');
+        var td = document.createElement('td');
+        th.textContent = label;
+        td.textContent = String(value);
+        tr.appendChild(th);
+        tr.appendChild(td);
+        tbody.appendChild(tr);
+    }
+
+    function renderOmciInfo(d) {
+        var msg      = document.getElementById('omci-msg');
+        var tbody    = document.querySelector('#omci-summary tbody');
+        var sections = document.getElementById('omci-sections');
+        tbody.innerHTML = '';
+        sections.innerHTML = '';
+
+        var running = (d.omci_running === true);
+        var state   = d.onu_state ? (d.onu_state + (ONU_STATES[d.onu_state] ? ' \u2013 ' + ONU_STATES[d.onu_state] : '')) : '';
+
+        omciAddRow(tbody, 'ONU State', state);
+        omciAddRow(tbody, 'OMCI Service', running ? 'omci_app running' : 'omci_app not running');
+        omciAddRow(tbody, 'Device Mode', d.device_type);
+        omciAddRow(tbody, 'Dual Management', d.dual_mgmt);
+        omciAddRow(tbody, 'VEIP Slot ID', d.veip_slot);
+        omciAddRow(tbody, 'LOID Auth', d.loid_auth);
+        omciAddRow(tbody, 'Auth Uptime', d.auth_uptime);
+
+        if (!running) {
+            msg.textContent = 'omci_app is not running, so OLT/ONT managed-entity data is unavailable.';
+        } else if (d.omcicli !== true) {
+            msg.textContent = 'The omcicli tool was not found on this device.';
+        } else {
+            msg.textContent = 'Live data from omci_app (omcicli). Values are what the OLT has provisioned over OMCI.';
+        }
+
+        if (!running || d.omcicli !== true) return;
+
+        OMCI_SECTIONS.forEach(function(sec) {
+            var det = document.createElement('details');
+            var sum = document.createElement('summary');
+            var pre = document.createElement('pre');
+            sum.textContent = sec.title;
+            pre.className = 'omci-pre';
+            var txt = (d[sec.key] || '').trim();
+            pre.textContent = txt !== '' ? txt : 'No data returned.';
+            det.appendChild(sum);
+            det.appendChild(pre);
+            sections.appendChild(det);
+        });
+    }
+
+    function loadOmciInfo() {
+        var btn = document.getElementById('omci-refresh');
+        var msg = document.getElementById('omci-msg');
+        btn.setAttribute('disabled', '');
+        msg.textContent = 'Loading\u2026';
+        fetch('/cgi-bin/lme.cgi?action=omci_info', { cache: 'no-store' })
+            .then(function(r) { return r.json(); })
+            .then(function(d) { renderOmciInfo(d); })
+            .catch(function() {
+                msg.textContent = 'Failed to load OMCI information.';
+            })
+            .then(function() { btn.removeAttribute('disabled'); });
     }
 
     // ---------------------------------------------------------------

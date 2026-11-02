@@ -14,6 +14,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <script src="/js/theme.js?v=1.0.0"></script>
     <link href="/css/bootstrap.min.css?v=1.0.0" rel="stylesheet">
     <link href="/css/style.css?v=1.0.0" rel="stylesheet">
     <style>
@@ -38,7 +39,7 @@
             letter-spacing: 0.06em; text-transform: uppercase;
             white-space: nowrap; flex-shrink: 0;
         }
-        .mode-badge.ap     { background: rgba(255,255,255,0.10); color: #c8c8c8; }
+        .mode-badge.ap     { background: var(--lme-tint-3, rgba(255,255,255,0.10)); color: var(--text-soft, #c8c8c8); }
 
         /* ── Merged-SSID hint ──────────────────────────────────────── */
         .merge-note {
@@ -49,9 +50,9 @@
             line-height: 1.4;
             background: rgba(80,180,255,0.10);
             border: 1px solid rgba(80,180,255,0.30);
-            color: #8ecbff;
+            color: var(--lme-info, #8ecbff);
         }
-        .mode-badge.client { background: rgba(80,180,255,0.13);  color: #64b4ff; }
+        .mode-badge.client { background: rgba(80,180,255,0.13);  color: var(--lme-info, #64b4ff); }
 
         /* ── PSK reveal ────────────────────────────────── */
         .psk-wrap { position: relative; }

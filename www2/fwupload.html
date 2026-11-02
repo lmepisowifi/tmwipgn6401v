@@ -14,6 +14,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <script src="/js/theme.js?v=1.0.0"></script>
     <link href="/css/bootstrap.min.css?v=1.0.0" rel="stylesheet">
     <link href="/css/style.css?v=1.0.0" rel="stylesheet">
     <link href="/css/toastr.min.css?v=1.0.0" rel="stylesheet">
@@ -24,19 +25,19 @@
         .kv .v { font-size:13px; color:var(--text-primary); font-weight:600; text-align:right; word-break:break-all; }
         .status-badge { display:inline-flex; align-items:center; gap:6px; padding:4px 10px;
             border-radius:5px; font-size:12px; font-weight:600; }
-        .badge-ok   { background: rgba(76,175,80,.18);  color:#9ae6a4; }
-        .badge-new  { background: rgba(255,193,7,.18);   color:#ffd666; }
-        .badge-busy { background: rgba(13,110,253,.18);  color:#8ab6ff; }
-        .badge-err  { background: rgba(220,53,69,.18);   color:#f1a1a9; }
-        .badge-dim  { background: rgba(255,255,255,.08); color:var(--text-secondary); }
+        .badge-ok   { background: rgba(76,175,80,.18);  color:var(--lme-ok, #9ae6a4); }
+        .badge-new  { background: rgba(255,193,7,.18);   color:var(--lme-warn, #ffd666); }
+        .badge-busy { background: rgba(13,110,253,.18);  color:var(--lme-info, #8ab6ff); }
+        .badge-err  { background: rgba(220,53,69,.18);   color:var(--lme-danger, #f1a1a9); }
+        .badge-dim  { background: var(--lme-tint-2, rgba(255,255,255,.08)); color:var(--text-secondary); }
         .drop { border:2px dashed var(--border-color,#444); border-radius:8px; padding:26px 12px; text-align:center;
             cursor:pointer; color:var(--text-secondary); transition:border-color .2s, background .2s; }
-        .drop.over { border-color:#8ab6ff; background:rgba(13,110,253,.08); }
+        .drop.over { border-color:var(--lme-info, #8ab6ff); background:rgba(13,110,253,.08); }
         .drop .fname { color:var(--text-primary); font-weight:600; word-break:break-all; }
         #fw-log { background: var(--bg-input, #111); border:1px solid var(--border-color,#333);
             border-radius:6px; padding:10px; font-family:monospace; font-size:12px;
             white-space:pre-wrap; max-height:200px; overflow:auto; display:none; margin-top:12px; }
-        .warn-box { font-size:12.5px; border-left:3px solid #ffc107; padding:6px 10px; margin-bottom:12px; color:#ffd666; }
+        .warn-box { font-size:12.5px; border-left:3px solid #ffc107; padding:6px 10px; margin-bottom:12px; color:var(--lme-warn, #ffd666); }
     </style>
 </head>
 <body>
@@ -75,7 +76,7 @@
                             <div class="kv"><span class="k">Firmware</span><span class="v" id="st-ver">—</span></div>
                             <div class="kv"><span class="k">Hardware version</span><span class="v" id="st-hw">—</span></div>
                             <div class="kv"><span class="k">uImage / rootfs</span><span class="v" id="st-sz">—</span></div>
-                            <div class="field-hint" id="st-warn" style="color:#ffd666;display:none"></div>
+                            <div class="field-hint" id="st-warn" style="color:var(--lme-warn, #ffd666);display:none"></div>
                             <div class="d-flex gap-2 mt-3 align-items-center">
                                 <select class="form-select" id="flash-slot" style="max-width:190px"></select>
                                 <button class="btn btn-primary" id="flash-btn" onclick="doFlash()">Flash to slot</button>
@@ -84,7 +85,7 @@
                         </div>
 
                         <div id="done-box" class="mt-3" style="display:none">
-                            <div class="warn-box" style="border-color:#4caf50;color:#9ae6a4" id="done-txt"></div>
+                            <div class="warn-box" style="border-color:#4caf50;color:var(--lme-ok, #9ae6a4)" id="done-txt"></div>
                             <div class="d-grid"><a class="btn btn-primary" href="/bootpart.html">Go to Boot Partitions</a></div>
                         </div>
                         <div id="fw-log"></div>

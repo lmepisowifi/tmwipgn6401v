@@ -14,18 +14,19 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <script src="/js/theme.js?v=1.0.0"></script>
     <link href="/css/bootstrap.min.css?v=1.0.0" rel="stylesheet">
     <link href="/css/style.css?v=1.0.0" rel="stylesheet">
     <style>
         /* ── Toggle switch ── */
-        .wlan-toggle { width:50px; height:28px; border-radius:14px; background:#555;
+        .wlan-toggle { width:50px; height:28px; border-radius:14px; background:var(--lme-toggle-off, #555);
             position:relative; cursor:pointer; transition:background .25s; flex-shrink:0; user-select:none; }
-        .wlan-toggle.on { background:#ffffff; }
+        .wlan-toggle.on { background:var(--lme-toggle-on, #ffffff); }
         .wlan-toggle.disabled-ui { opacity:0.35; pointer-events:none; }
         .wlan-toggle-knob { position:absolute; width:20px; height:20px; border-radius:50%;
-            background:#fff; top:4px; left:4px; transition:left .25s,background .25s;
+            background:var(--lme-toggle-knob, #fff); top:4px; left:4px; transition:left .25s,background .25s;
             box-shadow:0 1px 4px rgba(0,0,0,.5); }
-        .wlan-toggle.on .wlan-toggle-knob { left:26px; background:#555; }
+        .wlan-toggle.on .wlan-toggle-knob { left:26px; background:var(--lme-toggle-knob-on, #555); }
         /* ── AP table ── */
         .ap-table {
             width: 100%;
@@ -45,7 +46,7 @@
         }
         .ap-table td {
             padding: 9px 12px;
-            border-bottom: 1px solid rgba(255,255,255,.04);
+            border-bottom: 1px solid var(--lme-tint-1, rgba(255,255,255,.04));
             color: var(--text-primary);
             vertical-align: middle;
             white-space: nowrap;
@@ -63,10 +64,10 @@
             font-weight: 700;
             letter-spacing: 0.02em;
         }
-        .rssi-ex   { background: rgba(76,175,80,.18);  color: #81c784; }
-        .rssi-good { background: rgba(139,195,74,.18); color: #aed581; }
-        .rssi-fair { background: rgba(255,193,7,.18);  color: #ffd54f; }
-        .rssi-weak { background: rgba(255,87,34,.18);  color: #ff8a65; }
+        .rssi-ex   { background: rgba(76,175,80,.18);  color: var(--lme-ok, #81c784); }
+        .rssi-good { background: rgba(139,195,74,.18); color: var(--lme-ok, #aed581); }
+        .rssi-fair { background: rgba(255,193,7,.18);  color: var(--lme-warn, #ffd54f); }
+        .rssi-weak { background: rgba(255,87,34,.18);  color: var(--lme-orange, #ff8a65); }
         /* ── BSSID mono ── */
         .bssid {
             font-family: 'Courier New', monospace;
@@ -80,7 +81,7 @@
             padding: 1px 6px;
             border-radius: 3px;
             font-size: 11px;
-            background: rgba(255,255,255,.07);
+            background: var(--lme-tint-2, rgba(255,255,255,.07));
             color: var(--text-secondary);
         }
         /* ── Channel utilisation ── */
@@ -91,7 +92,7 @@
             align-items: center;
         }
         .ch-label  { font-size: 11px; color: var(--text-secondary); text-align: right; }
-        .ch-track  { height: 6px; background: rgba(255,255,255,.07); border-radius: 3px; overflow: hidden; }
+        .ch-track  { height: 6px; background: var(--lme-tint-2, rgba(255,255,255,.07)); border-radius: 3px; overflow: hidden; }
         .ch-fill   { height: 100%; border-radius: 3px; transition: width .4s ease; }
         .ch-pct    { font-size: 11px; color: var(--text-secondary); }
         .ch-noise  { font-size: 11px; color: var(--text-secondary); text-align: right; }
@@ -103,7 +104,7 @@
             display: inline-block;
             width: 11px; height: 11px;
             border: 2px solid rgba(255,107,107,.35);
-            border-top-color: #ff6b6b;
+            border-top-color: var(--lme-danger, #ff6b6b);
             border-radius: 50%;
             animation: spin .75s linear infinite;
             margin-right: 5px;
@@ -129,7 +130,7 @@
             display: block;
             width: 100%;
             border-radius: 4px;
-            background: #1e1e1e;
+            background: var(--bg-surface, #1e1e1e);
             border: 1px solid var(--border-color);
             box-sizing: border-box;
         }
@@ -157,7 +158,7 @@
             border-radius: 4px;
             padding: 7px 12px;
             font-size: 12px;
-            color: #ffb74d;
+            color: var(--lme-warn, #ffb74d);
             margin-top: 8px;
         }
         /* ── Connected network (VXD/client) — Android WiFi-page style ── */
@@ -175,16 +176,16 @@
             flex-shrink: 0;
         }
         .connected-net-icon svg { width: 22px; height: 22px; }
-        .connected-net-icon.state-connected { background: rgba(76,175,80,.15);  color: #81c784; }
-        .connected-net-icon.state-problem   { background: rgba(255,152,0,.15);  color: #ffb74d; }
-        .connected-net-icon.state-off       { background: rgba(244,67,54,.12);  color: #ef9a9a; }
+        .connected-net-icon.state-connected { background: rgba(76,175,80,.15);  color: var(--lme-ok, #81c784); }
+        .connected-net-icon.state-problem   { background: rgba(255,152,0,.15);  color: var(--lme-warn, #ffb74d); }
+        .connected-net-icon.state-off       { background: rgba(244,67,54,.12);  color: var(--lme-danger, #ef9a9a); }
         .connected-net-info { flex: 1; min-width: 0; }
         .connected-net-title {
             font-size: 15px; font-weight: 600; color: var(--text-primary);
             white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
         }
         .connected-net-sub { font-size: 12px; color: var(--text-secondary); margin-top: 2px; }
-        .connected-net-sub.problem { color: #ffb74d; }
+        .connected-net-sub.problem { color: var(--lme-warn, #ffb74d); }
     </style>
     <link href="/css/toastr.min.css?v=1.0.0" rel="stylesheet">
 </head>
@@ -234,7 +235,7 @@
                 </div>
                 <div id="wlan-disabled-notice">
                     &#9888; WLAN is disabled for this band — enable it in
-                    <a href="/wlanbasic.html" style="color:#ffb74d;">WLAN Basic Settings</a>.
+                    <a href="/wlanbasic.html" style="color:var(--lme-warn, #ffb74d);">WLAN Basic Settings</a>.
                 </div>
             </div>
         </div>
@@ -639,11 +640,42 @@
     // =====================================================================
     // SPECTRUM CHART  (ported from wlsurvey.asp)
     // =====================================================================
-    var SPEC_COLORS = [
+    // Network colours. Pastels read well on the dark canvas; on the light canvas they
+    // wash out (yellow on white is invisible), so light mode gets deeper shades.
+    var SPEC_COLORS_DARK = [
         '#4fc3f7','#81c784','#ffb74d','#f06292','#ce93d8',
         '#80cbc4','#fff176','#ff8a65','#90caf9','#a5d6a7',
         '#ef9a9a','#ffe082','#b39ddb','#80deea'
     ];
+    var SPEC_COLORS_LIGHT = [
+        '#0277bd','#2e7d32','#b85c00','#c2185b','#7b1fa2',
+        '#00695c','#8a6d00','#d84315','#3949ab','#558b2f',
+        '#c62828','#6d4c41','#5e35b1','#00838f'
+    ];
+
+    function specIsLight() {
+        return document.documentElement.getAttribute('data-bs-theme') === 'light';
+    }
+
+    function specColor(i) {
+        var c = specIsLight() ? SPEC_COLORS_LIGHT : SPEC_COLORS_DARK;
+        return c[i % c.length];
+    }
+
+    // A <canvas> can't read CSS variables, so the chart chrome is picked here.
+    // Keep in step with --bg-surface / --text-secondary / --border-color / --accent-color
+    // in css/style.css (the dark values are the original hard-coded ones).
+    function specPalette() {
+        return specIsLight() ? {
+            bg: '#ffffff', gridH: 'rgba(0,0,0,0.10)', gridV: 'rgba(0,0,0,0.07)', axis: '#c3c7ce',
+            text: '#5b6169', accent: '#111111',
+            glow: 'rgba(26,127,55,0.10)', glow0: 'rgba(26,127,55,0)'
+        } : {
+            bg: '#1e1e1e', gridH: 'rgba(51,51,51,0.9)', gridV: 'rgba(51,51,51,0.7)', axis: '#333333',
+            text: '#a0a0a0', accent: '#ffffff',
+            glow: 'rgba(100,220,100,0.07)', glow0: 'rgba(100,220,100,0)'
+        };
+    }
 
     function specGetChannels(is5G) {
         return is5G
@@ -796,7 +828,7 @@
                 rssi:    rssi,
                 bw:      bw,
                 bwDir:   bwDir,
-                color:   SPEC_COLORS[colorIdx % SPEC_COLORS.length]
+                color:   specColor(colorIdx)
             });
             colorIdx++;
         });
@@ -812,7 +844,7 @@
                 bw:      host.bandwidth > 0 ? host.bandwidth : 20,
                 bwDir:   host.offset === 'below' ? 'below' : 'above',
                 auto:    !!host.auto,
-                color:   '#ffffff'
+                color:   specPalette().accent
             });
         }
         return networks;
@@ -834,6 +866,7 @@
 
         var ctx = canvas.getContext('2d');
         ctx.scale(dpr, dpr);
+        var pal = specPalette();
 
         var W = logicalW, H = logicalH;
         var PL = 44, PR = 10, PT = 22, PB = 28;
@@ -850,7 +883,7 @@
         function chToX(ch) { return specChToX(PL, cW, channels, ch); }
 
         // ── Background ──
-        ctx.fillStyle = '#1e1e1e';
+        ctx.fillStyle = pal.bg;
         ctx.fillRect(0, 0, W, H);
 
         var padSlots = is5G ? 0.5 : 2.5;
@@ -859,12 +892,12 @@
         // ── dBm gridlines ──
         for (var dbm = -90; dbm <= -30; dbm += 10) {
             var gy = dbmToY(dbm);
-            ctx.strokeStyle = 'rgba(51,51,51,0.9)';
+            ctx.strokeStyle = pal.gridH;
             ctx.lineWidth = 1;
             ctx.setLineDash([3, 4]);
             ctx.beginPath(); ctx.moveTo(PL, gy); ctx.lineTo(PL + cW, gy); ctx.stroke();
             ctx.setLineDash([]);
-            ctx.fillStyle   = '#a0a0a0';
+            ctx.fillStyle   = pal.text;
             ctx.font        = '9px Nunito';
             ctx.textAlign   = 'right';
             ctx.fillText(dbm, PL - 3, gy + 3);
@@ -875,11 +908,11 @@
         var labelEvery = is5G ? 2 : 1;
         channels.forEach(function(ch, i) {
             var vx = specIdxToX(PL, cW, nCh, i);
-            ctx.strokeStyle = 'rgba(51,51,51,0.7)';
+            ctx.strokeStyle = pal.gridV;
             ctx.lineWidth   = 0.5;
             ctx.beginPath(); ctx.moveTo(vx, PT); ctx.lineTo(vx, PT + cH); ctx.stroke();
             if (i % labelEvery === 0) {
-                ctx.fillStyle = '#a0a0a0';
+                ctx.fillStyle = pal.text;
                 ctx.font      = '8px Nunito';
                 ctx.textAlign = 'center';
                 ctx.fillText(ch, vx, PT + cH + 14);
@@ -888,7 +921,7 @@
         ctx.textAlign = 'left';
 
         // ── Axes ──
-        ctx.strokeStyle = '#333333';
+        ctx.strokeStyle = pal.axis;
         ctx.lineWidth   = 1;
         ctx.beginPath();
         ctx.moveTo(PL, PT); ctx.lineTo(PL, PT + cH); ctx.lineTo(PL + cW, PT + cH);
@@ -896,7 +929,7 @@
 
         // ── Empty state ──
         if (networks.length === 0) {
-            ctx.fillStyle = '#a0a0a0';
+            ctx.fillStyle = pal.text;
             ctx.font      = '12px Nunito';
             ctx.textAlign = 'center';
             ctx.fillText('No networks — click Refresh to scan.', PL + cW / 2, PT + cH / 2);
@@ -913,8 +946,8 @@
             if (channels.indexOf(rch) === -1) return;
             var rx = chToX(rch);
             var glowGrd = ctx.createRadialGradient(rx, PT + cH, 0, rx, PT + cH, slotW * 3);
-            glowGrd.addColorStop(0, 'rgba(100,220,100,0.07)');
-            glowGrd.addColorStop(1, 'rgba(100,220,100,0)');
+            glowGrd.addColorStop(0, pal.glow);
+            glowGrd.addColorStop(1, pal.glow0);
             ctx.fillStyle = glowGrd;
             ctx.fillRect(PL, PT, cW, cH);
         });
@@ -1013,7 +1046,7 @@
         recommended.forEach(function(rch) {
             if (channels.indexOf(rch) === -1) return;
             var rx = chToX(rch);
-            ctx.fillStyle = '#ffffff';
+            ctx.fillStyle = pal.accent;
             ctx.font      = 'bold 11px Nunito';
             ctx.textAlign = 'center';
             ctx.fillText('★', rx, PT + 11);
@@ -1029,7 +1062,7 @@
         if (!el) return;
         var h = lastHost;
         if (!h || !h.enabled) { el.innerHTML = ''; return; }
-        var lbl = 'color:#a0a0a0;';
+        var lbl = 'color:var(--text-secondary, #a0a0a0);';
         if (!(h.channel > 0)) {
             el.innerHTML = '<span style="' + lbl + '">This router:</span> <strong>' + escHtml(h.ssid || '(hidden)') +
                 '</strong> &middot; ' + (h.auto ? 'auto channel (not selected yet)' : 'channel unavailable');
@@ -1049,16 +1082,16 @@
         var legEl = document.getElementById('spectrum_legend');
         if (legEl) {
             if (!networks.length) {
-                legEl.innerHTML = '<span style="color:#a0a0a0;font-size:11px;">No networks detected</span>';
+                legEl.innerHTML = '<span style="color:var(--text-secondary, #a0a0a0);font-size:11px;">No networks detected</span>';
             } else if (!networks.some(function(n) { return !n.isHost; })) {
-                legEl.innerHTML = '<span style="color:#a0a0a0;font-size:11px;">No other networks detected</span>';
+                legEl.innerHTML = '<span style="color:var(--text-secondary, #a0a0a0);font-size:11px;">No other networks detected</span>';
             } else {
                 legEl.innerHTML = networks.map(function(n) {
                     var isHost = !!n.isHost;
                     return '<span style="display:inline-flex;align-items:center;margin:2px 10px 2px 0;">' +
                         '<span style="width:8px;height:8px;border-radius:50%;background:' + n.color +
                         ';margin-right:5px;flex-shrink:0;"></span>' +
-                        '<span style="font-size:10px;color:#a0a0a0;font-family:Nunito;white-space:nowrap;">' +
+                        '<span style="font-size:10px;color:var(--text-secondary, #a0a0a0);font-family:Nunito;white-space:nowrap;">' +
                         escHtml(n.ssid) + (isHost ? ' (this AP)' : '') + ' &nbsp;Ch' + n.channel +
                         (isHost ? '&nbsp;' + (n.bw || 20) + 'MHz' : '&nbsp;' + n.rssi + 'dBm') + '</span></span>';
                 }).join('');
@@ -1070,10 +1103,10 @@
             if (recommended && recommended.length > 0) {
                 var bandLabel = is5G ? '5GHz' : '2.4GHz';
                 recEl.innerHTML =
-                    '<span style="color:#ffffff;font-size:11px;font-family:Nunito;">' +
+                    '<span style="color:var(--accent-color, #ffffff);font-size:11px;font-family:Nunito;">' +
                     '★ Recommended ' + bandLabel + ' channels:&nbsp;&nbsp;' +
                     recommended.map(function(c) {
-                        return '<strong style="color:#ffffff;">Ch&nbsp;' + c + '</strong>';
+                        return '<strong style="color:var(--accent-color, #ffffff);">Ch&nbsp;' + c + '</strong>';
                     }).join(' &nbsp;·&nbsp; ') + '</span>';
             } else {
                 recEl.innerHTML = '';
@@ -1720,6 +1753,8 @@
     // INIT
     // =====================================================================
     window.addEventListener('resize', function() { updateSpectrumChart(); });
+    // the canvas can't follow CSS variables: redraw when the light/dark mode is switched
+    document.addEventListener('lme:themechange', function() { updateSpectrumChart(); });
 
     // Draw empty chart immediately (correct channel grid before data arrives)
     updateSpectrumChart();

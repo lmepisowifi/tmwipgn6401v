@@ -14,6 +14,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <script src="/js/theme.js?v=1.0.0"></script>
     <link href="/css/bootstrap.min.css?v=1.0.0" rel="stylesheet">
     <link href="/css/style.css?v=1.0.0" rel="stylesheet">
     <style>
@@ -21,12 +22,12 @@
         .wlan-toggle {
             width: 50px; height: 28px;
             border-radius: 14px;
-            background: #555;
+            background: var(--lme-toggle-off, #555);
             position: relative; cursor: pointer;
             transition: background 0.25s; flex-shrink: 0;
             user-select: none;
         }
-        .wlan-toggle.on { background: #ffffff; }
+        .wlan-toggle.on { background: var(--lme-toggle-on, #ffffff); }
         .wlan-toggle.disabled-ui { opacity: 0.35; pointer-events: none; }
 
         /* ── Merged-SSID hint ──────────────────────────────────────── */
@@ -38,16 +39,16 @@
             line-height: 1.4;
             background: rgba(80,180,255,0.10);
             border: 1px solid rgba(80,180,255,0.30);
-            color: #8ecbff;
+            color: var(--lme-info, #8ecbff);
         }
         .wlan-toggle-knob {
             position: absolute; width: 20px; height: 20px;
-            border-radius: 50%; background: #fff;
+            border-radius: 50%; background: var(--lme-toggle-knob, #fff);
             top: 4px; left: 4px;
             transition: left 0.25s, background 0.25s;
             box-shadow: 0 1px 4px rgba(0,0,0,0.5);
         }
-        .wlan-toggle.on .wlan-toggle-knob { left: 26px; background: #555; }
+        .wlan-toggle.on .wlan-toggle-knob { left: 26px; background: var(--lme-toggle-knob-on, #555); }
 
         /* ── Mode badge ────────────────────────────────── */
         .mode-badge {
@@ -56,8 +57,8 @@
             letter-spacing: 0.06em; text-transform: uppercase;
             white-space: nowrap; flex-shrink: 0;
         }
-        .mode-badge.ap     { background: rgba(255,255,255,0.10); color: #c8c8c8; }
-        .mode-badge.client { background: rgba(80,180,255,0.13);  color: #64b4ff; }
+        .mode-badge.ap     { background: var(--lme-tint-3, rgba(255,255,255,0.10)); color: var(--text-soft, #c8c8c8); }
+        .mode-badge.client { background: rgba(80,180,255,0.13);  color: var(--lme-info, #64b4ff); }
 
         /* ── Band selector ─────────────────────────────── */
         #band-bar {
@@ -88,7 +89,7 @@
             border-radius: 4px;
             padding: 7px 12px;
             font-size: 12px;
-            color: #88c8ff;
+            color: var(--lme-info, #88c8ff);
             margin-bottom: 10px;
         }
 
@@ -285,7 +286,7 @@
                     Apply
                 </button>
             </div>
-            <div style="font-size:11px; color:#888; margin-top:6px;">
+            <div style="font-size:11px; color:var(--text-muted, #888); margin-top:6px;">
                 <b>Apply</b> pushes SSID, 802.11 mode, channel and width straight into the radio with
                 <code>iwpriv</code> &mdash; no restart (a channel or width change briefly re-opens this radio).
                 Anything else (radio on/off, TX power, Auto width) restarts only this radio, not both.
@@ -308,7 +309,7 @@
                     <button type="button" class="btn btn-outline-secondary" style="white-space:nowrap;"
                             id="save-ap-bssid-btn" onclick="saveBssidLock(0)">Save</button>
                 </div>
-                <div style="font-size:11px; color:#888; margin-top:4px;">
+                <div style="font-size:11px; color:var(--text-muted, #888); margin-top:4px;">
                     Pins this client to one specific access point instead of any AP broadcasting the SSID.
                     Turn the switch off and Save to remove the lock (the BSSID is set to all zeros).
                 </div>
@@ -722,15 +723,15 @@ function buildIfaceCards(ifaces) {
                             id="save-${id}-btn" onclick="saveIface(${iface.idx}, true)"
                             title="Apply without restarting the WLAN">Apply</button>
                 </div>
-                <div style="font-size:11px; color:#888; margin-top:6px;">
+                <div style="font-size:11px; color:var(--text-muted, #888); margin-top:6px;">
                     <b>Apply</b> renames an enabled SSID with no restart; turning an SSID on/off
                     restarts only this SSID.
                 </div>
                 ${isVxd ? `
                 <hr class="my-3">
-                <div style="font-size:11px; color:#888; margin-bottom:8px;">
+                <div style="font-size:11px; color:var(--text-muted, #888); margin-bottom:8px;">
                     Live connection status moved to
-                    <a href="/sitesurvey.html" style="color:#9fc5ff;">Site Survey</a>.
+                    <a href="/sitesurvey.html" style="color:var(--lme-info, #9fc5ff);">Site Survey</a>.
                 </div>
                 ${bssidLockSupported ? `
                 <!-- Only rendered when the firmware has the LME_BSSID_LOCKING MIB key
@@ -749,7 +750,7 @@ function buildIfaceCards(ifaces) {
                         <button type="button" class="btn btn-outline-secondary" style="white-space:nowrap;"
                                 id="save-${id}-bssid-btn" onclick="saveBssidLock(${iface.idx})">Save</button>
                     </div>
-                    <div style="font-size:11px; color:#888; margin-top:4px;">
+                    <div style="font-size:11px; color:var(--text-muted, #888); margin-top:4px;">
                         Pins this radio to one specific access point instead of any AP broadcasting the SSID.
                         Applies while the repeater is the uplink client. Turn the switch off and Save to remove
                         the lock (the BSSID is set to all zeros).
@@ -1320,11 +1321,11 @@ function renderNodemcuUnitIfaces(id) {
 
 function nodemcuUnitRowHtml(u) {
     const regNote = u.regEnabled !== 1
-        ? '<div class="merge-note" style="background:rgba(255,180,80,0.10); border-color:rgba(255,180,80,0.30); color:#ffcf8e; margin-bottom:8px;">'
+        ? '<div class="merge-note" style="background:rgba(255,180,80,0.10); border-color:rgba(255,180,80,0.30); color:var(--lme-warn, #ffcf8e); margin-bottom:8px;">'
           + '⚠️ This unit is disabled in the coin-slot settings, so WiFi sync has no effect until it\'s enabled there.</div>'
         : '';
     return '<div class="nodemcu-unit-row mb-3" id="nodemcu-unit-' + u.id + '" '
-        + 'style="border:1px solid rgba(255,255,255,0.08); border-radius:8px; padding:12px;">'
+        + 'style="border:1px solid var(--lme-tint-2, rgba(255,255,255,0.08)); border-radius:8px; padding:12px;">'
         + '<div class="d-flex align-items-center justify-content-between gap-2 mb-2">'
         + '<strong style="font-size:13px;">#' + u.id + ' — ' + nmEscHtml(u.title || ('Unit ' + u.id)) + '</strong>'
         + '<div class="wlan-toggle" id="toggle-nodemcu-' + u.id + '" '

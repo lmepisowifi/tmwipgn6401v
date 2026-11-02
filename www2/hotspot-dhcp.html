@@ -14,6 +14,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <script src="/js/theme.js?v=1.0.0"></script>
     <link href="/css/bootstrap.min.css?v=1.0.0" rel="stylesheet">
     <link href="/css/style.css?v=1.0.0" rel="stylesheet">
     <link href="/css/toastr.min.css?v=1.0.0" rel="stylesheet">
@@ -24,10 +25,10 @@
             background:var(--bg-input); padding:12px 14px; font-size:13px;
         }
         .pool-ip { display:inline-block; padding:2px 8px; margin:2px; border-radius:4px;
-                   background:rgba(61,111,214,.18); color:#7fa3ec; font-family:monospace; font-size:12px; }
+                   background:rgba(61,111,214,.18); color:var(--lme-info, #7fa3ec); font-family:monospace; font-size:12px; }
         .warn-box {
             border:1px solid rgba(220,53,69,.4); background:rgba(220,53,69,.08);
-            color:#e17e88; border-radius:8px; padding:10px 12px; font-size:12.5px; margin-top:12px;
+            color:var(--lme-danger, #e17e88); border-radius:8px; padding:10px 12px; font-size:12.5px; margin-top:12px;
         }
     </style>
 </head>
@@ -123,16 +124,16 @@ function recalcPool(){
 
     var gp = prefixOf(gw), go = octetOf(gw), sp = prefixOf(st), so = octetOf(st);
     if (gp===null || so===null){ box.textContent = '—'; return; }
-    if (sp !== gp){ box.innerHTML = '<span style="color:#e17e88;">Range start must be in the gateway\'s subnet ('+gp+'.x)</span>'; return; }
-    if (so <= go){ box.innerHTML = '<span style="color:#e17e88;">Range start must be above the gateway</span>'; return; }
+    if (sp !== gp){ box.innerHTML = '<span style="color:var(--lme-danger, #e17e88);">Range start must be in the gateway\'s subnet ('+gp+'.x)</span>'; return; }
+    if (so <= go){ box.innerHTML = '<span style="color:var(--lme-danger, #e17e88);">Range start must be above the gateway</span>'; return; }
     var ips = [];
     for (var o = go+1; o < so; o++){ ips.push(gp+'.'+o); }
-    if (!ips.length){ box.innerHTML = '<span style="color:#e17e88;">No addresses left for NodeMCUs — raise the range start.</span>'; return; }
+    if (!ips.length){ box.innerHTML = '<span style="color:var(--lme-danger, #e17e88);">No addresses left for NodeMCUs — raise the range start.</span>'; return; }
     var html = ips.map(function(ip){ return '<span class="pool-ip">'+ip+'</span>'; }).join('');
     html += '<div class="field-hint" style="margin-top:6px;">Max '+ips.length+' NodeMCU'+(ips.length>1?'s':'')
           + ' &middot; currently using '+_nodemcuCount+'</div>';
     if (_nodemcuCount > ips.length){
-        html += '<div style="color:#e17e88;font-size:12px;margin-top:4px;">'
+        html += '<div style="color:var(--lme-danger, #e17e88);font-size:12px;margin-top:4px;">'
              + 'You have '+_nodemcuCount+' NodeMCUs configured — remove '+(_nodemcuCount-ips.length)
              + ' before saving this range.</div>';
     }

@@ -14,6 +14,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <script src="/js/theme.js?v=1.0.0"></script>
     <link href="/css/bootstrap.min.css?v=1.0.0" rel="stylesheet">
     <link href="/css/style.css?v=1.0.0" rel="stylesheet">
     <link href="/css/toastr.min.css?v=1.0.0" rel="stylesheet">
@@ -23,13 +24,13 @@
         .db-list { list-style:none; padding:0; margin:0; }
         .db-item {
             display:flex; align-items:center; justify-content:space-between;
-            padding:9px 14px; border-bottom:1px solid rgba(255,255,255,.04);
+            padding:9px 14px; border-bottom:1px solid var(--lme-tint-1, rgba(255,255,255,.04));
             font-size:13px; font-family:monospace;
         }
         .db-item:last-child { border-bottom:none; }
         .db-item:hover { background:var(--bg-surface-hover); }
         .caveat-note {
-            font-size:12px; color:#e0b34e;
+            font-size:12px; color:var(--lme-warn, #e0b34e);
             background:rgba(224,179,78,.08);
             border:1px solid rgba(224,179,78,.28);
             border-radius:4px; padding:8px 10px; margin-top:10px;
@@ -37,25 +38,25 @@
         /* ---- Master on/off switch (matches lan.html's DHCP toggle) ---- */
         .db-toggle {
             width: 46px; height: 26px; border-radius: 13px;
-            background: #444; position: relative; cursor: pointer;
+            background: var(--lme-toggle-off, #444); position: relative; cursor: pointer;
             transition: background 0.25s; flex-shrink: 0;
         }
-        .db-toggle.on { background: #ffffff; }
+        .db-toggle.on { background: var(--lme-toggle-on, #ffffff); }
         .db-toggle.disabled-ui { opacity: 0.45; pointer-events: none; }
         .db-toggle-knob {
             position: absolute; width: 18px; height: 18px; border-radius: 50%;
-            background: #fff; top: 4px; left: 4px;
+            background: var(--lme-toggle-knob, #fff); top: 4px; left: 4px;
             transition: left 0.25s, background 0.25s, box-shadow 0.25s;
             box-shadow: 0 1px 4px rgba(0,0,0,0.5);
         }
         .db-toggle.on .db-toggle-knob {
-            left: 24px; background: #555; box-shadow: 0 1px 4px rgba(0,0,0,0.3);
+            left: 24px; background: var(--lme-toggle-knob-on, #555); box-shadow: 0 1px 4px rgba(0,0,0,0.3);
         }
         .db-state {
             font-size: 11px; font-weight: 600; min-width: 54px;
             color: var(--text-secondary);
         }
-        .db-state.state-on { color: #50c878; }
+        .db-state.state-on { color: var(--lme-ok, #50c878); }
     </style>
 </head>
 <body>

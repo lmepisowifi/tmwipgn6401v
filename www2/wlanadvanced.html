@@ -14,6 +14,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <script src="/js/theme.js?v=1.0.0"></script>
     <link href="/css/bootstrap.min.css?v=1.0.0" rel="stylesheet">
     <link href="/css/style.css?v=1.0.0" rel="stylesheet">
     <style>
@@ -22,20 +23,20 @@
             width: 46px;
             height: 26px;
             border-radius: 13px;
-            background: #444;
+            background: var(--lme-toggle-off, #444);
             position: relative;
             cursor: pointer;
             transition: background 0.25s;
             flex-shrink: 0;
         }
-        .wlan-toggle.on { background: #ffffff; }
+        .wlan-toggle.on { background: var(--lme-toggle-on, #ffffff); }
         .wlan-toggle.disabled-ui { opacity: 0.4; pointer-events: none; }
         .wlan-toggle-knob {
             position: absolute;
             width: 18px;
             height: 18px;
             border-radius: 50%;
-            background: #fff;
+            background: var(--lme-toggle-knob, #fff);
             top: 4px;
             left: 4px;
             transition: left 0.25s, background 0.25s, box-shadow 0.25s;
@@ -43,7 +44,7 @@
         }
         .wlan-toggle.on .wlan-toggle-knob {
             left: 24px;
-            background: #555;
+            background: var(--lme-toggle-knob-on, #555);
             box-shadow: 0 1px 4px rgba(0,0,0,0.3);
         }
 
@@ -126,9 +127,9 @@
             letter-spacing: 0.06em; text-transform: uppercase;
             white-space: nowrap; flex-shrink: 0;
         }
-        .mode-badge.ap  { background: rgba(255,255,255,0.10); color: #c8c8c8; }
-        .mode-badge.vap { background: rgba(120,200,120,0.13); color: #7ac87a; }
-        .mode-badge.vxd { background: rgba(80,180,255,0.13);  color: #64b4ff; }
+        .mode-badge.ap  { background: var(--lme-tint-3, rgba(255,255,255,0.10)); color: var(--text-soft, #c8c8c8); }
+        .mode-badge.vap { background: rgba(120,200,120,0.13); color: var(--lme-ok, #7ac87a); }
+        .mode-badge.vxd { background: rgba(80,180,255,0.13);  color: var(--lme-info, #64b4ff); }
 
         /* ---- Note text under a control ---- */
         .field-note {
@@ -715,7 +716,7 @@
                                     title="Apply without restarting the WLAN"
                                     onclick="saveAdvanced(${iface.idx}, true)">Apply</button>
                         </div>
-                        <div style="font-size:11px; color:#888; margin-top:6px;">
+                        <div style="font-size:11px; color:var(--text-muted, #888); margin-top:6px;">
                             <b>Apply</b> applies TX beamforming, multicast-to-unicast and short GI with
                             <code>iwpriv</code> &mdash; no restart. Other changes restart only this
                             ${iface.idx === 0 ? 'radio' : 'SSID'}, not both radios.

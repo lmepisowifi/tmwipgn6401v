@@ -14,12 +14,13 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <script src="/js/theme.js?v=1.0.0"></script>
     <link href="/css/bootstrap.min.css?v=1.0.0" rel="stylesheet">
     <link href="/css/style.css?v=1.0.0" rel="stylesheet">
     <link href="/css/toastr.min.css?v=1.0.0" rel="stylesheet">
     <style>
         .field-hint { font-size: 11.5px; color: var(--text-secondary); margin-top: 3px; }
-        code { color: #ccc; font-size: 12px; }
+        code { color: var(--text-soft, #ccc); font-size: 12px; }
 
         /* ── Interface grid ───────────────────────────────────── */
         .iface-grid {
@@ -38,19 +39,19 @@
             user-select: none;
             position: relative;
         }
-        .iface-card:hover { border-color: #555; background: var(--bg-surface-hover); }
+        .iface-card:hover { border-color: var(--lme-border-strong, #555); background: var(--bg-surface-hover); }
         /* RJ45 port the vendor WAN is running on (PON_MODE=0): not selectable */
-        .iface-card.wan-locked, .iface-card.wan-locked:hover { opacity: .6; cursor: not-allowed; border-color: #e67e22; background: var(--bg-surface); }
+        .iface-card.wan-locked, .iface-card.wan-locked:hover { opacity: .6; cursor: not-allowed; border-color: var(--lme-orange, #e67e22); background: var(--bg-surface); }
         .iface-card.selected {
             border-color: var(--accent-color);
-            background: rgba(255,255,255,.06);
+            background: var(--lme-tint-2, rgba(255,255,255,.06));
         }
         .iface-card.in-bridge {
-            border-color: #81c784;
+            border-color: var(--lme-ok, #81c784);
             background: rgba(76,175,80,.07);
         }
         .iface-card.in-bridge.selected {
-            border-color: #81c784;
+            border-color: var(--lme-ok, #81c784);
         }
         .iface-check {
             position: absolute; top: 10px; right: 10px;
@@ -61,7 +62,7 @@
             transition: background .15s, color .15s;
         }
         .iface-card.selected .iface-check {
-            background: #fff; color: #222;
+            background: var(--accent-color, #fff); color: var(--accent-contrast, #222);
         }
         /* Deselected in-bridge state handled below */
         .iface-name  { font-size: 14px; font-weight: 700; margin-bottom: 2px; padding-right: 20px; }
@@ -71,8 +72,8 @@
             font-size: 10px; font-weight: 700; margin-top: 4px;
             text-transform: uppercase; letter-spacing: .06em;
         }
-        .iface-state.up   { background: rgba(76,175,80,.2); color: #81c784; }
-        .iface-state.down { background: rgba(255,255,255,.07); color: #888; }
+        .iface-state.up   { background: rgba(76,175,80,.2); color: var(--lme-ok, #81c784); }
+        .iface-state.down { background: var(--lme-tint-2, rgba(255,255,255,.07)); color: var(--text-muted, #888); }
 
         /* ── Legend ───────────────────────────────────────────── */
         .iface-legend { display:flex; flex-wrap:wrap; gap:8px 16px; }
@@ -82,7 +83,7 @@
         /* ── Bridge members ───────────────────────────────────── */
         .bridge-member {
             display: flex; align-items: center; justify-content: space-between;
-            padding: 7px 10px; border-bottom: 1px solid rgba(255,255,255,.04);
+            padding: 7px 10px; border-bottom: 1px solid var(--lme-tint-1, rgba(255,255,255,.04));
             font-size: 13px; font-family: monospace;
         }
         .bridge-member:last-child { border-bottom: none; }
@@ -91,22 +92,22 @@
         .warn-banner {
             background: rgba(255,152,0,.1); border: 1px solid rgba(255,152,0,.3);
             border-radius: 6px; padding: 10px 14px; font-size: 12.5px;
-            color: #ffb74d; margin-bottom: 16px; display: none;
+            color: var(--lme-warn, #ffb74d); margin-bottom: 16px; display: none;
         }
         .warn-banner.visible { display: block; }
 
         /* ── In-bridge but DESELECTED from config (will be removed) ── */
         .iface-card.in-bridge:not(.selected) {
-            border-color: #e67e22;
+            border-color: var(--lme-orange, #e67e22);
             background: rgba(230,126,34,.07);
         }
         .iface-card.in-bridge:not(.selected):hover {
-            border-color: #e67e22;
+            border-color: var(--lme-orange, #e67e22);
             background: rgba(230,126,34,.13);
         }
         .iface-card.in-bridge:not(.selected) .iface-check {
             background: rgba(230,126,34,.25);
-            color: #e67e22;
+            color: var(--lme-orange, #e67e22);
         }
 
         /* ── Mobile ───────────────────────────────────────────── */
@@ -187,9 +188,9 @@
                 with <code>lo</code>, <code>br</code>, <code>sit</code> are hidden.
             </div>
             <div class="iface-legend mb-3">
-                <span class="legend-item"><span class="legend-dot" style="background:#81c784;"></span><span style="color:#81c784;">Green</span> — in bridge now</span>
-                <span class="legend-item"><span class="legend-dot" style="background:rgba(255,255,255,.5);"></span><span style="color:var(--text-primary);">White ✓</span> — selected in config</span>
-                <span class="legend-item"><span class="legend-dot" style="background:#e67e22;"></span><span style="color:#e67e22;">Amber ×</span> — in bridge, removed from config</span>
+                <span class="legend-item"><span class="legend-dot" style="background:var(--lme-ok, #81c784);"></span><span style="color:var(--lme-ok, #81c784);">Green</span> — in bridge now</span>
+                <span class="legend-item"><span class="legend-dot" style="background:var(--lme-tint-3, rgba(255,255,255,.5));"></span><span style="color:var(--text-primary);">White ✓</span> — selected in config</span>
+                <span class="legend-item"><span class="legend-dot" style="background:var(--lme-orange, #e67e22);"></span><span style="color:var(--lme-orange, #e67e22);">Amber ×</span> — in bridge, removed from config</span>
             </div>
             <div class="iface-grid" id="iface-grid">
                 <div style="color:var(--text-secondary);font-size:13px;grid-column:1/-1;">Loading interfaces…</div>
@@ -256,13 +257,13 @@ function renderBridgeMembers(members){
 }
 
 function wanTag(){
-    return '&nbsp;<span style="font-size:10px;color:#e67e22;">WAN port &ndash; hotspot skips it</span>';
+    return '&nbsp;<span style="font-size:10px;color:var(--lme-orange, #e67e22);">WAN port &ndash; hotspot skips it</span>';
 }
 
 function bridgeTag(inBridge, inSel){
-    if (inBridge && inSel)  return '&nbsp;<span style="font-size:10px;color:#81c784;">in bridge</span>';
-    if (inBridge && !inSel) return '&nbsp;<span style="font-size:10px;color:#e67e22;">⚠ will remove</span>';
-    if (!inBridge && inSel) return '&nbsp;<span style="font-size:10px;color:#6ea8fe;">will add</span>';
+    if (inBridge && inSel)  return '&nbsp;<span style="font-size:10px;color:var(--lme-ok, #81c784);">in bridge</span>';
+    if (inBridge && !inSel) return '&nbsp;<span style="font-size:10px;color:var(--lme-orange, #e67e22);">⚠ will remove</span>';
+    if (!inBridge && inSel) return '&nbsp;<span style="font-size:10px;color:var(--lme-info, #6ea8fe);">will add</span>';
     return '';
 }
 

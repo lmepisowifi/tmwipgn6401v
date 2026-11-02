@@ -14,6 +14,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <script src="/js/theme.js?v=1.0.0"></script>
     <link href="/css/bootstrap.min.css?v=1.0.0" rel="stylesheet">
     <link href="/css/style.css?v=1.0.0" rel="stylesheet">
     <link href="/css/toastr.min.css?v=1.0.0" rel="stylesheet">
@@ -23,20 +24,20 @@
             width: 50px;
             height: 28px;
             border-radius: 14px;
-            background: #555;
+            background: var(--lme-toggle-off, #555);
             position: relative;
             cursor: pointer;
             transition: background 0.25s;
             flex-shrink: 0;
         }
-        .lan-toggle.on { background: #ffffff; }
+        .lan-toggle.on { background: var(--lme-toggle-on, #ffffff); }
         .lan-toggle.disabled-ui { opacity: 0.45; pointer-events: none; }
         .lan-toggle-knob {
             position: absolute;
             width: 20px;
             height: 20px;
             border-radius: 50%;
-            background: #fff;
+            background: var(--lme-toggle-knob, #fff);
             top: 4px;
             left: 4px;
             transition: left 0.25s, background 0.25s, box-shadow 0.25s;
@@ -44,7 +45,7 @@
         }
         .lan-toggle.on .lan-toggle-knob {
             left: 26px;
-            background: #555;
+            background: var(--lme-toggle-knob-on, #555);
             box-shadow: 0 1px 4px rgba(0,0,0,0.3);
         }
     </style>
@@ -573,7 +574,7 @@
                     overlayTxt.innerHTML =
                         'IP address changed to <strong>' + ipVal + '</strong>.<br>'
                         + 'Navigate to <a href="http://' + ipVal + '/lan.html" '
-                        + 'style="color:#fff">http://' + ipVal + '/lan.html</a>';
+                        + 'style="color:var(--accent-color, #fff)">http://' + ipVal + '/lan.html</a>';
                     // Offer auto-redirect after 4 seconds
                     setTimeout(() => {
                         window.location.href = 'http://' + ipVal + '/lan.html';
@@ -826,7 +827,7 @@
             const url = 'http://' + lanIp + '/lan.html';
             overlayTxt.innerHTML =
                 'Leaving DHCP client mode. This device returns to its configured address <strong>'
-                + lanIp + '</strong>.<br>Navigate to <a href="' + url + '" style="color:#fff">' + url + '</a>';
+                + lanIp + '</strong>.<br>Navigate to <a href="' + url + '" style="color:var(--accent-color, #fff)">' + url + '</a>';
             setTimeout(() => { window.location.href = url; }, 6000);
         }
 

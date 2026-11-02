@@ -14,6 +14,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <script src="/js/theme.js?v=1.0.0"></script>
     <link href="/css/bootstrap.min.css?v=1.0.0" rel="stylesheet">
     <link href="/css/style.css?v=1.0.0" rel="stylesheet">
     <link href="/css/toastr.min.css?v=1.0.0" rel="stylesheet">
@@ -23,20 +24,20 @@
             color:var(--text-secondary); font-size:11px; text-transform:uppercase;
             letter-spacing:.06em; padding:6px 12px; border-bottom:1px solid var(--border-color); text-align:left;
         }
-        .session-table td { padding:8px 12px; border-bottom:1px solid rgba(255,255,255,.04); vertical-align:middle; }
+        .session-table td { padding:8px 12px; border-bottom:1px solid var(--lme-tint-1, rgba(255,255,255,.04)); vertical-align:middle; }
         .session-table tr:last-child td { border-bottom:none; }
         .session-table tr:hover td { background:var(--bg-surface-hover); }
-        .time-bar-wrap { height:4px; background:rgba(255,255,255,.08); border-radius:2px; min-width:80px; }
-        .time-bar      { height:100%; border-radius:2px; background:#fff; transition:width 1s linear; }
+        .time-bar-wrap { height:4px; background:var(--lme-tint-2, rgba(255,255,255,.08)); border-radius:2px; min-width:80px; }
+        .time-bar      { height:100%; border-radius:2px; background:var(--accent-color, #fff); transition:width 1s linear; }
         .empty-state   { color:var(--text-secondary); font-size:13px; text-align:center; padding:28px 0; }
-        code { color:#ccc; font-size:12px; }
+        code { color:var(--text-soft, #ccc); font-size:12px; }
         .status-pill {
             display:inline-block; padding:2px 9px; border-radius:3px; font-size:11px; font-weight:700;
         }
-        .status-pill.active { background:rgba(76,175,80,.2); color:#81c784; }
-        .status-pill.paused { background:rgba(255,152,0,.2); color:#ffb74d; }
-        .status-pill.coins-only { background:rgba(255,255,255,.08); color:var(--text-secondary); }
-        .coins-badge { display:inline-block; padding:2px 8px; border-radius:3px; font-size:11px; font-weight:700; background:rgba(245,158,11,.15); color:#fbbf24; }
+        .status-pill.active { background:rgba(76,175,80,.2); color:var(--lme-ok, #81c784); }
+        .status-pill.paused { background:rgba(255,152,0,.2); color:var(--lme-warn, #ffb74d); }
+        .status-pill.coins-only { background:var(--lme-tint-2, rgba(255,255,255,.08)); color:var(--text-secondary); }
+        .coins-badge { display:inline-block; padding:2px 8px; border-radius:3px; font-size:11px; font-weight:700; background:rgba(245,158,11,.15); color:var(--lme-warn, #fbbf24); }
 
         /* Kick all button */
         .kick-all-wrap { margin-bottom:14px; display:flex; flex-wrap:wrap; justify-content:flex-end; gap:8px; align-items:center; }

@@ -14,6 +14,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <script src="/js/theme.js?v=1.0.0"></script>
     <link href="/css/bootstrap.min.css?v=1.0.0" rel="stylesheet">
     <link href="/css/style.css?v=1.0.0" rel="stylesheet">
     <link href="/css/toastr.min.css?v=1.0.0" rel="stylesheet">
@@ -22,6 +23,8 @@
     <!-- Removed the inline <style> block, as style.css handles everything now -->
 </head>
 <body>
+    <!-- light/dark toggle (no navbar on this page) -->
+    <div class="login-theme-slot" id="lme-theme-slot"></div>
     <div id="overlay" class="visible">
         <div id="overlay-blur"></div>
         <div id="overlay-msg">
@@ -58,6 +61,11 @@
 
 
     <script>
+        (function () {
+            var slot = document.getElementById('lme-theme-slot');
+            if (slot && window.lmeTheme) slot.appendChild(window.lmeTheme.createButton());
+        })();
+
         var overlay    = document.getElementById('overlay');
         var overlayTxt = document.getElementById('overlay-text');
 

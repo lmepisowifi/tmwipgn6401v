@@ -14,6 +14,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <script src="/js/theme.js?v=1.0.0"></script>
     <link href="/css/bootstrap.min.css?v=1.0.0" rel="stylesheet">
     <link href="/css/style.css?v=1.0.0" rel="stylesheet">
     <link href="/css/toastr.min.css?v=1.0.0" rel="stylesheet">
@@ -23,55 +24,55 @@
             justify-content: space-between;
             align-items: baseline;
             padding: 6px 0;
-            border-bottom: 1px solid rgba(255,255,255,.05);
+            border-bottom: 1px solid var(--lme-tint-1, rgba(255,255,255,.05));
             gap: 12px;
         }
         
         .status-row:last-child { border-bottom: none; }
         .status-label { font-size: 13px; color: var(--text-secondary); white-space: nowrap; flex-shrink: 0; }
         .status-value { font-size: 13px; color: var(--text-primary); text-align: right; word-break: break-all; }
-        .load-badge { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 12px; background: rgba(255,255,255,.07); margin-left: 4px; }
-        .load-badge.warn { background: rgba(255,152,0,.18); color: #ffb74d; }
-        .load-badge.high { background: rgba(244,67,54,.18); color: #ef9a9a; }
-        .skeleton { display: inline-block; background: linear-gradient(90deg,#2a2a2a 25%,#333 50%,#2a2a2a 75%); background-size: 200% 100%; animation: shimmer 1.4s infinite; border-radius: 3px; height: .85em; width: 120px; vertical-align: middle; }
+        .load-badge { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 12px; background: var(--lme-tint-2, rgba(255,255,255,.07)); margin-left: 4px; }
+        .load-badge.warn { background: rgba(255,152,0,.18); color: var(--lme-warn, #ffb74d); }
+        .load-badge.high { background: rgba(244,67,54,.18); color: var(--lme-danger, #ef9a9a); }
+        .skeleton { display: inline-block; background: linear-gradient(90deg,var(--lme-skel-a, #2a2a2a) 25%,var(--lme-skel-b, #333) 50%,var(--lme-skel-a, #2a2a2a) 75%); background-size: 200% 100%; animation: shimmer 1.4s infinite; border-radius: 3px; height: .85em; width: 120px; vertical-align: middle; }
         @keyframes shimmer { from{background-position:200% 0} to{background-position:-200% 0} }
         .pon-signal-badge { display: inline-flex; align-items: center; gap: 5px; padding: 2px 9px; border-radius: 4px; font-size: 11px; font-weight: 600; letter-spacing: 0.02em; }
-        .pon-signal-badge.no-signal  { background: rgba(244,67,54,.15); color: #ef9a9a; }
-        .pon-signal-badge.has-signal { background: rgba(76,175,80,.15);  color: #81c784; }
+        .pon-signal-badge.no-signal  { background: rgba(244,67,54,.15); color: var(--lme-danger, #ef9a9a); }
+        .pon-signal-badge.has-signal { background: rgba(76,175,80,.15);  color: var(--lme-ok, #81c784); }
         .pon-signal-badge .dot, .port-status-badge .dot, .wan-status-badge .dot { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }
-        .pon-signal-badge.no-signal .dot  { background: #ef9a9a; }
-        .pon-signal-badge.has-signal .dot { background: #81c784; }
+        .pon-signal-badge.no-signal .dot  { background: var(--lme-danger, #ef9a9a); }
+        .pon-signal-badge.has-signal .dot { background: var(--lme-ok, #81c784); }
         .pon-no-signal { color: var(--text-secondary); font-style: italic; font-size: 12px; }
         .port-status-badge { display: inline-flex; align-items: center; gap: 5px; padding: 2px 9px; border-radius: 4px; font-size: 11px; font-weight: 600; letter-spacing: 0.02em; }
-        .port-status-badge.port-up   { background: rgba(76,175,80,.15);  color: #81c784; }
-        .port-status-badge.port-down { background: rgba(255,255,255,.07); color: var(--text-secondary); }
-        .port-status-badge.port-unknown { background: rgba(255,152,0,.13); color: #ffb74d; }
-        .port-status-badge.port-up .dot   { background: #81c784; animation: port-pulse 2.4s ease-in-out infinite; }
-        .port-status-badge.port-down .dot { background: rgba(255,255,255,.25); }
-        .port-status-badge.port-unknown .dot { background: #ffb74d; }
+        .port-status-badge.port-up   { background: rgba(76,175,80,.15);  color: var(--lme-ok, #81c784); }
+        .port-status-badge.port-down { background: var(--lme-tint-2, rgba(255,255,255,.07)); color: var(--text-secondary); }
+        .port-status-badge.port-unknown { background: rgba(255,152,0,.13); color: var(--lme-warn, #ffb74d); }
+        .port-status-badge.port-up .dot   { background: var(--lme-ok, #81c784); animation: port-pulse 2.4s ease-in-out infinite; }
+        .port-status-badge.port-down .dot { background: var(--lme-tint-3, rgba(255,255,255,.25)); }
+        .port-status-badge.port-unknown .dot { background: var(--lme-warn, #ffb74d); }
         @keyframes port-pulse { 0%,100%{opacity:1} 50%{opacity:.35} }
         .port-link-detail { font-size: 12px; color: var(--text-secondary); margin-left: 8px; }
         .wan-status-badge { display: inline-flex; align-items: center; gap: 5px; padding: 2px 9px; border-radius: 4px; font-size: 11px; font-weight: 600; letter-spacing: 0.02em; }
-        .wan-status-badge.wan-up    { background: rgba(76,175,80,.15);  color: #81c784; }
-        .wan-status-badge.wan-down  { background: rgba(244,67,54,.15); color: #ef9a9a; }
-        .wan-status-badge.wan-other { background: rgba(255,152,0,.13);  color: #ffb74d; }
-        .wan-status-badge.wan-up .dot   { background: #81c784; animation: port-pulse 2.4s ease-in-out infinite; }
-        .wan-status-badge.wan-down .dot { background: #ef9a9a; }
-        .wan-status-badge.wan-other .dot { background: #ffb74d; }
-        .wan-iface-row { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 14px; padding: 8px 0; border-bottom: 1px solid rgba(255,255,255,.05); }
+        .wan-status-badge.wan-up    { background: rgba(76,175,80,.15);  color: var(--lme-ok, #81c784); }
+        .wan-status-badge.wan-down  { background: rgba(244,67,54,.15); color: var(--lme-danger, #ef9a9a); }
+        .wan-status-badge.wan-other { background: rgba(255,152,0,.13);  color: var(--lme-warn, #ffb74d); }
+        .wan-status-badge.wan-up .dot   { background: var(--lme-ok, #81c784); animation: port-pulse 2.4s ease-in-out infinite; }
+        .wan-status-badge.wan-down .dot { background: var(--lme-danger, #ef9a9a); }
+        .wan-status-badge.wan-other .dot { background: var(--lme-warn, #ffb74d); }
+        .wan-iface-row { display: flex; align-items: center; flex-wrap: wrap; gap: 8px 14px; padding: 8px 0; border-bottom: 1px solid var(--lme-tint-1, rgba(255,255,255,.05)); }
         .wan-iface-row:last-child { border-bottom: none; }
         .wan-iface-name { font-size: 13px; font-family: monospace; color: var(--text-primary); min-width: 72px; }
         .wan-iface-detail { font-size: 12px; color: var(--text-secondary); }
         .wan-iface-detail strong { color: var(--text-primary); font-weight: 500; }
         .wan-empty { font-size: 13px; color: var(--text-secondary); font-style: italic; padding: 2px 0; }
         /* hotspot stats card */
-        .hsp-stat { flex: 1 1 0; min-width: 120px; display: flex; flex-direction: column; align-items: center; padding: 10px 16px; border-radius: 8px; background: rgba(255,255,255,.04); gap: 2px; }
+        .hsp-stat { flex: 1 1 0; min-width: 120px; display: flex; flex-direction: column; align-items: center; padding: 10px 16px; border-radius: 8px; background: var(--lme-tint-1, rgba(255,255,255,.04)); gap: 2px; }
         .hsp-stat-val { font-size: 22px; font-weight: 700; color: var(--text-primary); }
         .hsp-stat-lbl { font-size: 11px; color: var(--text-secondary); white-space: nowrap; }
         .hsp-stat-row { display: flex; gap: 8px; flex-wrap: wrap; }
         .hsp-running-badge { display: inline-flex; align-items: center; gap: 6px; padding: 2px 9px; border-radius: 4px; font-size: 11px; font-weight: 600; }
-        .hsp-running-badge.on  { background: rgba(76,175,80,.15);  color: #81c784; }
-        .hsp-running-badge.off { background: rgba(255,255,255,.06); color: var(--text-secondary); }
+        .hsp-running-badge.on  { background: rgba(76,175,80,.15);  color: var(--lme-ok, #81c784); }
+        .hsp-running-badge.off { background: var(--lme-tint-2, rgba(255,255,255,.06)); color: var(--text-secondary); }
         .hsp-running-badge .dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; flex-shrink: 0; }
         /* Each card is injected wrapped in a .dash-card-slot div, which would
            otherwise sit between .row#dash-grid and the .col-* element and break
@@ -184,17 +185,17 @@
             '<div class="status-row" style="flex-direction:column;align-items:stretch;gap:6px">',
             '  <div style="display:flex;justify-content:space-between;align-items:baseline">',
             '    <span class="status-label">CPU Usage</span><span class="status-value" id="s-cpu-text">'+sk('50px')+'</span></div>',
-            '  <div class="progress" style="height:5px;background:rgba(255,255,255,.07)">',
+            '  <div class="progress" style="height:5px;background:var(--lme-tint-2, rgba(255,255,255,.07))">',
             '    <div id="s-cpu-bar" class="progress-bar" role="progressbar" style="width:0%;transition:width .6s ease"></div></div></div>',
             '<div class="status-row" style="flex-direction:column;align-items:stretch;gap:6px">',
             '  <div style="display:flex;justify-content:space-between;align-items:baseline">',
             '    <span class="status-label">RAM Usage</span><span class="status-value" id="s-mem-text">'+sk('80px')+'</span></div>',
-            '  <div class="progress" style="height:5px;background:rgba(255,255,255,.07)">',
+            '  <div class="progress" style="height:5px;background:var(--lme-tint-2, rgba(255,255,255,.07))">',
             '    <div id="s-mem-bar" class="progress-bar" role="progressbar" style="width:0%;transition:width .6s ease"></div></div></div>',
             '<div class="status-row" style="flex-direction:column;align-items:stretch;gap:6px">',
             '  <div style="display:flex;justify-content:space-between;align-items:baseline">',
             '    <span class="status-label">Used Storage (/lmepisowifi)</span><span class="status-value" id="s-disk-text">'+sk('90px')+'</span></div>',
-            '  <div class="progress" style="height:5px;background:rgba(255,255,255,.07)">',
+            '  <div class="progress" style="height:5px;background:var(--lme-tint-2, rgba(255,255,255,.07))">',
             '    <div id="s-disk-bar" class="progress-bar" role="progressbar" style="width:0%;transition:width .6s ease"></div></div></div>',
             '</div></div></div>'
         ].join(''),
@@ -207,7 +208,7 @@
             '<div class="status-row" style="flex-direction:column;align-items:stretch;gap:6px">',
             '  <div style="display:flex;justify-content:space-between;align-items:baseline">',
             '    <span class="status-label">Active Connections</span><span class="status-value" id="s-ct-text">'+sk('70px')+'</span></div>',
-            '  <div class="progress" style="height:5px;background:rgba(255,255,255,.07)">',
+            '  <div class="progress" style="height:5px;background:var(--lme-tint-2, rgba(255,255,255,.07))">',
             '    <div id="s-ct-bar" class="progress-bar" role="progressbar" style="width:0%;transition:width .6s ease"></div></div></div>',
             '</div></div></div>'
         ].join(''),
@@ -448,7 +449,7 @@
                     var badge = '<span class="wan-status-badge wan-up"><span class="dot"></span>Connected</span>';
                     var detail = esc(vs.ssid||'—') + ' &middot; RSSI ' + esc(vs.rssi) + '/100';
                     if (vs.channel > 0) detail += ' &middot; Ch ' + esc(vs.channel);
-                    if (!authOk) detail += ' &middot; <span style="color:#ef9a9a">'+esc(vs.authText)+'</span>';
+                    if (!authOk) detail += ' &middot; <span style="color:var(--lme-danger, #ef9a9a)">'+esc(vs.authText)+'</span>';
                     set(elId, badge + '<span class="wan-iface-detail">&nbsp;'+detail+'</span>');
                 } else {
                     set(elId, '<span class="wan-status-badge wan-down"><span class="dot"></span>Not Connected</span>');

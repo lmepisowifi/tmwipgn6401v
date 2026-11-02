@@ -755,6 +755,161 @@ if [ "$REQUEST_METHOD" = "GET" ]; then
         exit 0
     fi
 
+    # --- action=omci_cfg_get: current values of the editable OMCI MIB settings ---
+    if echo "$QUERY_STRING" | busybox grep -q "action=omci_cfg_get"; then
+        _omci_mib() {
+            mib get "$1" 2>/dev/null \
+                | busybox grep "=" \
+                | busybox cut -d'=' -f2- \
+                | busybox tr -d '\r\n' | busybox sed 's/^[[:space:]]*//;s/[[:space:]]*$//'
+        }
+        _omci_jstr() {
+            busybox head -c 6144 \
+                | busybox tr -d '\000-\010\013-\037' \
+                | busybox tr '\t' ' ' \
+                | busybox sed 's/\\/\\\\/g; s/"/\\"/g' \
+                | busybox sed ':a;N;$!ba;s/\n/\\n/g'
+        }
+        # name key -> "name":{"ok":<key exists on this build>,"v":"<value>"}
+        _omci_fld() {
+            _R=$(mib get "$2" 2>/dev/null | busybox grep "=" | busybox head -n1)
+            if [ -n "$_R" ]; then
+                _V=$(printf '%s' "$_R" | busybox cut -d'=' -f2- | busybox tr -d '\r\n' \
+                    | busybox sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | _omci_jstr)
+                printf '"%s":{"ok":true,"v":"%s"}' "$1" "$_V"
+            else
+                printf '"%s":{"ok":false,"v":""}' "$1"
+            fi
+        }
+
+        OMCI_RUNNING=false
+        busybox pidof omci_app >/dev/null 2>&1 && OMCI_RUNNING=true
+        G_PON_MODE=$(_omci_mib PON_MODE)
+        G_PON_AUTO=$(_omci_mib PON_MODE_AUTO_CHECK_ENABLE)
+        [ -z "$G_PON_MODE" ] && G_PON_MODE=1
+        [ -z "$G_PON_AUTO" ] && G_PON_AUTO=1
+
+        OC_FIELDS=""
+        OC_SEP=""
+        while read -r _N _K; do
+            OC_FIELDS="${OC_FIELDS}${OC_SEP}$(_omci_fld "$_N" "$_K")"
+            OC_SEP=","
+        done <<'EOF_OMCI_FIELDS'
+dbg_level OMCI_DBGLVL
+logfile OMCI_LOGFILE
+logfile_mask OMCI_LOGFILE_MASK
+dual_mgmt DUAL_MGMT_MODE
+veip_slot OMCI_VEIP_SLOT_ID
+sw_ver1 OMCI_SW_VER1
+sw_ver2 OMCI_SW_VER2
+vpc OMCI_VENDOR_PRODUCT_CODE
+tm_opt OMCI_TM_OPT
+custom_bdp OMCI_CUSTOM_BDP
+custom_rdp OMCI_CUSTOM_RDP
+custom_mcast OMCI_CUSTOM_MCAST
+custom_me OMCI_CUSTOM_ME
+vlan_cfg_type VLAN_CFG_TYPE
+vlan_manu_mode VLAN_MANU_MODE
+vlan_manu_vid VLAN_MANU_TAG_VID
+vlan_manu_pri VLAN_MANU_TAG_PRI
+EOF_OMCI_FIELDS
+
+        printf "Status: 200 OK\r\n"
+        printf "Content-Type: application/json\r\n\r\n"
+        printf '{"pon_mode":%s,"pon_auto":%s,"omci_running":%s,%s}' \
+            "$G_PON_MODE" "$G_PON_AUTO" "$OMCI_RUNNING" "$OC_FIELDS"
+        exit 0
+    fi
+
+    # --- action=omci_info: read-only OMCI information (omci_app state, ONU state,
+    #     OLT-G / ONT-G / ONT2-G / software-image MEs, OMCI launch config) ---
+    if echo "$QUERY_STRING" | busybox grep -q "action=omci_info"; then
+        # Same trimmed "mib get" parse used everywhere else in this file
+        _omci_mib() {
+            mib get "$1" 2>/dev/null \
+                | busybox grep "=" \
+                | busybox cut -d'=' -f2- \
+                | busybox tr -d '\r\n' | busybox sed 's/^[[:space:]]*//;s/[[:space:]]*$//'
+        }
+        # stdin -> JSON-safe string body (no surrounding quotes): drops control
+        # chars, folds tabs, escapes \ and ", joins lines with a literal \n
+        _omci_jstr() {
+            busybox head -c 6144 \
+                | busybox tr -d '\000-\010\013-\037' \
+                | busybox tr '\t' ' ' \
+                | busybox sed 's/\\/\\\\/g; s/"/\\"/g' \
+                | busybox sed ':a;N;$!ba;s/\n/\\n/g'
+        }
+
+        # omcicli talks to omci_app over a local socket, so only call it while
+        # omci_app is alive, and bound each call when busybox has `timeout`.
+        OMCI_RUNNING=false
+        busybox pidof omci_app >/dev/null 2>&1 && OMCI_RUNNING=true
+        OMCI_CLI_OK=false
+        command -v omcicli >/dev/null 2>&1 && OMCI_CLI_OK=true
+
+        OMCI_TMO=""
+        if busybox timeout 1 true 2>/dev/null; then
+            OMCI_TMO="busybox timeout 3"
+        fi
+
+        _omci_cli() {
+            if [ "$OMCI_RUNNING" = "true" ] && [ "$OMCI_CLI_OK" = "true" ]; then
+                $OMCI_TMO omcicli "$@" 2>&1
+            fi
+        }
+
+        # ONU state (O1..O7) from the GPON driver
+        OMCI_ONU_RAW=$(diag gpon get onu-state 2>/dev/null | busybox tr -d '\r')
+        OMCI_ONU=$(printf '%s' "$OMCI_ONU_RAW" | busybox sed -n 's/.*\(O[1-7][0-9]*\).*/\1/p' | busybox head -n1)
+
+        # OMCI launch configuration (same keys/decoding as /etc/runomci.sh)
+        OC_DEVTYPE=$(_omci_mib DEVICE_TYPE)
+        case "$OC_DEVTYPE" in
+            0) OC_DEVTYPE_TXT="bridge" ;;
+            1) OC_DEVTYPE_TXT="router" ;;
+            2) OC_DEVTYPE_TXT="hybrid" ;;
+            *) OC_DEVTYPE_TXT="" ;;
+        esac
+        OC_DUAL=$(_omci_mib DUAL_MGMT_MODE)
+        case "$OC_DUAL" in
+            0) OC_DUAL_TXT="disable" ;;
+            1) OC_DUAL_TXT="enable_wq" ;;
+            2) OC_DUAL_TXT="enable_bc_mc" ;;
+            3) OC_DUAL_TXT="enable_wq_bc_mc" ;;
+            *) OC_DUAL_TXT="" ;;
+        esac
+        OC_VEIP=$(_omci_mib OMCI_VEIP_SLOT_ID)
+        OC_DBG=$(_omci_mib OMCI_DBGLVL)
+
+        # omcicli "get" series
+        OC_LOIDAUTH=$(_omci_cli get loidauth | _omci_jstr)
+        OC_AUTHUP=$(_omci_cli get authuptime | _omci_jstr)
+
+        # ME dumps: OLT-G 131, ONT-G 256, ONT2-G 257, Software image 7
+        OC_OLTG=$(_omci_cli mib get 131 | _omci_jstr)
+        OC_ONTG=$(_omci_cli mib get 256 | _omci_jstr)
+        OC_ONT2G=$(_omci_cli mib get 257 | _omci_jstr)
+        OC_SWIMG=$(_omci_cli mib get 7 | _omci_jstr)
+
+        ESC_ONU_RAW=$(printf '%s' "$OMCI_ONU_RAW" | _omci_jstr)
+        ESC_OC_VEIP=$(printf '%s' "$OC_VEIP" | _omci_jstr)
+        ESC_OC_DBG=$(printf '%s' "$OC_DBG" | _omci_jstr)
+
+        G_PON_MODE=$(_omci_mib PON_MODE)
+        G_PON_AUTO=$(_omci_mib PON_MODE_AUTO_CHECK_ENABLE)
+        [ -z "$G_PON_MODE" ] && G_PON_MODE=1
+        [ -z "$G_PON_AUTO" ] && G_PON_AUTO=1
+
+        printf "Status: 200 OK\r\n"
+        printf "Content-Type: application/json\r\n\r\n"
+        printf '{"pon_mode":%s,"pon_auto":%s,"omci_running":%s,"omcicli":%s,"onu_state":"%s","onu_state_raw":"%s","device_type":"%s","dual_mgmt":"%s","veip_slot":"%s","dbg_level":"%s","loid_auth":"%s","auth_uptime":"%s","olt_g":"%s","ont_g":"%s","ont2_g":"%s","sw_image":"%s"}' \
+            "$G_PON_MODE" "$G_PON_AUTO" "$OMCI_RUNNING" "$OMCI_CLI_OK" "$OMCI_ONU" "$ESC_ONU_RAW" \
+            "$OC_DEVTYPE_TXT" "$OC_DUAL_TXT" "$ESC_OC_VEIP" "$ESC_OC_DBG" \
+            "$OC_LOIDAUTH" "$OC_AUTHUP" "$OC_OLTG" "$OC_ONTG" "$OC_ONT2G" "$OC_SWIMG"
+        exit 0
+    fi
+
     # --- action=epon_status: return EPON LOID, LOID password and the LLID/MAC table ---
     if echo "$QUERY_STRING" | busybox grep -q "action=epon_status"; then
         E_LOID=$(mib get LOID 2>/dev/null \
@@ -1987,6 +2142,153 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
         exit 0
     fi
 
+
+    # --- action=omci_cfg_set: apply editable OMCI MIB settings ---
+    # Only fields present in the POST body are touched. Everything is validated
+    # first (nothing is written if any field is bad), only changed values are
+    # written, then omci_app is restarted the same way gpon_settings does. A
+    # change to nothing but the debug level is applied live with omcicli.
+    if echo "$QUERY_STRING" | busybox grep -q "action=omci_cfg_set"; then
+        _omci_mib() {
+            mib get "$1" 2>/dev/null \
+                | busybox grep "=" \
+                | busybox cut -d'=' -f2- \
+                | busybox tr -d '\r\n' | busybox sed 's/^[[:space:]]*//;s/[[:space:]]*$//'
+        }
+        _omci_has() { mib get "$1" 2>/dev/null | busybox grep -q "="; }
+        _omci_chk_int() {
+            case "$1" in ''|*[!0-9]*) return 1 ;; esac
+            [ "${#1}" -le 10 ] && [ "$1" -ge "$2" ] && [ "$1" -le "$3" ]
+        }
+        _omci_valid() {   # name value
+            case "$1" in
+                dbg_level)      _omci_chk_int "$2" 0 4 ;;
+                logfile)        case "$2" in 0|1|2|3|7|8) return 0 ;; *) return 1 ;; esac ;;
+                logfile_mask)   _omci_chk_int "$2" 0 4294967295 ;;
+                dual_mgmt)      _omci_chk_int "$2" 0 3 ;;
+                veip_slot)      _omci_chk_int "$2" 0 255 ;;
+                sw_ver1|sw_ver2)
+                    [ -n "$2" ] && [ "${#2}" -le 14 ] \
+                        && ! printf '%s' "$2" | busybox grep -q '[^A-Za-z0-9._+/ -]' ;;
+                vpc)            _omci_chk_int "$2" 0 65535 ;;
+                tm_opt)         _omci_chk_int "$2" 0 2 ;;
+                custom_bdp|custom_rdp|custom_mcast|custom_me)
+                                _omci_chk_int "$2" 0 4294967295 ;;
+                vlan_cfg_type)  _omci_chk_int "$2" 0 1 ;;
+                vlan_manu_mode) _omci_chk_int "$2" 0 3 ;;
+                vlan_manu_vid)  _omci_chk_int "$2" 0 4094 || [ "$2" = "65535" ] ;;
+                vlan_manu_pri)  _omci_chk_int "$2" 0 7 || [ "$2" = "255" ] ;;
+                *)              return 1 ;;
+            esac
+        }
+        _omci_lvl_word() {   # same mapping as /etc/runomci.sh get_omci_dbg_level
+            case "$1" in 0|1) echo err ;; 2) echo warn ;; 3) echo info ;; 4) echo dbg ;; *) echo off ;; esac
+        }
+
+        OC_MAP="dbg_level:OMCI_DBGLVL logfile:OMCI_LOGFILE logfile_mask:OMCI_LOGFILE_MASK dual_mgmt:DUAL_MGMT_MODE veip_slot:OMCI_VEIP_SLOT_ID sw_ver1:OMCI_SW_VER1 sw_ver2:OMCI_SW_VER2 vpc:OMCI_VENDOR_PRODUCT_CODE tm_opt:OMCI_TM_OPT custom_bdp:OMCI_CUSTOM_BDP custom_rdp:OMCI_CUSTOM_RDP custom_mcast:OMCI_CUSTOM_MCAST custom_me:OMCI_CUSTOM_ME vlan_cfg_type:VLAN_CFG_TYPE vlan_manu_mode:VLAN_MANU_MODE vlan_manu_vid:VLAN_MANU_TAG_VID vlan_manu_pri:VLAN_MANU_TAG_PRI"
+
+        # Phase 1: parse + validate every submitted field, remember the changed ones
+        OC_CHANGES=""      # "KEY=value" lines, one per change
+        OC_CHANGED_N=0
+        OC_ONLY_DBG=1
+        OC_NEW_DBG=""
+        for _P in $OC_MAP; do
+            _N="${_P%%:*}"
+            _K="${_P#*:}"
+            echo "$POST_DATA" | busybox sed 's/&/\n/g' | busybox grep -q "^${_N}=" || continue
+            _VAL=$(echo "$POST_DATA" | busybox sed 's/&/\n/g' | busybox grep "^${_N}=" \
+                | busybox head -n1 | busybox cut -d'=' -f2-)
+            _VAL=$(busybox httpd -d "$_VAL" | busybox tr -d '\r\n')
+            case "$_N" in
+                sw_ver1|sw_ver2) ;;
+                *) # numeric: drop leading zeros so it compares/stores canonically
+                   case "$_VAL" in *[!0-9]*) ;; *)
+                       _VAL=$(printf '%s' "$_VAL" | busybox sed 's/^0*//')
+                       [ -z "$_VAL" ] && _VAL=0 ;;
+                   esac ;;
+            esac
+            if ! _omci_valid "$_N" "$_VAL"; then
+                printf "Status: 400 Bad Request\r\n"
+                printf "Content-Type: text/plain\r\n\r\n"
+                printf "Invalid value for %s" "$_N"
+                exit 0
+            fi
+            # Skip settings this firmware build doesn't have
+            _omci_has "$_K" || continue
+            _CUR=$(_omci_mib "$_K")
+            [ "$_VAL" = "$_CUR" ] && continue
+            OC_CHANGES="${OC_CHANGES}${_K}=${_VAL}
+"
+            OC_CHANGED_N=$((OC_CHANGED_N + 1))
+            if [ "$_N" = "dbg_level" ]; then
+                OC_NEW_DBG="$_VAL"
+            else
+                OC_ONLY_DBG=0
+            fi
+        done
+
+        if [ "$OC_CHANGED_N" -eq 0 ]; then
+            printf "Status: 200 OK\r\n"
+            printf "Content-Type: text/plain\r\n\r\n"
+            printf "OK:nochange"
+            exit 0
+        fi
+
+        # Phase 2: write + commit
+        printf '%s' "$OC_CHANGES" | while IFS='=' read -r _K _V; do
+            [ -n "$_K" ] && mib set "$_K" "$_V"
+        done
+        mib commit
+
+        OMCI_WAS_RUNNING=0
+        busybox pidof omci_app >/dev/null 2>&1 && OMCI_WAS_RUNNING=1
+
+        if [ "$OMCI_WAS_RUNNING" = "0" ]; then
+            # omci_app isn't up: values are saved and picked up by the next start
+            printf "Status: 200 OK\r\n"
+            printf "Content-Type: text/plain\r\n\r\n"
+            printf "OK:saved"
+            exit 0
+        fi
+
+        if [ "$OC_ONLY_DBG" = "1" ] && command -v omcicli >/dev/null 2>&1; then
+            # Debug level only: apply live, no omci_app restart
+            _W=$(_omci_lvl_word "$OC_NEW_DBG")
+            printf "Status: 200 OK\r\n"
+            printf "Content-Type: text/plain\r\n\r\n"
+            printf "OK:live"
+            ( omcicli set log "$_W" "$_W" >/dev/null 2>&1 ) &
+            exit 0
+        fi
+
+        if busybox pidof igmpd >/dev/null; then
+            NEED_IGMP_RESTART=1
+        else
+            NEED_IGMP_RESTART=0
+        fi
+
+        # Respond first, then restart omci_app (same sequence as gpon_settings)
+        printf "Status: 200 OK\r\n"
+        printf "Content-Type: text/plain\r\n\r\n"
+        printf "OK:restart"
+        (
+            if [ "$NEED_IGMP_RESTART" = "1" ]; then
+                busybox killall igmpd 2>/dev/null
+                sleep 1
+                busybox killall -9 igmpd 2>/dev/null
+            fi
+            busybox killall omci_app 2>/dev/null
+            sleep 1
+            /etc/runomci.sh 2>/dev/null
+            if [ "$NEED_IGMP_RESTART" = "1" ]; then
+                sleep 2
+                if ! busybox pidof igmpd >/dev/null; then
+                    /etc/runigmp.sh 2>/dev/null
+                fi
+            fi
+        ) &
+        exit 0
+    fi
 
     # --- action=epon_settings: apply EPON LOID, LOID password and LLID/MAC mapping ---
     if echo "$QUERY_STRING" | busybox grep -q "action=epon_settings"; then

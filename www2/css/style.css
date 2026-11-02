@@ -32,7 +32,16 @@
     --accent-color: #ffffff;
     --accent-hover: #d4d4d4;
     --border-color: #333333;
-    
+
+    /* Used by style.css itself in both modes (the light block below overrides them) */
+    --accent-contrast: #111111;                 /* text on an accent-coloured fill (.btn-primary) */
+    --focus-ring-color: rgba(255, 255, 255, 0.08);
+    --spinner-track: rgba(255, 255, 255, 0.2);
+    --shadow-lg: rgba(0, 0, 0, 0.5);
+    --navbar-collapse-bg: rgba(30, 30, 30, 0.75);
+
+    color-scheme: dark;
+
     /* Bootstrap dark-theme overrides */
     --bs-body-bg: var(--bg-body);
     --bs-body-color: var(--text-primary);
@@ -52,7 +61,7 @@
     --bs-input-color: var(--text-primary);
     --bs-input-border-color: var(--border-color);
     --bs-input-focus-border-color: var(--accent-color);
-    --bs-input-focus-box-shadow: 0 0 0 0.2rem rgba(255, 255, 255, 0.1);
+    --bs-input-focus-box-shadow: 0 0 0 0.2rem var(--focus-ring-color);
     --bs-navbar-color: var(--text-secondary);
     --bs-navbar-hover-color: var(--text-primary);
     --bs-navbar-active-color: var(--accent-color);
@@ -60,6 +69,97 @@
     --bs-navbar-brand-hover-color: var(--accent-color);
     --bs-nav-link-color: var(--text-secondary);
     --bs-nav-link-hover-color: var(--text-primary);
+}
+
+/* ========================================= LIGHT THEME =========================================
+ * Switched on by <html data-bs-theme="light"> (see js/theme.js; the toggle lives in the navbar).
+ * Dark stays the default written into every page.
+ *
+ * Page-level colours use a two-part convention:  var(--lme-ok, #81c784)
+ *   - the fallback after the comma is the original DARK-mode colour, so dark looks exactly as
+ *     it always did and these --lme-* roles are intentionally NOT defined in :root above;
+ *   - this block defines the role for light mode, picking a darker shade with enough contrast
+ *     on a white / light-grey surface.
+ * To add a new status colour: write var(--lme-<role>, <dark colour>) and, if none of the roles
+ * below fits, add the light value here.
+ */
+:root[data-bs-theme="light"] {
+    --bg-body: #f3f4f6;
+    --bg-surface: #ffffff;
+    --bg-surface-hover: #eceef2;
+    --bg-input: #ffffff;
+    --text-primary: #1b1d21;
+    --text-secondary: #5b6169;
+    --accent-color: #111111;
+    --accent-hover: #3a3d42;
+    --border-color: #d3d6dc;
+
+    --accent-contrast: #ffffff;
+    --focus-ring-color: rgba(17, 17, 17, 0.12);
+    --spinner-track: rgba(0, 0, 0, 0.12);
+    --shadow-lg: rgba(0, 0, 0, 0.14);
+    --navbar-collapse-bg: rgba(255, 255, 255, 0.95);
+
+    /* status text / fills: pastel-on-dark -> deeper shades readable on light */
+    --lme-ok: #1a7f37;
+    --lme-warn: #9a6700;
+    --lme-orange: #bc4c00;
+    --lme-danger: #cf222e;
+    --lme-info: #0a58ca;
+    --lme-warn-border: rgba(154, 103, 0, 0.4);
+    --lme-info-border: rgba(10, 88, 202, 0.35);
+    --lme-danger-border: rgba(207, 34, 46, 0.4);
+
+    /* neutral text steps (dark: #ccc / #aaa-#a0a0a0 / #888) */
+    --text-soft: #3c4148;
+    --text-muted: #6b7280;
+
+    /* white-alpha overlays used as hover / track / divider tints on dark */
+    --lme-tint-1: rgba(0, 0, 0, 0.05);
+    --lme-tint-2: rgba(0, 0, 0, 0.07);
+    --lme-tint-3: rgba(0, 0, 0, 0.14);
+    --lme-border-strong: #9aa0a8;
+
+    /* on/off switches (.wlan-toggle, .lan-toggle, .db-toggle, .layout-vis-toggle) */
+    --lme-toggle-off: #c3c7ce;
+    --lme-toggle-on: #111111;
+    --lme-toggle-knob: #ffffff;
+    --lme-toggle-knob-on: #ffffff;
+
+    --lme-skel-a: #e6e8ec;
+    --lme-skel-b: #f4f5f7;
+    --lme-modal-bg: #ffffff;
+}
+
+/* .btn-close-white forces a white "x" (used on modal headers in 5 pages): invisible on light surfaces */
+:root[data-bs-theme="light"] .btn-close-white {
+    filter: none;
+}
+
+/* Bootstrap's btn-outline-light (the navbar Quick Setup button) is white-on-white in light mode */
+:root[data-bs-theme="light"] .btn-outline-light {
+    --bs-btn-color: var(--text-primary);
+    --bs-btn-border-color: var(--border-color);
+    --bs-btn-hover-color: var(--text-primary);
+    --bs-btn-hover-bg: var(--bg-surface-hover);
+    --bs-btn-hover-border-color: var(--lme-border-strong);
+    --bs-btn-active-color: var(--text-primary);
+    --bs-btn-active-bg: var(--bg-surface-hover);
+    --bs-btn-active-border-color: var(--lme-border-strong);
+}
+
+/* Bootstrap's yellow outline button (#ffc107 on white, ~1.6:1) is unreadable in light mode */
+:root[data-bs-theme="light"] .btn-outline-warning {
+    --bs-btn-color: var(--lme-warn);
+    --bs-btn-border-color: var(--lme-warn);
+    --bs-btn-hover-color: #ffffff;
+    --bs-btn-hover-bg: var(--lme-warn);
+    --bs-btn-hover-border-color: var(--lme-warn);
+    --bs-btn-active-color: #ffffff;
+    --bs-btn-active-bg: var(--lme-warn);
+    --bs-btn-active-border-color: var(--lme-warn);
+    --bs-btn-disabled-color: var(--lme-warn);
+    --bs-btn-disabled-border-color: var(--lme-warn);
 }
 
 /* ========================================= GLOBAL RESET ========================================= */
@@ -193,7 +293,7 @@ body {
 .form-control:focus,
 .form-select:focus {
     border-color: var(--accent-color) !important;
-    box-shadow: 0 0 0 3px rgba(255, 255, 255, 0.08) !important;
+    box-shadow: 0 0 0 3px var(--focus-ring-color) !important;
     outline: none !important;
 }
 
@@ -244,13 +344,13 @@ body {
 .btn-primary {
     background: var(--accent-color) !important;
     border-color: var(--accent-color) !important;
-    color: #111 !important;
+    color: var(--accent-contrast) !important;
 }
 
 .btn-primary:hover {
     background: var(--accent-hover) !important;
     border-color: var(--accent-hover) !important;
-    color: #111 !important;
+    color: var(--accent-contrast) !important;
 }
 
 .btn-primary:disabled {
@@ -263,7 +363,7 @@ body {
 
 /* Outline danger = logout */
 .btn-outline-danger {
-    color: #ff6b6b !important;
+    color: var(--lme-danger, #ff6b6b) !important;
     border-color: rgba(255, 107, 107, 0.4) !important;
     background: transparent !important;
     font-size: 12px !important;
@@ -271,7 +371,7 @@ body {
 
 .btn-outline-danger:hover {
     background: rgba(255, 107, 107, 0.1) !important;
-    border-color: #ff6b6b !important;
+    border-color: var(--lme-danger, #ff6b6b) !important;
 }
 
 /* ========================================= APPLY OVERLAY (wlan24.html) ========================================= */
@@ -310,7 +410,7 @@ body {
 #overlay-spinner {
     width: 22px;
     height: 22px;
-    border: 2px solid rgba(255, 255, 255, 0.2);
+    border: 2px solid var(--spinner-track);
     border-top-color: var(--accent-color);
     border-radius: 50%;
     animation: spin 0.75s linear infinite;
@@ -348,7 +448,7 @@ body {
     border: 1px solid var(--border-color);
     border-radius: 8px;
     padding: 20px 28px 28px 28px;
-    box-shadow: 0 16px 48px rgba(0, 0, 0, 0.5);
+    box-shadow: 0 16px 48px var(--shadow-lg);
 }
 
 .login-title {
@@ -483,7 +583,7 @@ body {
 .header-divider {
     width: 1px;
     height: 20px;
-    background-color: rgba(255, 255, 255, 1);
+    background-color: var(--accent-color);
     margin-right: 12px;
 }
 
@@ -499,6 +599,57 @@ body {
 @media (max-width: 991.98px) {
 }
 
+/* ========================================= THEME TOGGLE ========================================= */
+/* Right-hand side of the navbar: [theme toggle] [Logout]. Built by js/nav.js, button by js/theme.js. */
+.nav-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.lme-theme-btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 32px;
+    height: 32px;
+    padding: 0;
+    flex-shrink: 0;
+    background: transparent;
+    color: var(--text-secondary);
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    cursor: pointer;
+    line-height: 1;
+    transition: color 0.2s, background 0.2s, border-color 0.2s;
+}
+
+.lme-theme-btn:hover {
+    color: var(--text-primary);
+    background: var(--bg-surface-hover);
+}
+
+.lme-theme-btn:focus-visible {
+    outline: none;
+    border-color: var(--accent-color);
+    box-shadow: 0 0 0 3px var(--focus-ring-color);
+}
+
+/* login page has no navbar: the toggle floats in the top-left corner
+   (top-right is where the toastr notices appear and would cover it) */
+.login-theme-slot {
+    position: fixed;
+    top: 12px;
+    left: 12px;
+    z-index: 5;
+}
+
+/* The logo is white-on-transparent text + outlined icon, designed for the dark page.
+   On a light page its white subtitle disappears, so give the whole image a thin dark halo. */
+:root[data-bs-theme="light"] .login-logo {
+    filter: drop-shadow(0 0 0.6px #000) drop-shadow(0 0 0.6px #000);
+}
+
 /* ========================================= MOBILE MENU BLUR FIX ========================================= */
 @media (max-width: 991.98px) {
     .navbar-collapse {
@@ -506,12 +657,12 @@ body {
         top: 46px; 
         left: 0;
         right: 0;
-        background-color: rgba(30, 30, 30, 0.75) !important; 
+        background-color: var(--navbar-collapse-bg) !important; 
         backdrop-filter: blur(12px); 
         -webkit-backdrop-filter: blur(12px); 
         padding: 15px;
         border-bottom: 1px solid var(--border-color);
-        box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+        box-shadow: 0 10px 30px var(--shadow-lg);
         z-index: 1050;
     }
 
@@ -543,9 +694,13 @@ body {
         padding: 4px 0 4px 15px !important; /* Indent only when open */
     }
 
-    .navbar-collapse .btn-outline-danger {
+    /* theme toggle + Logout share one row at the bottom of the menu */
+    .navbar-collapse .nav-actions {
         margin-top: 15px;
-        width: 100%;
+    }
+
+    .navbar-collapse .nav-actions .btn {
+        flex: 1;
     }
 
 }
@@ -571,7 +726,7 @@ input:-webkit-autofill:active {
 /* Optional: Subtle white glow when a saved field is focused */
 input:-webkit-autofill:focus {
     border-color: var(--accent-color) !important;
-    -webkit-box-shadow: 0 0 0 1000px var(--bg-input) inset, 0 0 0 3px rgba(255, 255, 255, 0.08) !important;
+    -webkit-box-shadow: 0 0 0 1000px var(--bg-input) inset, 0 0 0 3px var(--focus-ring-color) !important;
 }
 
 /* ========================================= APPLY OVERLAY ========================================= */
@@ -619,7 +774,7 @@ input:-webkit-autofill:focus {
     height: 32px !important;
     
     /* Keep the border proportional (increase to 3px if it looks too thin) */
-    border: 3px solid rgba(255, 255, 255, 0.2) !important;
+    border: 3px solid var(--spinner-track) !important;
     border-top-color: var(--accent-color) !important;
     border-radius: 50%;
     animation: spin 0.75s linear infinite;
@@ -657,7 +812,7 @@ input:-webkit-autofill:focus {
     font-size: 12px;
     background: rgba(255, 107, 107, 0.1);
     border: 1px solid rgba(255, 107, 107, 0.3);
-    color: #ff6b6b;
+    color: var(--lme-danger, #ff6b6b);
     border-radius: 4px;
     margin-bottom: 10px;
     text-align: center;

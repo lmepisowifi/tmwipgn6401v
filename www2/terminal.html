@@ -14,6 +14,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, interactive-widget=resizes-content">
+    <script src="/js/theme.js?v=1.0.0"></script>
     <link href="/css/bootstrap.min.css?v=1.0.0" rel="stylesheet">
     <link href="/css/style.css?v=1.0.0" rel="stylesheet">
 
@@ -41,6 +42,38 @@
         }
 
         html, body { height: 100%; overflow: hidden; overscroll-behavior-y: contain; }
+
+        /* Terminal chrome colours. Dark = the original hard-coded values. */
+        :root {
+            --term-bg: #0d0d0d;
+            --term-bar-bg: #1a1a1a;
+            --term-bar-border: #2a2a2a;
+            --term-bar-text: #888;
+            --term-dot-idle: #555;
+            --term-size-text: #555;
+            --term-tool-bg: #1e1e1e;
+            --term-btn-bg: #2d2d2d;
+            --term-btn-text: #ccc;
+            --term-btn-border: #3a3a3a;
+            --term-btn-active: #444;
+            --term-btn-danger: #f66;
+            --term-btn-danger-border: #633;
+        }
+        :root[data-bs-theme="light"] {
+            --term-bg: #fafafa;
+            --term-bar-bg: #eceef2;
+            --term-bar-border: #d3d6dc;
+            --term-bar-text: #5b6169;
+            --term-dot-idle: #9aa0a8;
+            --term-size-text: #6b7280;
+            --term-tool-bg: #f3f4f6;
+            --term-btn-bg: #ffffff;
+            --term-btn-text: #3c4148;
+            --term-btn-border: #c3c7ce;
+            --term-btn-active: #dfe2e7;
+            --term-btn-danger: #c62828;
+            --term-btn-danger-border: #e3a5a5;
+        }
 
         /* style.css forces `font-family: Nunito !important` on *. That also hits
            xterm's rows, its cell-measure element AND its per-glyph width cache
@@ -74,7 +107,7 @@
             flex-direction: column;
             flex: 1 1 auto;
             min-height: 0;
-            background: #0d0d0d;
+            background: var(--term-bg);
             /* bottom: keep the toolbar/status bar clear of the fixed AGPL source notice */
             padding: 6px 8px 22px;
         }
@@ -97,15 +130,15 @@
             justify-content: space-between;
             padding: 3px 10px;
             font-size: 11px;
-            background: #1a1a1a;
-            border-top: 1px solid #2a2a2a;
-            color: #888;
+            background: var(--term-bar-bg);
+            border-top: 1px solid var(--term-bar-border);
+            color: var(--term-bar-text);
             flex-shrink: 0;
         }
         #status-dot {
             width: 8px; height: 8px;
             border-radius: 50%;
-            background: #555;
+            background: var(--term-dot-idle);
             display: inline-block;
             margin-right: 6px;
             transition: background .3s;
@@ -122,25 +155,25 @@
             -webkit-overflow-scrolling: touch;
             gap: 4px;
             padding: 5px 8px;
-            background: #1e1e1e;
-            border-top: 1px solid #2a2a2a;
+            background: var(--term-tool-bg);
+            border-top: 1px solid var(--term-bar-border);
             flex-shrink: 0;
         }
         #mobile-toolbar button {
             flex-shrink: 0;
             font-size: 11px;
             padding: 5px 10px;
-            background: #2d2d2d;
-            color: #ccc;
-            border: 1px solid #3a3a3a;
+            background: var(--term-btn-bg);
+            color: var(--term-btn-text);
+            border: 1px solid var(--term-btn-border);
             border-radius: 4px;
             white-space: nowrap;
             cursor: pointer;
             -webkit-tap-highlight-color: transparent;
             user-select: none;
         }
-        #mobile-toolbar button:active { background: #444; }
-        #mobile-toolbar button.danger { color: #f66; border-color: #633; }
+        #mobile-toolbar button:active { background: var(--term-btn-active); }
+        #mobile-toolbar button.danger { color: var(--term-btn-danger); border-color: var(--term-btn-danger-border); }
     </style>
 </head>
 <body>
@@ -170,7 +203,7 @@
 
         <div id="status-bar">
             <span><span id="status-dot"></span><span id="status-text">Connecting…</span></span>
-            <span id="status-size" style="color:#555"></span>
+            <span id="status-size" style="color:var(--term-size-text)"></span>
         </div>
     </div>
 
@@ -276,32 +309,40 @@
         // ----------------------------------------------------------------
         // Init — called after all scripts load
         // ----------------------------------------------------------------
+        // xterm paints to its own renderer, so it can't read CSS variables: pick the
+        // palette in JS (the dark one is the original) and re-apply it on a mode switch.
+        var TERM_DARK = {
+            background:   '#0d0d0d', foreground:   '#e0e0e0', cursor:       '#00e5ff',
+            black:        '#1e1e1e', red:          '#f44336', green:        '#4caf50',
+            yellow:       '#ffeb3b', blue:         '#2196f3', magenta:      '#9c27b0',
+            cyan:         '#00bcd4', white:        '#e0e0e0',
+            brightBlack:  '#555',    brightRed:    '#ef9a9a', brightGreen:  '#a5d6a7',
+            brightYellow: '#fff176', brightBlue:   '#90caf9', brightMagenta:'#ce93d8',
+            brightCyan:   '#80deea', brightWhite:  '#ffffff'
+        };
+        var TERM_LIGHT = {
+            background:   '#fafafa', foreground:   '#1b1d21', cursor:       '#0277bd',
+            selectionBackground: 'rgba(2,119,189,0.25)',
+            black:        '#1b1d21', red:          '#c62828', green:        '#2e7d32',
+            yellow:       '#8a6d00', blue:         '#1565c0', magenta:      '#8e24aa',
+            cyan:         '#00838f', white:        '#5b6169',
+            brightBlack:  '#6b7280', brightRed:    '#d32f2f', brightGreen:  '#388e3c',
+            brightYellow: '#a67c00', brightBlue:   '#1976d2', brightMagenta:'#9c27b0',
+            brightCyan:   '#00acc1', brightWhite:  '#000000'
+        };
+        function termTheme() {
+            return document.documentElement.getAttribute('data-bs-theme') === 'light' ? TERM_LIGHT : TERM_DARK;
+        }
+        document.addEventListener('lme:themechange', function () {
+            if (term) term.options.theme = termTheme();
+        });
+
         function initTerminal() {
             term = new Terminal({
                 cursorBlink:      true,
                 fontSize:         14,
                 fontFamily:       "'LME Mono', monospace",
-                theme: {
-                    background:   '#0d0d0d',
-                    foreground:   '#e0e0e0',
-                    cursor:       '#00e5ff',
-                    black:        '#1e1e1e',
-                    red:          '#f44336',
-                    green:        '#4caf50',
-                    yellow:       '#ffeb3b',
-                    blue:         '#2196f3',
-                    magenta:      '#9c27b0',
-                    cyan:         '#00bcd4',
-                    white:        '#e0e0e0',
-                    brightBlack:  '#555',
-                    brightRed:    '#ef9a9a',
-                    brightGreen:  '#a5d6a7',
-                    brightYellow: '#fff176',
-                    brightBlue:   '#90caf9',
-                    brightMagenta:'#ce93d8',
-                    brightCyan:   '#80deea',
-                    brightWhite:  '#ffffff',
-                },
+                theme:            termTheme(),
                 allowProposedApi: true,
                 scrollback:       2000,
             });
