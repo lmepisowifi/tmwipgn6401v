@@ -182,25 +182,25 @@
                             </div>
                             <div class="col-md-12">
                                 <div class="form-check">
-                                    <input class="form-check-input" type="checkbox" id="dhcp-dns-opt">
+                                    <input class="form-check-input" type="checkbox" id="dhcp-dns-opt" onchange="syncDhcpDnsFields()">
                                     <label class="form-check-label" for="dhcp-dns-opt">
                                         Use custom DNS servers (unchecked: hand out this router's own IP)
                                     </label>
                                 </div>
                             </div>
-                            <div class="col-md-4">
+                            <div class="col-md-4 dhcp-dns-col" style="display:none">
                                 <label for="dhcp-dns1" class="form-label">DNS 1</label>
                                 <input type="text" class="form-control" id="dhcp-dns1"
                                        maxlength="15" autocomplete="off" placeholder="optional">
                                 <div class="invalid-feedback" id="dhcp-dns1-err" style="display:none"></div>
                             </div>
-                            <div class="col-md-4">
+                            <div class="col-md-4 dhcp-dns-col" style="display:none">
                                 <label for="dhcp-dns2" class="form-label">DNS 2</label>
                                 <input type="text" class="form-control" id="dhcp-dns2"
                                        maxlength="15" autocomplete="off" placeholder="optional">
                                 <div class="invalid-feedback" id="dhcp-dns2-err" style="display:none"></div>
                             </div>
-                            <div class="col-md-4">
+                            <div class="col-md-4 dhcp-dns-col" style="display:none">
                                 <label for="dhcp-dns3" class="form-label">DNS 3</label>
                                 <input type="text" class="form-control" id="dhcp-dns3"
                                        maxlength="15" autocomplete="off" placeholder="optional">
@@ -656,8 +656,11 @@
                 'dhcp-mask':       validateIpField(mask),
                 'dhcp-gateway':    validateIpField(gateway),
             };
+            // The DNS fields are hidden while custom DNS is off, so a bad value in one
+            // must not block Save with an error the user can't see.
             [['dhcp-dns1', dns1], ['dhcp-dns2', dns2], ['dhcp-dns3', dns3]].forEach(([id, val]) => {
-                if (val) fieldErrs[id] = validateIpField(val);
+                if (dnsOpt === '1' && val) fieldErrs[id] = validateIpField(val);
+                else setIpFieldError(id, id + '-err', null);
             });
 
             let leaseErr = null;
@@ -682,6 +685,11 @@
                 showOverlay('Applying Changes.');
             }
 
+            // With custom DNS off the stored servers are unused; keep valid ones so
+            // re-ticking the box restores them, but never send a malformed hidden value
+            // (the backend rejects it).
+            const dnsSend = v => (dnsOpt === '1' || !validateIpField(v)) ? v : '';
+
             const saveBody = 'pool_start=' + encodeURIComponent(poolStart)
                 + '&pool_end=' + encodeURIComponent(poolEnd)
                 + '&mask=' + encodeURIComponent(mask)
@@ -689,9 +697,9 @@
                 + '&lease=' + encodeURIComponent(lease)
                 + '&domain=' + encodeURIComponent(domain)
                 + '&dns_opt=' + dnsOpt
-                + '&dns1=' + encodeURIComponent(dns1)
-                + '&dns2=' + encodeURIComponent(dns2)
-                + '&dns3=' + encodeURIComponent(dns3);
+                + '&dns1=' + encodeURIComponent(dnsSend(dns1))
+                + '&dns2=' + encodeURIComponent(dnsSend(dns2))
+                + '&dns3=' + encodeURIComponent(dnsSend(dns3));
 
             fetch('/cgi-bin/lme.cgi?action=dhcp_save', {
                 method: 'POST',
@@ -755,6 +763,13 @@
         function lockDhcpMode()   { DHCP_MODE_IDS.forEach(id => { document.getElementById(id).disabled = true; }); }
         function unlockDhcpMode() { DHCP_MODE_IDS.forEach(id => { document.getElementById(id).disabled = false; }); }
 
+        // DNS 1-3 only matter when "Use custom DNS servers" is ticked (otherwise the
+        // router hands out its own IP), so show them only then.
+        function syncDhcpDnsFields() {
+            const show = document.getElementById('dhcp-dns-opt').checked;
+            document.querySelectorAll('.dhcp-dns-col').forEach(el => { el.style.display = show ? '' : 'none'; });
+        }
+
         function onDhcpModeChange() {
             const m = document.getElementById('dhcp-mode').value;
             document.getElementById('dhcp-relay-wrap').style.display = (m === '1') ? '' : 'none';
@@ -772,6 +787,7 @@
             document.getElementById('dhcp-lease').value      = data.lease      || 86400;
             document.getElementById('dhcp-domain').value     = data.domain     || '';
             document.getElementById('dhcp-dns-opt').checked  = (data.dns_opt == 1);
+            syncDhcpDnsFields();
             document.getElementById('dhcp-dns1').value       = data.dns1 || '';
             document.getElementById('dhcp-dns2').value       = data.dns2 || '';
             document.getElementById('dhcp-dns3').value       = data.dns3 || '';
