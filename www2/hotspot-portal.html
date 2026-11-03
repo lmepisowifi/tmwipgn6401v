@@ -141,29 +141,20 @@
         }
         .audio-actions { display:flex; gap:6px; flex-shrink:0; flex-wrap:wrap; }
         .audio-file-input { display:none; }
-        /* Sound library picker — opens inline under an audio slot, full row width */
-        .sound-picker {
-            flex:0 0 100%; width:100%; margin-top:4px; padding:10px 12px;
-            border:1px solid var(--border-color); border-radius:8px; background:var(--bg-input);
-        }
-        .sound-picker-head {
-            display:flex; align-items:center; justify-content:space-between; gap:8px;
-            flex-wrap:wrap; margin-bottom:4px;
-        }
-        .sound-picker-title { font-size:12px; font-weight:600; }
-        .sound-picker-tools { display:flex; gap:6px; }
+        /* Sound library modal (#soundModal) — list rows */
         .sound-item {
             display:flex; align-items:center; gap:10px; padding:8px 0;
             border-top:1px solid var(--border-color);
         }
+        .sound-item:first-child { border-top:none; }
         .sound-info { flex:1 1 auto; min-width:0; }
         .sound-name { font-size:13px; font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
-        .sound-desc { font-size:11px; color:var(--text-secondary); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+        .sound-desc { font-size:11px; color:var(--text-secondary); overflow-wrap:anywhere; }
         .sound-play { min-width:76px; flex-shrink:0; }   /* Play -> Stop must not resize the row */
         .sound-use  { min-width:84px; flex-shrink:0; text-align:center; }
         .sound-active { font-size:12px; color:var(--lme-ok, #4ade80); white-space:nowrap; }
         .sound-msg  { font-size:12px; color:var(--text-secondary); padding:6px 0; }
-        .sound-foot { font-size:11px; color:var(--text-secondary); padding-top:6px; border-top:1px solid var(--border-color); }
+        .sound-foot { font-size:11px; color:var(--text-secondary); margin-top:4px; padding-top:8px; border-top:1px solid var(--border-color); }
         /* On narrow screens drop the action buttons onto their own full-width
            row so the Confirm/Upload button never runs off the edge */
         @media (max-width: 480px) {
@@ -284,7 +275,7 @@
                 Background music loops automatically when the portal loads.
                 Coin sound plays each time a coin is detected by the slot.
                 Both are silenced instantly with the speaker icon on the portal.
-                <b>Library</b> lists sounds published in the project repository for that slot
+                <b>Library</b> opens the sounds published in the project repository for that slot
                 &mdash; press &#9654; Play to preview one, then <b>Use</b> to install it.
             </div>
         </div>
@@ -486,6 +477,23 @@
 <input type="file" class="audio-file-input" id="file-bg_music"   accept="audio/mpeg,audio/ogg,audio/wav,.mp3,.ogg,.wav" onchange="onAudioFileChosen('bg_music')">
 <input type="file" class="audio-file-input" id="file-coin_sound" accept="audio/mpeg,audio/ogg,audio/wav,.mp3,.ogg,.wav" onchange="onAudioFileChosen('coin_sound')">
 <input type="file" class="audio-file-input" id="file-insert_bg_music" accept="audio/mpeg,audio/ogg,audio/wav,.mp3,.ogg,.wav" onchange="onAudioFileChosen('insert_bg_music')">
+
+<!-- Sound library: one modal shared by the three audio slots (filled by JS) -->
+<div class="modal fade" id="soundModal" tabindex="-1" aria-labelledby="sound-modal-title" aria-hidden="true">
+    <div class="modal-dialog modal-dialog-centered modal-dialog-scrollable" style="max-width:480px;">
+        <div class="modal-content" style="border:1px solid var(--border-color);">
+            <div class="modal-header py-2 px-3">
+                <div class="fw-semibold" id="sound-modal-title" style="font-size:14px;">Sound library</div>
+                <button type="button" class="btn-close btn-close-white ms-auto" id="sound-modal-x" data-bs-dismiss="modal" aria-label="Close" style="font-size:12px;"></button>
+            </div>
+            <div class="modal-body px-3 py-2" id="sound-modal-body"></div>
+            <div class="modal-footer py-2 px-3" style="border-top:1px solid var(--border-color);">
+                <button type="button" class="btn btn-sm btn-outline-secondary me-auto" id="sound-modal-refresh">Refresh</button>
+                <button type="button" class="btn btn-sm btn-secondary" id="sound-modal-close" data-bs-dismiss="modal">Close</button>
+            </div>
+        </div>
+    </div>
+</div>
 
 <script src="/js/jquery-3.7.1.min.js?v=1.0.0"></script>
 <div class="img-modal-overlay" id="img-modal-overlay" aria-hidden="true">
@@ -846,10 +854,9 @@ function buildAudioSlots(bgMusicPath, coinSoundPath, insertBgMusicPath) {
     _audioFiles.coin_sound = coinSoundPath || null;
     _audioFiles.insert_bg_music = insertBgMusicPath || null;
 
-    // The rows (and any open library picker, with its Play buttons) are rebuilt
-    // from scratch below, so end any running preview first.
+    // The rows (and their Play buttons) are rebuilt from scratch below, so end
+    // any running preview first.
     stopPreviewAudio();
-    _soundPickerOpen = null;
 
     var container = document.getElementById('audio-list');
     container.innerHTML = '';
@@ -876,7 +883,7 @@ function buildAudioSlots(bgMusicPath, coinSoundPath, insertBgMusicPath) {
                 + '<div class="audio-actions">'
                 +   '<button class="btn btn-sm btn-outline-secondary" id="audio-play-btn-' + slot + '" onclick="previewAudio(\'' + slot + '\')">▶ Play</button>'
                 +   '<button class="btn btn-sm btn-outline-secondary" onclick="triggerAudioFile(\'' + slot + '\')">Replace</button>'
-                +   '<button class="btn btn-sm btn-outline-secondary" onclick="toggleSoundPicker(\'' + slot + '\')">Library</button>'
+                +   '<button class="btn btn-sm btn-outline-secondary" onclick="openSoundPicker(\'' + slot + '\')">Library</button>'
                 +   '<button class="btn btn-sm btn-outline-danger" onclick="clearAudio(\'' + slot + '\')">Remove</button>'
                 +   '<button class="btn btn-sm btn-primary" id="audio-upload-btn-' + slot + '" onclick="uploadAudio(\'' + slot + '\')" style="display:none;">Upload</button>'
                 + '</div>';
@@ -890,17 +897,10 @@ function buildAudioSlots(bgMusicPath, coinSoundPath, insertBgMusicPath) {
                 + '</div>'
                 + '<div class="audio-actions">'
                 +   '<button class="btn btn-sm btn-outline-secondary" onclick="triggerAudioFile(\'' + slot + '\')">Upload</button>'
-                +   '<button class="btn btn-sm btn-outline-secondary" onclick="toggleSoundPicker(\'' + slot + '\')">Library</button>'
+                +   '<button class="btn btn-sm btn-outline-secondary" onclick="openSoundPicker(\'' + slot + '\')">Library</button>'
                 +   '<button class="btn btn-sm btn-primary" id="audio-upload-btn-' + slot + '" onclick="uploadAudio(\'' + slot + '\')" style="display:none;">Confirm</button>'
                 + '</div>';
         }
-        // Library picker for this slot — filled and shown by toggleSoundPicker()
-        var picker = document.createElement('div');
-        picker.className = 'sound-picker';
-        picker.id = 'sound-picker-' + slot;
-        picker.style.display = 'none';
-        row.appendChild(picker);
-
         container.appendChild(row);
     });
 }
@@ -1050,12 +1050,15 @@ function previewAudio(slot) {
 window.addEventListener('pagehide', stopPreviewAudio);
 
 /* ── Sound library (sounds published in the repo's sounds.txt) ──
-   hotspot.cgi?action=sound_catalog returns every sound with its slot, so each
-   slot's picker lists only its own kind: coin sounds never show up under
-   background music and vice versa. Previews stream from the CDN straight to
-   this browser; "Use" has the router download + sha256-verify the file. */
+   hotspot.cgi?action=sound_catalog returns every sound with its slot, so the
+   Library modal lists only the kind that belongs to the slot it was opened from:
+   coin sounds never show up under background music and vice versa. Previews
+   stream from the CDN straight to this browser; "Use" has the router download
+   + sha256-verify the file. */
 var _soundCatalog = null;      // last catalog response (kept for the page session)
-var _soundPickerOpen = null;   // slot whose picker is open, or null
+var _soundModal = null;        // bootstrap.Modal for #soundModal (created on first open)
+var _soundModalSlot = null;    // slot the modal is showing, or null while it is closed
+var _soundBusy = false;        // a Use download is running: the modal can't be dismissed meanwhile
 
 var SOUND_ERRORS = {
     catalog_fetch_failed: 'Could not reach the sound library. Check the router’s internet connection.',
@@ -1106,52 +1109,32 @@ function loadSoundCatalog(force, cb) {
         .catch(function() { cb('network'); });
 }
 
-function toggleSoundPicker(slot) {
-    if (_soundPickerOpen === slot) { closeSoundPicker(); return; }
-    openSoundPicker(slot, false);
-}
-
-function closeSoundPicker() {
-    stopPreviewAudio();
-    if (_soundPickerOpen) {
-        var box = document.getElementById('sound-picker-' + _soundPickerOpen);
-        if (box) box.style.display = 'none';
-    }
-    _soundPickerOpen = null;
+// Which footer/header buttons are usable: while a Use download runs (locked)
+// nothing is, and while the list is loading only Refresh is held back.
+function soundModalLock(locked, loading) {
+    document.getElementById('sound-modal-refresh').disabled = !!(locked || loading);
+    document.getElementById('sound-modal-close').disabled   = !!locked;
+    document.getElementById('sound-modal-x').disabled       = !!locked;
 }
 
 function openSoundPicker(slot, force) {
     stopPreviewAudio();
-    if (_soundPickerOpen && _soundPickerOpen !== slot) {   // one picker at a time
-        var prev = document.getElementById('sound-picker-' + _soundPickerOpen);
-        if (prev) prev.style.display = 'none';
-    }
-    _soundPickerOpen = slot;
-    var box = document.getElementById('sound-picker-' + slot);
-    if (!box) return;
-    box.style.display = 'block';
+    _soundModalSlot = slot;
+    document.getElementById('sound-modal-title').textContent = 'Sound library — ' + AUDIO_SLOT_META[slot].label;
     renderSoundPicker(slot, 'loading');
+    if (!_soundModal) _soundModal = new bootstrap.Modal(document.getElementById('soundModal'));
+    _soundModal.show();                          // no-op when it is already open (Refresh)
     loadSoundCatalog(force, function(err) {
-        if (_soundPickerOpen !== slot) return;             // closed or switched while loading
+        if (_soundModalSlot !== slot) return;    // closed while loading
         renderSoundPicker(slot, err ? 'error' : 'ready', err);
     });
 }
 
 function renderSoundPicker(slot, state, err) {
-    var box = document.getElementById('sound-picker-' + slot);
-    if (!box) return;
+    if (_soundModalSlot !== slot) return;
+    var box = document.getElementById('sound-modal-body');
     box.innerHTML = '';
-
-    var head = mkEl('div', 'sound-picker-head');
-    head.appendChild(mkEl('span', 'sound-picker-title', 'Library — ' + AUDIO_SLOT_META[slot].label));
-    var tools = mkEl('div', 'sound-picker-tools');
-    var refresh = mkEl('button', 'btn btn-sm btn-outline-secondary', 'Refresh');
-    refresh.onclick = function() { openSoundPicker(slot, true); };
-    var close = mkEl('button', 'btn btn-sm btn-outline-secondary', 'Close');
-    close.onclick = closeSoundPicker;
-    tools.appendChild(refresh); tools.appendChild(close);
-    head.appendChild(tools);
-    box.appendChild(head);
+    soundModalLock(_soundBusy, state === 'loading');
 
     if (state === 'loading') { box.appendChild(mkEl('div', 'sound-msg', 'Loading the sound library…')); return; }
     if (state === 'error') {
@@ -1190,6 +1173,17 @@ function renderSoundPicker(slot, state, err) {
         (_soundCatalog && _soundCatalog.stale ? ' (Showing a saved copy of the list — the router could not reach the library just now.)' : '')));
 }
 
+(function wireSoundModal() {
+    var el = document.getElementById('soundModal');
+    // A download in progress has to finish first: Esc and a backdrop click land here too.
+    el.addEventListener('hide.bs.modal', function(e) { if (_soundBusy) e.preventDefault(); });
+    // However it was closed, silence a running preview and forget the slot.
+    el.addEventListener('hidden.bs.modal', function() { stopPreviewAudio(); _soundModalSlot = null; });
+    document.getElementById('sound-modal-refresh').addEventListener('click', function() {
+        if (_soundModalSlot) openSoundPicker(_soundModalSlot, true);
+    });
+})();
+
 function previewLibrarySound(slot, id) {
     var s = findLibrarySound(slot, id);
     if (!s) return;
@@ -1199,20 +1193,25 @@ function previewLibrarySound(slot, id) {
 
 function useLibrarySound(slot, id) {
     var s = findLibrarySound(slot, id);
-    if (!s) return;
+    if (!s || _soundBusy) return;
     stopPreviewAudio();
 
-    // Lock the picker while the router downloads: a second Use would only
-    // queue behind the first and fail with "busy".
-    var box = document.getElementById('sound-picker-' + slot);
-    var btns = box ? box.querySelectorAll('button.sound-use') : [];
+    // Lock the modal while the router downloads: a second Use would only queue
+    // behind the first and fail with "busy", and closing the modal mid-download
+    // would hide the result.
+    var box = document.getElementById('sound-modal-body');
+    var btns = box.querySelectorAll('button.sound-use');
     var i;
     for (i = 0; i < btns.length; i++) { btns[i].disabled = true; }
-    var mine = box && box.querySelector('#lib-play-' + slot + '-' + id);
+    var mine = box.querySelector('#lib-play-' + slot + '-' + id);
     var useBtn = mine && mine.parentNode.querySelector('button.sound-use');
     if (useBtn) useBtn.textContent = 'Saving…';
+    _soundBusy = true;
+    soundModalLock(true, false);
 
     function unlock() {
+        _soundBusy = false;
+        soundModalLock(false, false);
         for (i = 0; i < btns.length; i++) { btns[i].disabled = false; }
         if (useBtn) useBtn.textContent = 'Use';
     }
@@ -1223,6 +1222,8 @@ function useLibrarySound(slot, id) {
         body: 'audio_slot=' + slot + '&sound_id=' + encodeURIComponent(id)
     }).then(function(r) { return r.json(); }).then(function(d) {
         if (d && d.ok) {
+            _soundBusy = false;                  // lifted first, or hide() would be vetoed
+            soundModalLock(false, false);
             // A library pick replaces the slot, so drop any file chosen but not yet uploaded
             _audioPending[slot] = null;
             var inp = document.getElementById('file-' + slot);
@@ -1231,6 +1232,7 @@ function useLibrarySound(slot, id) {
                 if (x.slot === slot) x.active = (x.id === id);
             });
             _audioFiles[slot] = d.path;
+            if (_soundModal) _soundModal.hide();
             buildAudioSlots(_audioFiles.bg_music, _audioFiles.coin_sound, _audioFiles.insert_bg_music);
             toastr.success(s.name + ' is now the ' + AUDIO_SLOT_META[slot].label + '.');
             fetchDiskSpace();

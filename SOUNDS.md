@@ -1,7 +1,7 @@
 # Portal sound library
 
 The admin page **Hotspot → Portal** has a **Library** button on each audio row. It
-opens a picker of sounds published in this repository: press **▶ Play** to hear one,
+opens a pop-up window listing the sounds published in this repository: press **▶ Play** to hear one,
 then **Use** to install it on the router. Uploading your own file still works exactly
 as before.
 
