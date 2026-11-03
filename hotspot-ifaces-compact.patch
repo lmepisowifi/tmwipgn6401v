@@ -1,0 +1,213 @@
+From 7ab5366e6194469ac4dbbdec83bfa5980b5ba30b Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Tue, 3 Nov 2026 08:17:34 +0000
+Subject: [PATCH] www2: simplify Hotspot interface picker into a compact
+ checklist
+
+Replace the tall 3-4 line interface cards and the 3-line color legend on
+the Hotspot > Interfaces page with a plain checklist: one row per
+interface (checkbox, name, type, short bridge status). MAC and link
+state move to the row tooltip. Behavior and element ids are unchanged.
+
+Co-Authored-By: Claude Sonnet 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01P7YGcepB5Hh1tenAvYqsX6
+---
+ www2/hotspot-ifaces.html | 126 +++++++++++++++------------------------
+ 1 file changed, 49 insertions(+), 77 deletions(-)
+
+diff --git a/www2/hotspot-ifaces.html b/www2/hotspot-ifaces.html
+index 8d2f8e3..53f3dae 100644
+--- a/www2/hotspot-ifaces.html
++++ b/www2/hotspot-ifaces.html
+@@ -22,51 +22,52 @@
+         .field-hint { font-size: 11.5px; color: var(--text-secondary); margin-top: 3px; }
+         code { color: var(--text-soft, #ccc); font-size: 12px; }
+ 
+-        /* ── Interface grid ───────────────────────────────────── */
++        /* ── Interface checklist (one plain row per interface) ─── */
+         .iface-grid {
+-            display: grid;
+-            grid-template-columns: repeat(auto-fill, minmax(200px,1fr));
+-            gap: 10px;
+-            margin-top: 12px;
+-        }
+-        .iface-card {
+-            background: var(--bg-input);
++            display: flex;
++            flex-direction: column;
++            margin-top: 8px;
+             border: 1px solid var(--border-color);
+             border-radius: 8px;
+-            padding: 12px 14px;
++            overflow: hidden;
++        }
++        .iface-card {
++            display: flex;
++            align-items: center;
++            gap: 10px;
++            padding: 9px 12px;
++            border-bottom: 1px solid var(--border-color);
+             cursor: pointer;
+-            transition: border-color .18s, background .18s;
+             user-select: none;
+-            position: relative;
++            transition: background .15s;
+         }
+-        .iface-card:hover { border-color: var(--lme-border-strong, #555); background: var(--bg-surface-hover); }
++        .iface-card:last-child { border-bottom: none; }
++        .iface-card:hover { background: var(--bg-surface-hover); }
+         /* RJ45 port the vendor WAN is running on (PON_MODE=0): not selectable */
+-        .iface-card.wan-locked, .iface-card.wan-locked:hover { opacity: .6; cursor: not-allowed; border-color: var(--lme-orange, #e67e22); background: var(--bg-surface); }
+-        .iface-card.selected {
+-            border-color: var(--accent-color);
+-            background: var(--lme-tint-2, rgba(255,255,255,.06));
+-        }
+-        .iface-card.in-bridge {
+-            border-color: var(--lme-ok, #81c784);
+-            background: rgba(76,175,80,.07);
+-        }
+-        .iface-card.in-bridge.selected {
+-            border-color: var(--lme-ok, #81c784);
+-        }
++        .iface-card.wan-locked, .iface-card.wan-locked:hover { opacity: .55; cursor: not-allowed; background: transparent; }
+         .iface-check {
+-            position: absolute; top: 10px; right: 10px;
+-            width: 16px; height: 16px; border-radius: 50%;
+-            background: var(--border-color);
++            flex: 0 0 auto;
++            width: 18px; height: 18px; border-radius: 4px;
++            border: 1.5px solid var(--text-secondary, #888);
+             display: flex; align-items: center; justify-content: center;
+-            font-size: 9px; color: transparent;
+-            transition: background .15s, color .15s;
++            font-size: 12px; line-height: 1; color: transparent;
++            transition: background .15s, border-color .15s, color .15s;
+         }
+         .iface-card.selected .iface-check {
+-            background: var(--accent-color, #fff); color: var(--accent-contrast, #222);
++            background: var(--accent-color, #fff); border-color: var(--accent-color, #fff);
++            color: var(--accent-contrast, #222);
+         }
+-        /* Deselected in-bridge state handled below */
+-        .iface-name  { font-size: 14px; font-weight: 700; margin-bottom: 2px; padding-right: 20px; }
+-        .iface-meta  { font-size: 11px; color: var(--text-secondary); margin-top: 1px; }
++        /* In bridge now but deselected from config (will be removed) */
++        .iface-card.in-bridge:not(.selected) .iface-check {
++            border-color: var(--lme-orange, #e67e22); color: var(--lme-orange, #e67e22);
++        }
++        .iface-name  { flex: 0 0 auto; min-width: 5.2em; font-size: 14px; font-weight: 600; }
++        .iface-meta  {
++            flex: 1 1 auto; min-width: 0;
++            font-size: 11.5px; color: var(--text-secondary);
++            white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
++        }
++        .iface-br-tag { flex: 0 0 auto; margin-left: auto; font-size: 11px; white-space: nowrap; }
+         .iface-state {
+             display: inline-block; padding: 1px 7px; border-radius: 3px;
+             font-size: 10px; font-weight: 700; margin-top: 4px;
+@@ -75,11 +76,6 @@
+         .iface-state.up   { background: rgba(76,175,80,.2); color: var(--lme-ok, #81c784); }
+         .iface-state.down { background: var(--lme-tint-2, rgba(255,255,255,.07)); color: var(--text-muted, #888); }
+ 
+-        /* ── Legend ───────────────────────────────────────────── */
+-        .iface-legend { display:flex; flex-wrap:wrap; gap:8px 16px; }
+-        .legend-item { display:inline-flex; align-items:center; gap:5px; font-size:11.5px; color:var(--text-secondary); }
+-        .legend-dot { display:inline-block; width:9px; height:9px; border-radius:50%; flex-shrink:0; }
+-
+         /* ── Bridge members ───────────────────────────────────── */
+         .bridge-member {
+             display: flex; align-items: center; justify-content: space-between;
+@@ -96,30 +92,12 @@
+         }
+         .warn-banner.visible { display: block; }
+ 
+-        /* ── In-bridge but DESELECTED from config (will be removed) ── */
+-        .iface-card.in-bridge:not(.selected) {
+-            border-color: var(--lme-orange, #e67e22);
+-            background: rgba(230,126,34,.07);
+-        }
+-        .iface-card.in-bridge:not(.selected):hover {
+-            border-color: var(--lme-orange, #e67e22);
+-            background: rgba(230,126,34,.13);
+-        }
+-        .iface-card.in-bridge:not(.selected) .iface-check {
+-            background: rgba(230,126,34,.25);
+-            color: var(--lme-orange, #e67e22);
+-        }
+-
+         /* ── Mobile ───────────────────────────────────────────── */
+         @media (max-width: 575px) {
+-            .iface-grid {
+-                grid-template-columns: repeat(auto-fill, minmax(150px,1fr));
+-                gap: 8px;
+-            }
+-            .iface-card { padding: 10px 11px; }
++            .iface-card { padding: 8px 10px; gap: 8px; }
+             .iface-name { font-size: 13px; }
+-            .iface-meta { font-size: 10px; }
+-            .iface-state { font-size: 9px; padding: 1px 5px; }
++            .iface-meta { font-size: 10.5px; }
++            .iface-br-tag { font-size: 10px; }
+             .warn-banner { font-size: 11.5px; }
+         }
+     </style>
+@@ -183,14 +161,9 @@
+     <div class="card mb-3">
+         <div class="card-header">Available Interfaces</div>
+         <div class="card-body">
+-            <div class="field-hint mb-2">
+-                Tap a card to add or remove it from <code>HOTSPOT_INTERFACES</code>. Interfaces beginning
+-                with <code>lo</code>, <code>br</code>, <code>sit</code> are hidden.
+-            </div>
+-            <div class="iface-legend mb-3">
+-                <span class="legend-item"><span class="legend-dot" style="background:var(--lme-ok, #81c784);"></span><span style="color:var(--lme-ok, #81c784);">Green</span> — in bridge now</span>
+-                <span class="legend-item"><span class="legend-dot" style="background:var(--lme-tint-3, rgba(255,255,255,.5));"></span><span style="color:var(--text-primary);">White ✓</span> — selected in config</span>
+-                <span class="legend-item"><span class="legend-dot" style="background:var(--lme-orange, #e67e22);"></span><span style="color:var(--lme-orange, #e67e22);">Amber ×</span> — in bridge, removed from config</span>
++            <div class="field-hint">
++                Tap an interface to add or remove it from <code>HOTSPOT_INTERFACES</code>
++                (<code>lo</code>, <code>br</code>, <code>sit</code> are hidden).
+             </div>
+             <div class="iface-grid" id="iface-grid">
+                 <div style="color:var(--text-secondary);font-size:13px;grid-column:1/-1;">Loading interfaces…</div>
+@@ -257,13 +230,13 @@ function renderBridgeMembers(members){
+ }
+ 
+ function wanTag(){
+-    return '&nbsp;<span style="font-size:10px;color:var(--lme-orange, #e67e22);">WAN port &ndash; hotspot skips it</span>';
++    return '<span style="color:var(--lme-orange, #e67e22);">WAN port</span>';
+ }
+ 
+ function bridgeTag(inBridge, inSel){
+-    if (inBridge && inSel)  return '&nbsp;<span style="font-size:10px;color:var(--lme-ok, #81c784);">in bridge</span>';
+-    if (inBridge && !inSel) return '&nbsp;<span style="font-size:10px;color:var(--lme-orange, #e67e22);">⚠ will remove</span>';
+-    if (!inBridge && inSel) return '&nbsp;<span style="font-size:10px;color:var(--lme-info, #6ea8fe);">will add</span>';
++    if (inBridge && inSel)  return '<span style="color:var(--lme-ok, #81c784);">in bridge</span>';
++    if (inBridge && !inSel) return '<span style="color:var(--lme-orange, #e67e22);">will remove</span>';
++    if (!inBridge && inSel) return '<span style="color:var(--lme-info, #6ea8fe);">will add</span>';
+     return '';
+ }
+ 
+@@ -280,15 +253,14 @@ function renderIfaceGrid(ifaces){
+         var cls = 'iface-card' + (inSel?' selected':'') + (inBridge?' in-bridge':'') + (wan?' wan-locked':'');
+         // ✓ only when explicitly selected; × = in bridge but deselected from config
+         var checkIcon = inSel ? '✓' : (inBridge ? '×' : '');
+-        return '<div class="'+cls+'" id="ifc-'+ifc.name+'" onclick="toggleIface(\''+escAttr(ifc.name)+'\')" data-iface="'+escAttr(ifc.name)+'" data-wan="'+(wan?'1':'0')+'">'+
++        // One checklist row: [check] name  type            [bridge tag]
++        // MAC + link state live in the tooltip to keep the row short.
++        var tip = (ifc.mac || '') + (ifc.mac ? ' · ' : '') + (ifc.up ? 'up' : 'down');
++        return '<div class="'+cls+'" id="ifc-'+ifc.name+'" onclick="toggleIface(\''+escAttr(ifc.name)+'\')" data-iface="'+escAttr(ifc.name)+'" data-wan="'+(wan?'1':'0')+'" title="'+escAttr(tip)+'">'+
+                '<div class="iface-check">'+checkIcon+'</div>'+
+                '<div class="iface-name">'+escHtml(ifc.name)+'</div>'+
+-               '<div class="iface-meta">'+escHtml(ifc.mac||'—')+'</div>'+
+-               (ifc.type?'<div class="iface-meta">'+escHtml(ifc.type)+'</div>':'')+
+-               '<div>'+
+-               '<span class="iface-state '+(ifc.up?'up':'down')+'">'+(ifc.up?'up':'down')+'</span>'+
++               '<div class="iface-meta">'+escHtml(ifc.type||'')+'</div>'+
+                '<span class="iface-br-tag">'+(wan ? wanTag() : bridgeTag(inBridge,inSel))+'</span>'+
+-               '</div>'+
+                '</div>';
+     }).join('');
+ }
+-- 
+2.43.0
+

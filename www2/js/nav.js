@@ -87,15 +87,19 @@ setInterval(function () {
             { label: 'GPON Settings',    href: '/gpon.html'          },
             { label: 'OMCI Settings',    href: '/omci.html'          },
             { label: 'EPON Settings',    href: '/epon.html'          },
-            { label: 'Dashboard Layout', href: '/dashboard-layout.html' },
-            { label: 'Modules',          href: '/modules.html'       },
             { label: 'Tailscale',        href: '/tailscale.html', module: 'tailscale' },
-            { label: 'Software Update',  href: '/ota.html'           },
-            { label: 'Boot Partitions',  href: '/bootpart.html'      },
-            { label: 'Firmware Upload',  href: '/fwupload.html'      },
             { label: 'TR-069',           href: '/tr069.html'         },
             { label: 'MIB Configuration', href: '/mibconfig.html'    },
             { label: 'Reboot',           href: '/reboot.html'        },
+        ]},
+        { label: 'Firmware', children: [
+            { label: 'Boot Partitions',  href: '/bootpart.html'      },
+            { label: 'Firmware Upload',  href: '/fwupload.html'      },
+        ]},
+        { label: 'TMWI', children: [
+            { label: 'Dashboard Layout', href: '/dashboard-layout.html' },
+            { label: 'Modules',          href: '/modules.html'       },
+            { label: 'Software Update',  href: '/ota.html'           },
         ]},
     ];
     // ================================================================

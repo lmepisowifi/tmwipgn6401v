@@ -229,6 +229,30 @@ body {
     margin-left: 6px;
 }
 
+/* Laptop-width desktops: the menu has ten top-level entries, so trim the side padding
+   (and the gap before the right-hand buttons) to keep it on one line without scrolling. */
+@media (min-width: 992px) and (max-width: 1399.98px) {
+    .navbar-nav .nav-link {
+        padding: 0 10px !important;
+        white-space: nowrap;
+    }
+    .navbar-nav .dropdown-toggle::after {
+        margin-left: 4px;
+    }
+    .navbar .nav-actions {
+        gap: 6px;
+        margin-left: 6px;
+    }
+}
+@media (min-width: 992px) and (max-width: 1199.98px) {
+    .navbar-nav .nav-link {
+        padding: 0 7px !important;
+        font-size: 12.5px;
+    }
+    .brand-text { margin-right: 6px; }
+    .header-divider { margin-right: 6px; }
+}
+
 .dropdown-item {
     color: var(--text-secondary) !important;
     font-size: 13px;
