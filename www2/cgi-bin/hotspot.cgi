@@ -80,6 +80,8 @@ AUTO_PAUSED_FILE="$HDATA/auto_paused.txt"
 # Below-minimum-tier coin balances banked per-MAC by coin_result.sh — see
 # that file's COIN_BANK_FILE comment for the full explanation.
 COIN_BANK_FILE="$HDATA/coin_bank.txt"
+# Free WiFi per-device claim/cooldown records - see hotspot/freewifi.sh.
+FREE_CLAIM_FILE="$HDATA/free_claims.txt"
 # WiFi Rates expiry/validity bucket tracking - see ratevalidity.sh.
 [ -f /lmepisowifi/hotspot/ratevalidity.sh ] && . /lmepisowifi/hotspot/ratevalidity.sh
 
@@ -738,6 +740,15 @@ if echo "$QS" | $BB grep -q "action=config_get"; then
     VSE_BOOL="false"; [ "${VSE:-0}" = "1" ] && VSE_BOOL="true"
     VST="${VOUCHER_STRIKE_THRESHOLD:-$(read_lmehspt_var VOUCHER_STRIKE_THRESHOLD)}"
     VCD="${VOUCHER_COOLDOWN:-$(read_lmehspt_var VOUCHER_COOLDOWN)}"
+    FWE="${FREE_WIFI_ENABLED:-$(read_lmehspt_var FREE_WIFI_ENABLED)}"
+    FWE_BOOL="false"; [ "${FWE:-0}" = "1" ] && FWE_BOOL="true"
+    FWM="${FREE_WIFI_MINUTES:-$(read_lmehspt_var FREE_WIFI_MINUTES)}"
+    FWC="${FREE_WIFI_COOLDOWN:-$(read_lmehspt_var FREE_WIFI_COOLDOWN)}"
+    FWR="${FREE_WIFI_REQUIRE_INTERNET:-$(read_lmehspt_var FREE_WIFI_REQUIRE_INTERNET)}"
+    FWR_BOOL="true"; [ "${FWR:-1}" = "0" ] && FWR_BOOL="false"
+    FW_CLAIMS=0
+    [ -f "$FREE_CLAIM_FILE" ] && FW_CLAIMS=$($BB grep -c '.' "$FREE_CLAIM_FILE" 2>/dev/null)
+    case "$FW_CLAIMS" in ''|*[!0-9]*) FW_CLAIMS=0 ;; esac
 
     HSP_RUNNING="false"; hotspot_running && HSP_RUNNING="true"
     COIN_ON="false"; [ -f /tmp/coin_enabled ] && COIN_ON="true"
@@ -786,6 +797,11 @@ if echo "$QS" | $BB grep -q "action=config_get"; then
 \"voucher_strike_enabled\":$VSE_BOOL,
 \"voucher_strike_threshold\":\"$(esc_json "$VST")\",
 \"voucher_cooldown\":\"$(esc_json "$VCD")\",
+\"free_wifi_enabled\":$FWE_BOOL,
+\"free_wifi_minutes\":\"$(esc_json "${FWM:-10}")\",
+\"free_wifi_cooldown\":\"$(esc_json "${FWC:-1440}")\",
+\"free_wifi_require_internet\":$FWR_BOOL,
+\"free_wifi_claims\":$FW_CLAIMS,
 \"internet_up\":$INET_UP,
 \"hotspot_running\":$HSP_RUNNING}"
 fi
@@ -2386,6 +2402,93 @@ if echo "$QS" | $BB grep -q "action=pause_on_boot_set"; then
 fi
 
 # ================================================================
+# POST ?action=free_wifi_set
+#   body: any subset of  enabled=1|0  minutes=N  cooldown=N  require_internet=1|0
+# Free WiFi (one-tap free session — see hotspot/freewifi.sh, login.sh's
+# free=1 branch, status.sh's free_minutes/free_wait). Same three-way
+# persistence as every other simple setting here (coin_config.env for the
+# live CGIs, lmehspt.sh inline default, globals.env for the flash copy).
+# Rules: minutes 1..1440; cooldown is 0 ("once per device") or minutes..
+# 525600, and never shorter than the session itself — otherwise a device
+# could pause a free session and claim a second one on top of it.
+# ================================================================
+if echo "$QS" | $BB grep -q "action=free_wifi_set"; then
+    read -n "${CONTENT_LENGTH:-0}" POST_DATA
+    _fwf() { printf '&%s' "$POST_DATA" | $BB sed -n "s/.*&$1=\([^&]*\).*/\1/p"; }
+    _FW_EN=$(_fwf enabled);  _FW_MIN=$(_fwf minutes)
+    _FW_CD=$(_fwf cooldown); _FW_RI=$(_fwf require_internet)
+
+    case "$_FW_EN" in ""|0|1) ;; *) err_json "bad_value" ;; esac
+    case "$_FW_RI" in ""|0|1) ;; *) err_json "bad_value" ;; esac
+    case "$_FW_MIN" in *[!0-9]*) err_json "bad_minutes" ;; esac
+    case "$_FW_CD"  in *[!0-9]*) err_json "bad_cooldown" ;; esac
+
+    _FW_CUR_MIN="${FREE_WIFI_MINUTES:-$(read_lmehspt_var FREE_WIFI_MINUTES)}"
+    _FW_CUR_CD="${FREE_WIFI_COOLDOWN:-$(read_lmehspt_var FREE_WIFI_COOLDOWN)}"
+    case "$_FW_CUR_MIN" in ""|*[!0-9]*) _FW_CUR_MIN=10 ;; esac
+    case "$_FW_CUR_CD"  in ""|*[!0-9]*) _FW_CUR_CD=1440 ;; esac
+    _FW_NEW_MIN="${_FW_MIN:-$_FW_CUR_MIN}"
+    _FW_NEW_CD="${_FW_CD:-$_FW_CUR_CD}"
+    # Strip leading zeros so "007" can never be read as octal by shell
+    # arithmetic later (busybox ash crashes on 08/09), and bound the digit
+    # count so a huge number can't overflow the comparisons below.
+    _FW_NEW_MIN=$(printf '%s' "$_FW_NEW_MIN" | $BB sed 's/^0*\([0-9]\)/\1/')
+    _FW_NEW_CD=$(printf '%s' "$_FW_NEW_CD"  | $BB sed 's/^0*\([0-9]\)/\1/')
+    [ -n "$_FW_NEW_MIN" ] || _FW_NEW_MIN=0
+    [ -n "$_FW_NEW_CD" ]  || _FW_NEW_CD=0
+    [ "${#_FW_NEW_MIN}" -le 6 ] || err_json "bad_minutes"
+    [ "${#_FW_NEW_CD}" -le 7 ]  || err_json "bad_cooldown"
+
+    [ "$_FW_NEW_MIN" -ge 1 ] && [ "$_FW_NEW_MIN" -le 1440 ] || err_json "bad_minutes"
+    [ "$_FW_NEW_CD" -le 525600 ] || err_json "bad_cooldown"
+    if [ "$_FW_NEW_CD" -ne 0 ] && [ "$_FW_NEW_CD" -lt "$_FW_NEW_MIN" ]; then
+        err_json "cooldown_shorter_than_session"
+    fi
+
+    if [ -n "$_FW_MIN" ]; then
+        save_coin_env_var "FREE_WIFI_MINUTES" "$_FW_NEW_MIN"
+        set_lmehspt_var   "FREE_WIFI_MINUTES" "$_FW_NEW_MIN"
+        set_globals_var   "FREE_WIFI_MINUTES" "$_FW_NEW_MIN"
+    fi
+    if [ -n "$_FW_CD" ]; then
+        save_coin_env_var "FREE_WIFI_COOLDOWN" "$_FW_NEW_CD"
+        set_lmehspt_var   "FREE_WIFI_COOLDOWN" "$_FW_NEW_CD"
+        set_globals_var   "FREE_WIFI_COOLDOWN" "$_FW_NEW_CD"
+    fi
+    if [ -n "$_FW_EN" ]; then
+        save_coin_env_var "FREE_WIFI_ENABLED" "$_FW_EN"
+        set_lmehspt_var   "FREE_WIFI_ENABLED" "$_FW_EN"
+        set_globals_var   "FREE_WIFI_ENABLED" "$_FW_EN"
+    fi
+    if [ -n "$_FW_RI" ]; then
+        save_coin_env_var "FREE_WIFI_REQUIRE_INTERNET" "$_FW_RI"
+        set_lmehspt_var   "FREE_WIFI_REQUIRE_INTERNET" "$_FW_RI"
+        set_globals_var   "FREE_WIFI_REQUIRE_INTERNET" "$_FW_RI"
+    fi
+
+    _FW_NOW_EN="${_FW_EN:-${FREE_WIFI_ENABLED:-$(read_lmehspt_var FREE_WIFI_ENABLED)}}"
+    _FW_NOW_RI="${_FW_RI:-${FREE_WIFI_REQUIRE_INTERNET:-$(read_lmehspt_var FREE_WIFI_REQUIRE_INTERNET)}}"
+    _FW_EN_B="false"; [ "${_FW_NOW_EN:-0}" = "1" ] && _FW_EN_B="true"
+    _FW_RI_B="true";  [ "${_FW_NOW_RI:-1}" = "0" ] && _FW_RI_B="false"
+    ok_json "{\"ok\":true,\"free_wifi_enabled\":$_FW_EN_B,\"free_wifi_minutes\":\"$_FW_NEW_MIN\",\"free_wifi_cooldown\":\"$_FW_NEW_CD\",\"free_wifi_require_internet\":$_FW_RI_B}"
+fi
+
+# ================================================================
+# POST ?action=free_wifi_reset
+# Forgets every device's Free WiFi claim so everyone can claim again
+# (e.g. a new day, an event, or after switching cooldown to "once only").
+# Doesn't touch any session that is already running.
+# ================================================================
+if echo "$QS" | $BB grep -q "action=free_wifi_reset"; then
+    cleared=0
+    [ -f "$FREE_CLAIM_FILE" ] && cleared=$($BB grep -c '.' "$FREE_CLAIM_FILE" 2>/dev/null)
+    case "$cleared" in ''|*[!0-9]*) cleared=0 ;; esac
+    $BB rm -f "$FREE_CLAIM_FILE" "${FREE_CLAIM_FILE}.tmp" "${FREE_CLAIM_FILE}.tmp2" 2>/dev/null
+    sync
+    ok_json "{\"ok\":true,\"cleared\":$cleared}"
+fi
+
+# ================================================================
 # POST ?action=coin_internet_set   body: enabled=1|0
 # When on, coin.sh's "start" action refuses to open a brand new coin
 # session while the router has no internet connectivity (an in-flight
@@ -3618,6 +3721,52 @@ if echo "$QS" | $BB grep -q "action=portal_audio_clear"; then
     case "$SLOT" in bg_music|coin_sound|insert_bg_music) ;; *) err_json "bad_slot" ;; esac
     rm -f "/lmepisowifi/hotspot/audio/${SLOT}".* 2>/dev/null
     ok_json "{\"ok\":true}"
+fi
+
+# ================================================================
+# GET ?action=sound_catalog[&refresh=1]
+# Lists the portal sounds published in the repo's sounds.txt manifest and
+# flags the one currently installed for its slot (matched by sha256). Every
+# sound carries its own "slot" (bg_music | insert_bg_music | coin_sound), so
+# the page can keep background music and coin sounds in separate pickers.
+# The work lives in hotspot/sound_ctl.sh.
+# ================================================================
+if echo "$QS" | $BB grep -q "action=sound_catalog"; then
+    SOUND_CTL="/lmepisowifi/hotspot/sound_ctl.sh"
+    [ -f "$SOUND_CTL" ] || err_json "sound_ctl_missing"
+    _sc_arg=""
+    echo "$QS" | $BB grep -q "refresh=1" && _sc_arg="refresh"
+    _sc_out=$(sh "$SOUND_CTL" catalog $_sc_arg 2>/dev/null)
+    [ -n "$_sc_out" ] || err_json "sound_ctl_failed"
+    ok_json "$_sc_out"
+fi
+
+# ================================================================
+# POST ?action=sound_select
+# body: audio_slot=bg_music|insert_bg_music|coin_sound & sound_id=<id from sounds.txt>
+# Downloads the library sound, verifies its sha256 against sounds.txt and
+# installs it to /lmepisowifi/hotspot/audio/<slot>.<ext> — the same place
+# portal_audio_upload writes — replacing whatever the slot had.
+# ================================================================
+if echo "$QS" | $BB grep -q "action=sound_select"; then
+    read -n "${CONTENT_LENGTH:-0}" POST_DATA
+    fget() {
+        printf '%s' "$POST_DATA" \
+            | $BB tr '&' '\n' \
+            | $BB grep "^$1=" \
+            | $BB sed 's/^[^=]*=//' \
+            | urldecode \
+            | head -1
+    }
+    SLOT=$(fget audio_slot | $BB tr -cd 'a-z_')
+    SID=$(fget sound_id | $BB tr -cd 'a-z0-9_-' | $BB cut -c1-48)
+    case "$SLOT" in bg_music|coin_sound|insert_bg_music) ;; *) err_json "bad_slot" ;; esac
+    [ -n "$SID" ] || err_json "bad_id"
+    SOUND_CTL="/lmepisowifi/hotspot/sound_ctl.sh"
+    [ -f "$SOUND_CTL" ] || err_json "sound_ctl_missing"
+    _sc_out=$(sh "$SOUND_CTL" select "$SLOT" "$SID" 2>/dev/null)
+    [ -n "$_sc_out" ] || err_json "sound_ctl_failed"
+    ok_json "$_sc_out"
 fi
 
 # ================================================================

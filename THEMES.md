@@ -91,7 +91,8 @@ two colour modes. The rules below are what makes a theme behave.
   are the same in both modes under `:root, :root[data-theme="dark"], :root[data-theme="light"]`,
   then the rest under each mode on its own. Variable names are listed in the admin
   *Custom CSS > Tips* box (`--bg-body`, `--bg-surface`, `--btn-primary-*`, `--btn-coin-*`,
-  `--btn-rates-*`, `--btn-danger-*`, `--coin-sym-color`, ...).
+  `--btn-rates-*`, `--btn-free-*` (optional; the Free WiFi button falls back to a built-in
+  green when a theme doesn't set them), `--btn-danger-*`, `--coin-sym-color`, ...).
 * **Never hide, shrink or cover a control a customer needs.** No `display:none` on the voucher
   box, Insert Coin, Resume, Submit or the pop-up buttons; no `position:fixed` / `sticky` bars
   (they can sit on top of a button once the page is scrolled: an absolutely positioned header is

@@ -232,6 +232,12 @@ VOUCHER_COOLDOWN="60"
 # already-paused session untouched. On by default (matches the system's
 # original always-available behavior).
 VOUCHER_ENABLED="1"
+# Free WiFi one-tap access - see defaults.env for the full rationale. Read by
+# login.sh (the claim) and status.sh (button visibility) via coin_config.env.
+FREE_WIFI_ENABLED="0"
+FREE_WIFI_MINUTES="10"
+FREE_WIFI_COOLDOWN="1440"
+FREE_WIFI_REQUIRE_INTERNET="1"
 # Flag file: present = internet reachable as of the last check, absent = not
 # reachable. Written by the watchdog loop's internet-check tick; read by
 # coin.sh and login.sh. A plain existence check keeps those per-request reads
@@ -2368,6 +2374,14 @@ write_coin_config() {
         printf 'VOUCHER_STRIKE_THRESHOLD="%s"\n' "${VOUCHER_STRIKE_THRESHOLD:-3}"
         printf 'VOUCHER_COOLDOWN="%s"\n'    "${VOUCHER_COOLDOWN:-60}"
         printf 'VOUCHER_ENABLED="%s"\n'     "${VOUCHER_ENABLED:-1}"
+        # Same "without this line" reasoning as VOUCHER_STRIKE_* above: login.sh
+        # and status.sh only ever see these via this cache file, so leaving
+        # them out would reset the admin's Free WiFi settings (back to off)
+        # on every write_coin_config() call - hotspot restart, boot, etc.
+        printf 'FREE_WIFI_ENABLED="%s"\n'   "${FREE_WIFI_ENABLED:-0}"
+        printf 'FREE_WIFI_MINUTES="%s"\n'   "${FREE_WIFI_MINUTES:-10}"
+        printf 'FREE_WIFI_COOLDOWN="%s"\n'  "${FREE_WIFI_COOLDOWN:-1440}"
+        printf 'FREE_WIFI_REQUIRE_INTERNET="%s"\n' "${FREE_WIFI_REQUIRE_INTERNET:-1}"
         printf 'INTERNET_UP_FILE="%s"\n'    "${INTERNET_UP_FILE:-/tmp/internet_up}"
         printf 'HOTSPOT_BR="%s"\n'          "$HOTSPOT_BR"
         printf 'SESSION_FILE="%s"\n'        "$SESSION_FILE"

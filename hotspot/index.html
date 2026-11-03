@@ -559,6 +559,28 @@
       color: var(--btn-rates-hover-color) !important;
     }
 
+    /* Green Free WiFi button. Colours fall back to built-in greens so every
+       theme (including third-party ones written before this button existed)
+       gets a sensible look; a theme can override via --btn-free-*. */
+    .btn-free {
+      background: var(--btn-free-bg, rgba(34, 197, 94, 0.14)) !important;
+      border: 1px solid var(--btn-free-border, #22c55e) !important;
+      color: var(--btn-free-color, #22c55e) !important;
+    }
+    .btn-free:hover {
+      background: var(--btn-free-hover-bg, #22c55e) !important;
+      border-color: var(--btn-free-hover-border, #22c55e) !important;
+      color: var(--btn-free-hover-color, #ffffff) !important;
+    }
+    .btn-free:disabled { opacity: 0.6; cursor: wait; }
+    .free-hint {
+      display: none;
+      margin-top: 8px;
+      font-size: 0.85rem;
+      text-align: center;
+      opacity: 0.75;
+    }
+
     /* Red styled Pause & Resume Buttons */
     #btn-resume, #btn-pause {
       background: var(--btn-danger-bg) !important;
@@ -1021,10 +1043,13 @@
 
         <!-- Flexbox container perfectly spaces visible buttons by 8px without interfering margins -->
         <div class="d-flex flex-column gap-2">
+          <button class="btn btn-free" id="btn-free-login" onclick="doFreeWifi()" style="display:none;">Free WiFi</button>
           <button class="btn btn-coin" id="btn-coin-login" onclick="startCoinFlow(false)" style="display:none;">Insert Coin</button>
           <button class="btn btn-primary" id="btn-resume" onclick="doResume()" style="display:none;">Resume Time</button>
           <button class="btn btn-rates" id="btn-rates-login" onclick="openRatesModal()" style="display:none;">WiFi Rates</button>
         </div>
+
+        <div class="free-hint" id="free-hint"></div>
 
         <div class="add-panel" id="login-panel" style="display:block;">
           <label class="form-label" for="login-code">Voucher Code</label>
@@ -1803,6 +1828,9 @@ function checkStatus() {
         updateExpiryNotice('status-expiry-notice', d.expiring_remaining, d.expiring_deadline_secs);
       } else {
         renderDeviceInfo(d, 'l');
+        // Free WiFi button/hint (status.sh only sends free_* while the admin
+        // has it on). Returns true when this device can claim right now.
+        var freeAvail = updateFreeUI(d);
 
         // Auto-Resume switch (admin-configured): skip the paused screen
         // entirely and fire the same resume=1 request the button below
@@ -1821,7 +1849,7 @@ function checkStatus() {
           loginTitle.textContent = 'Time Paused';
           loginSub.textContent   = 'You can click the Resume Time Button to continue surfing.';
           
-          document.getElementById('resume-progress-wrap').style.display = 'flex';
+          document.getElementById('resume-progress-wrap').style.display = '';
           updateExpiryNotice('resume-expiry-notice', d.expiring_remaining, d.expiring_deadline_secs);
           
           var resumeStr = fmtCountdown(d.remaining);
@@ -1842,7 +1870,9 @@ function checkStatus() {
           document.getElementById('btn-resume').style.display = 'block';
         } else {
           loginTitle.textContent = 'Disconnected';
-          loginSub.textContent   = 'Insert Coins or Enter a voucher code to get online.';
+          loginSub.textContent   = freeAvail
+            ? 'Tap Free WiFi, insert coins or enter a voucher code to get online.'
+            : 'Insert Coins or Enter a voucher code to get online.';
           
           document.getElementById('resume-progress-wrap').style.display = 'none';
           document.getElementById('btn-resume').style.display = 'none';
@@ -1853,6 +1883,109 @@ function checkStatus() {
     .catch(function() { 
       setTimeout(checkStatus, 1500); 
     });
+}
+
+/* ────────────────────────────────────────────────────────────────
+   Free WiFi — one-tap free session (see freewifi.sh / login.sh free=1)
+──────────────────────────────────────────────────────────────── */
+var _freeBusy = false;
+var _freeRecheckID = null;
+
+function fmtFreeLen(mins) {
+  mins = Math.max(1, parseInt(mins, 10) || 0);
+  var h = Math.floor(mins / 60), m = mins % 60;
+  if (h > 0 && m > 0) return h + ' hr ' + m + ' min';
+  if (h > 0)          return h + (h === 1 ? ' hr' : ' hrs');
+  return m + ' min';
+}
+
+function fmtFreeWait(secs) {
+  var d = Math.floor(secs / 86400);
+  var h = Math.floor((secs % 86400) / 3600);
+  var m = Math.ceil((secs % 3600) / 60);
+  if (m === 60) { m = 0; h += 1; }
+  if (d > 0) return d + 'd ' + h + 'h';
+  if (h > 0) return h + 'h ' + m + 'm';
+  return Math.max(1, m) + 'm';
+}
+
+// Shows the Free WiFi button when this device may claim, or a one-line hint
+// while it is waiting out its cooldown. Returns true only when it may claim.
+function updateFreeUI(d) {
+  var btn  = document.getElementById('btn-free-login');
+  var hint = document.getElementById('free-hint');
+  if (!btn || !hint) return false;
+  if (_freeRecheckID) { clearTimeout(_freeRecheckID); _freeRecheckID = null; }
+  btn.style.display  = 'none';
+  hint.style.display = 'none';
+  var mins = parseInt(d.free_minutes, 10);
+  if (!(mins > 0)) return false;               // admin has Free WiFi off
+
+  var wait = parseInt(d.free_wait, 10) || 0;
+  if (wait === 0) {
+    btn.textContent   = 'Free WiFi (' + fmtFreeLen(mins) + ')';
+    btn.style.display = 'block';
+    return true;
+  }
+  if (wait < 0) {
+    hint.textContent = 'Free WiFi has already been used on this device.';
+  } else {
+    hint.textContent = 'Free WiFi is available again in ' + fmtFreeWait(wait) + '.';
+    // Re-check when the wait is over so the button comes back by itself.
+    // Capped: setTimeout overflows past ~24 days.
+    _freeRecheckID = setTimeout(checkStatus, Math.min(wait + 2, 2000000) * 1000);
+  }
+  hint.style.display = 'block';
+  return false;
+}
+
+function doFreeWifi() {
+  if (_freeBusy) return;
+  _freeBusy = true;
+  var btn = document.getElementById('btn-free-login');
+  if (btn) btn.disabled = true;
+
+  fetch('/cgi-bin/login.sh', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+    body: 'free=1'
+  })
+  .then(function(r) { return r.json(); })
+  .then(function(d) {
+    _freeBusy = false;
+    if (btn) btn.disabled = false;
+    if (d.ok) {
+      show('v-status');
+      // Same captive-portal-compatibility reload as a coin/resume success.
+      if (_reloadAfterTimeAdded) { location.reload(); return; }
+      checkStatus();
+      toastr.success('\u2714\ufe0f Connected! ' + fmtCountdown(d.remaining) + ' of free WiFi.');
+    } else {
+      var msgs = {
+        no_mac:          "Can't detect your device MAC yet \u2014 wait a few seconds and try again.",
+        free_disabled:   'Free WiFi is not available right now.',
+        already_online:  'You are already online.',
+        no_internet:     'No internet connection right now \u2014 Free WiFi is temporarily unavailable.',
+        clock_not_ready: 'The router is still starting up \u2014 please try again in a minute.',
+        try_again:       'Something went wrong \u2014 please try again.',
+        cooldown:        'Too many attempts. Please wait a moment.'
+      };
+      if (d.error === 'free_wait') {
+        toastr.error(d.wait < 0
+          ? 'Free WiFi has already been used on this device.'
+          : 'You can claim Free WiFi again in ' + fmtFreeWait(d.wait) + '.');
+      } else {
+        toastr.error(msgs[d.error] || 'Something went wrong \u2014 please try again.');
+      }
+      // Refresh so the button/hint (or the connected view) matches the server.
+      if (d.error !== 'cooldown') checkStatus();
+    }
+  })
+  .catch(function() {
+    _freeBusy = false;
+    if (btn) btn.disabled = false;
+    toastr.error('Connection error. Please try again.');
+  });
 }
 
 function doResume(auto) {

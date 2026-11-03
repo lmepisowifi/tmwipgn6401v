@@ -230,7 +230,10 @@ jobs:
           } > modules.txt
           git config user.name  github-actions
           git config user.email github-actions@github.com
-          git add -f manifest.txt modules.txt hotspot/firmware/coin_nodemcu.bin "$TAR"
+          # sounds.txt (portal sound library manifest) is regenerated from sounds/ so its
+          # sha256 values can never be stale on main; unchanged -> nothing to commit.
+          sh sounds_manifest.sh
+          git add -f manifest.txt modules.txt sounds.txt hotspot/firmware/coin_nodemcu.bin "$TAR"
           git commit -m "release $VER (nodemcu fw $FW; hotspot $HS_VER, tailscale $TS_VER)" || echo "nothing to commit"
           git push origin HEAD:main
 
@@ -245,5 +248,7 @@ jobs:
           curl -sL "https://purge.jsdelivr.net/gh/${REPO}@main/manifest.txt"
           echo -e "\nPurging modules.txt..."
           curl -sL "https://purge.jsdelivr.net/gh/${REPO}@main/modules.txt"
+          echo -e "\nPurging sounds.txt..."
+          curl -sL "https://purge.jsdelivr.net/gh/${REPO}@main/sounds.txt"
           echo -e "\nPurging dist/ bundle mirror..."
           curl -sL "https://purge.jsdelivr.net/gh/${REPO}@main/dist/lmepisowifi-${VER}.tar.gz"

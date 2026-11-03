@@ -58,7 +58,13 @@
         .portal-prev-brand { font-size:10px; text-transform:uppercase; letter-spacing:.12em; color:#a1a1aa; line-height:1.2; }
         .portal-prev-title { font-size:13px; font-weight:700; color:#f4f4f5; line-height:1.2; }
         .portal-prev-carousel { border-top:1px solid #2e2e33; overflow:hidden; position:relative; display:none; }
-        .portal-prev-carousel img { width:100%; display:block; max-height:90px; object-fit:cover; }
+        .portal-prev-carousel img { width:100%; display:block; max-height:90px; object-fit:cover; cursor:zoom-in; }
+        /* Click-to-view lightbox for the carousel preview */
+        .lme-lightbox { position:fixed; inset:0; z-index:2000; display:none; align-items:center; justify-content:center;
+            background:rgba(0,0,0,.88); padding:16px; cursor:zoom-out; }
+        .lme-lightbox.open { display:flex; }
+        .lme-lightbox img { max-width:100%; max-height:100%; object-fit:contain; border-radius:6px; box-shadow:0 8px 40px rgba(0,0,0,.6); }
+        .lme-lightbox-x { position:absolute; top:10px; right:14px; color:#fff; font-size:30px; line-height:1; opacity:.8; }
         .portal-prev-body { padding:14px; }
         .portal-prev-field { height:28px; background:#1d1d22; border:1px solid #2e2e33; border-radius:6px; margin-bottom:7px; }
         .portal-prev-btn { height:32px; background:#fff; border-radius:6px; width:100%; margin-bottom:7px; }
@@ -114,6 +120,29 @@
         }
         .audio-actions { display:flex; gap:6px; flex-shrink:0; flex-wrap:wrap; }
         .audio-file-input { display:none; }
+        /* Sound library picker — opens inline under an audio slot, full row width */
+        .sound-picker {
+            flex:0 0 100%; width:100%; margin-top:4px; padding:10px 12px;
+            border:1px solid var(--border-color); border-radius:8px; background:var(--bg-input);
+        }
+        .sound-picker-head {
+            display:flex; align-items:center; justify-content:space-between; gap:8px;
+            flex-wrap:wrap; margin-bottom:4px;
+        }
+        .sound-picker-title { font-size:12px; font-weight:600; }
+        .sound-picker-tools { display:flex; gap:6px; }
+        .sound-item {
+            display:flex; align-items:center; gap:10px; padding:8px 0;
+            border-top:1px solid var(--border-color);
+        }
+        .sound-info { flex:1 1 auto; min-width:0; }
+        .sound-name { font-size:13px; font-weight:600; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+        .sound-desc { font-size:11px; color:var(--text-secondary); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+        .sound-play { min-width:76px; flex-shrink:0; }   /* Play -> Stop must not resize the row */
+        .sound-use  { min-width:84px; flex-shrink:0; text-align:center; }
+        .sound-active { font-size:12px; color:var(--lme-ok, #4ade80); white-space:nowrap; }
+        .sound-msg  { font-size:12px; color:var(--text-secondary); padding:6px 0; }
+        .sound-foot { font-size:11px; color:var(--text-secondary); padding-top:6px; border-top:1px solid var(--border-color); }
         /* On narrow screens drop the action buttons onto their own full-width
            row so the Confirm/Upload button never runs off the edge */
         @media (max-width: 480px) {
@@ -234,6 +263,8 @@
                 Background music loops automatically when the portal loads.
                 Coin sound plays each time a coin is detected by the slot.
                 Both are silenced instantly with the speaker icon on the portal.
+                <b>Library</b> lists sounds published in the project repository for that slot
+                &mdash; press &#9654; Play to preview one, then <b>Use</b> to install it.
             </div>
         </div>
     </div>
@@ -436,6 +467,10 @@
 <input type="file" class="audio-file-input" id="file-insert_bg_music" accept="audio/mpeg,audio/ogg,audio/wav,.mp3,.ogg,.wav" onchange="onAudioFileChosen('insert_bg_music')">
 
 <script src="/js/jquery-3.7.1.min.js?v=1.0.0"></script>
+<div id="lme-lightbox" class="lme-lightbox" role="dialog" aria-label="Carousel image" aria-hidden="true">
+    <span class="lme-lightbox-x" aria-hidden="true">&times;</span>
+    <img id="lme-lightbox-img" src="" alt="Carousel slide">
+</div>
 <script src="/js/bootstrap.bundle.min.js?v=1.0.0"></script>
 <script src="/js/toastr.min.js?v=1.0.0"></script>
 <script>
@@ -788,6 +823,11 @@ function buildAudioSlots(bgMusicPath, coinSoundPath, insertBgMusicPath) {
     _audioFiles.coin_sound = coinSoundPath || null;
     _audioFiles.insert_bg_music = insertBgMusicPath || null;
 
+    // The rows (and any open library picker, with its Play buttons) are rebuilt
+    // from scratch below, so end any running preview first.
+    stopPreviewAudio();
+    _soundPickerOpen = null;
+
     var container = document.getElementById('audio-list');
     container.innerHTML = '';
 
@@ -813,6 +853,7 @@ function buildAudioSlots(bgMusicPath, coinSoundPath, insertBgMusicPath) {
                 + '<div class="audio-actions">'
                 +   '<button class="btn btn-sm btn-outline-secondary" id="audio-play-btn-' + slot + '" onclick="previewAudio(\'' + slot + '\')">▶ Play</button>'
                 +   '<button class="btn btn-sm btn-outline-secondary" onclick="triggerAudioFile(\'' + slot + '\')">Replace</button>'
+                +   '<button class="btn btn-sm btn-outline-secondary" onclick="toggleSoundPicker(\'' + slot + '\')">Library</button>'
                 +   '<button class="btn btn-sm btn-outline-danger" onclick="clearAudio(\'' + slot + '\')">Remove</button>'
                 +   '<button class="btn btn-sm btn-primary" id="audio-upload-btn-' + slot + '" onclick="uploadAudio(\'' + slot + '\')" style="display:none;">Upload</button>'
                 + '</div>';
@@ -826,9 +867,17 @@ function buildAudioSlots(bgMusicPath, coinSoundPath, insertBgMusicPath) {
                 + '</div>'
                 + '<div class="audio-actions">'
                 +   '<button class="btn btn-sm btn-outline-secondary" onclick="triggerAudioFile(\'' + slot + '\')">Upload</button>'
+                +   '<button class="btn btn-sm btn-outline-secondary" onclick="toggleSoundPicker(\'' + slot + '\')">Library</button>'
                 +   '<button class="btn btn-sm btn-primary" id="audio-upload-btn-' + slot + '" onclick="uploadAudio(\'' + slot + '\')" style="display:none;">Confirm</button>'
                 + '</div>';
         }
+        // Library picker for this slot — filled and shown by toggleSoundPicker()
+        var picker = document.createElement('div');
+        picker.className = 'sound-picker';
+        picker.id = 'sound-picker-' + slot;
+        picker.style.display = 'none';
+        row.appendChild(picker);
+
         container.appendChild(row);
     });
 }
@@ -915,10 +964,21 @@ function clearAudio(slot) {
     }).catch(function(){ toastr.error('Failed to remove audio.'); });
 }
 
-var _previewSlot = null;
+/* ── Preview (one at a time, for installed files AND library sounds) ──
+   _previewKey says which Play button is live:
+     'slot:<slot>'        the file currently installed for a slot
+     'lib:<slot>:<id>'    a sound in the library picker                      */
+var _previewKey = null;
 
-function updatePreviewBtn(slot, playing) {
-    var btn = document.getElementById('audio-play-btn-' + slot);
+function previewBtnFor(key) {
+    var p = key.split(':');
+    return document.getElementById(p[0] === 'lib'
+        ? 'lib-play-' + p[1] + '-' + p.slice(2).join(':')
+        : 'audio-play-btn-' + p[1]);
+}
+
+function updatePreviewBtn(key, playing) {
+    var btn = previewBtnFor(key);
     if (!btn) return;
     if (playing) {
         btn.textContent = '■ Stop';
@@ -932,33 +992,233 @@ function updatePreviewBtn(slot, playing) {
 }
 
 function stopPreviewAudio() {
-    if (window._previewAudio) {
-        window._previewAudio.pause();
-        window._previewAudio.currentTime = 0;
-        window._previewAudio = null;
-    }
-    if (_previewSlot) { updatePreviewBtn(_previewSlot, false); _previewSlot = null; }
+    var a = window._previewAudio;
+    window._previewAudio = null;          // cleared first: a's own handlers check it
+    if (a) { try { a.pause(); a.currentTime = 0; } catch (e) {} }
+    if (_previewKey) { updatePreviewBtn(_previewKey, false); _previewKey = null; }
+}
+
+function startPreview(key, src, failMsg) {
+    // Toggle: pressing Play on the one that is playing stops it
+    if (_previewKey === key) { stopPreviewAudio(); return; }
+    stopPreviewAudio();                   // stop whatever else was playing
+    if (!src) { toastr.warning(failMsg); return; }
+
+    var a = new Audio(src);
+    window._previewAudio = a;
+    _previewKey = key;
+    updatePreviewBtn(key, true);
+
+    // Each handler acts only while it is still THE preview, so a late event
+    // from an older sound can't stop the one that replaced it.
+    a.onended = function() { if (window._previewAudio === a) stopPreviewAudio(); };
+    a.onerror = function() { if (window._previewAudio === a) { toastr.warning(failMsg); stopPreviewAudio(); } };
+    a.play().catch(function(err) {
+        if (window._previewAudio === a) { toastr.warning('Could not play: ' + err.message); stopPreviewAudio(); }
+    });
 }
 
 function previewAudio(slot) {
-    // Toggle: clicking Play on the active slot stops it
-    if (_previewSlot === slot) { stopPreviewAudio(); return; }
-    stopPreviewAudio(); // Stop any other slot that was playing
-
     var path = _audioFiles[slot];
     if (!path) return;
-    var fn = path.split('/').pop();
-    var src = audioProxy(fn);
-    var a = new Audio(src);
-    window._previewAudio = a;
-    _previewSlot = slot;
-    updatePreviewBtn(slot, true);
+    startPreview('slot:' + slot, audioProxy(path.split('/').pop()), 'Could not play audio.');
+}
 
-    a.onended = function() { stopPreviewAudio(); };
-    a.onerror = function() { toastr.warning('Could not play audio.'); stopPreviewAudio(); };
-    a.play().catch(function(err) {
-        toastr.warning('Could not play: ' + err.message);
-        stopPreviewAudio();
+window.addEventListener('pagehide', stopPreviewAudio);
+
+/* ── Sound library (sounds published in the repo's sounds.txt) ──
+   hotspot.cgi?action=sound_catalog returns every sound with its slot, so each
+   slot's picker lists only its own kind: coin sounds never show up under
+   background music and vice versa. Previews stream from the CDN straight to
+   this browser; "Use" has the router download + sha256-verify the file. */
+var _soundCatalog = null;      // last catalog response (kept for the page session)
+var _soundPickerOpen = null;   // slot whose picker is open, or null
+
+var SOUND_ERRORS = {
+    catalog_fetch_failed: 'Could not reach the sound library. Check the router’s internet connection.',
+    download_failed:      'Could not download that sound. Check the router’s internet connection.',
+    checksum_mismatch:    'The downloaded file did not match the library manifest, so it was not installed. Try Refresh.',
+    not_found:            'That sound is no longer in the library. Press Refresh.',
+    insufficient_space:   'Not enough storage space on device.',
+    bad_size:             'That sound file is empty or too large to install.',
+    busy:                 'Another sound is still downloading. Try again in a moment.',
+    sound_ctl_missing:    'The sound library script is missing. Update the Hotspot module.'
+};
+
+function mkEl(tag, cls, text) {
+    var e = document.createElement(tag);
+    if (cls) e.className = cls;
+    if (text !== undefined) e.textContent = text;   // textContent: manifest text is never parsed as HTML
+    return e;
+}
+
+function fmtSoundSize(n) {
+    n = Number(n) || 0;
+    if (n >= 1048576) return (n / 1048576).toFixed(1) + ' MB';
+    return Math.max(1, Math.round(n / 1024)) + ' KB';
+}
+
+function librarySoundUrl(s) {
+    var base = (_soundCatalog && _soundCatalog.base) || '';
+    if (base.indexOf('https://') !== 0) return '';
+    return base + s.file.split('/').map(encodeURIComponent).join('/');
+}
+
+function findLibrarySound(slot, id) {
+    var list = (_soundCatalog && _soundCatalog.sounds) || [];
+    for (var i = 0; i < list.length; i++) {
+        if (list[i].slot === slot && list[i].id === id) return list[i];
+    }
+    return null;
+}
+
+function loadSoundCatalog(force, cb) {
+    if (_soundCatalog && !force) { cb(null); return; }
+    fetch('/cgi-bin/hotspot.cgi?action=sound_catalog' + (force ? '&refresh=1' : ''), { cache: 'no-store' })
+        .then(function(r) { return r.json(); })
+        .then(function(d) {
+            if (d && d.ok) { _soundCatalog = d; cb(null); }
+            else cb((d && d.error) || 'unknown');
+        })
+        .catch(function() { cb('network'); });
+}
+
+function toggleSoundPicker(slot) {
+    if (_soundPickerOpen === slot) { closeSoundPicker(); return; }
+    openSoundPicker(slot, false);
+}
+
+function closeSoundPicker() {
+    stopPreviewAudio();
+    if (_soundPickerOpen) {
+        var box = document.getElementById('sound-picker-' + _soundPickerOpen);
+        if (box) box.style.display = 'none';
+    }
+    _soundPickerOpen = null;
+}
+
+function openSoundPicker(slot, force) {
+    stopPreviewAudio();
+    if (_soundPickerOpen && _soundPickerOpen !== slot) {   // one picker at a time
+        var prev = document.getElementById('sound-picker-' + _soundPickerOpen);
+        if (prev) prev.style.display = 'none';
+    }
+    _soundPickerOpen = slot;
+    var box = document.getElementById('sound-picker-' + slot);
+    if (!box) return;
+    box.style.display = 'block';
+    renderSoundPicker(slot, 'loading');
+    loadSoundCatalog(force, function(err) {
+        if (_soundPickerOpen !== slot) return;             // closed or switched while loading
+        renderSoundPicker(slot, err ? 'error' : 'ready', err);
+    });
+}
+
+function renderSoundPicker(slot, state, err) {
+    var box = document.getElementById('sound-picker-' + slot);
+    if (!box) return;
+    box.innerHTML = '';
+
+    var head = mkEl('div', 'sound-picker-head');
+    head.appendChild(mkEl('span', 'sound-picker-title', 'Library — ' + AUDIO_SLOT_META[slot].label));
+    var tools = mkEl('div', 'sound-picker-tools');
+    var refresh = mkEl('button', 'btn btn-sm btn-outline-secondary', 'Refresh');
+    refresh.onclick = function() { openSoundPicker(slot, true); };
+    var close = mkEl('button', 'btn btn-sm btn-outline-secondary', 'Close');
+    close.onclick = closeSoundPicker;
+    tools.appendChild(refresh); tools.appendChild(close);
+    head.appendChild(tools);
+    box.appendChild(head);
+
+    if (state === 'loading') { box.appendChild(mkEl('div', 'sound-msg', 'Loading the sound library…')); return; }
+    if (state === 'error') {
+        box.appendChild(mkEl('div', 'sound-msg', SOUND_ERRORS[err] || SOUND_ERRORS.catalog_fetch_failed));
+        return;
+    }
+
+    var items = ((_soundCatalog && _soundCatalog.sounds) || []).filter(function(s) { return s.slot === slot; });
+    if (!items.length) box.appendChild(mkEl('div', 'sound-msg', 'No sounds are published for this slot yet.'));
+
+    items.forEach(function(s) {
+        var row = mkEl('div', 'sound-item');
+
+        var play = mkEl('button', 'btn btn-sm btn-outline-secondary sound-play', '▶ Play');
+        play.id = 'lib-play-' + slot + '-' + s.id;
+        play.onclick = function() { previewLibrarySound(slot, s.id); };
+        row.appendChild(play);
+
+        var info = mkEl('div', 'sound-info');
+        info.appendChild(mkEl('div', 'sound-name', s.name));
+        info.appendChild(mkEl('div', 'sound-desc', fmtSoundSize(s.size) + (s.description ? ' · ' + s.description : '')));
+        row.appendChild(info);
+
+        if (s.active) {
+            row.appendChild(mkEl('span', 'sound-active', '✓ In use'));
+        } else {
+            var use = mkEl('button', 'btn btn-sm btn-primary sound-use', 'Use');
+            use.onclick = function() { useLibrarySound(slot, s.id); };
+            row.appendChild(use);
+        }
+        box.appendChild(row);
+    });
+
+    box.appendChild(mkEl('div', 'sound-foot',
+        'Play streams from the sound library to this browser. Use downloads the file to the router and checks it before installing.' +
+        (_soundCatalog && _soundCatalog.stale ? ' (Showing a saved copy of the list — the router could not reach the library just now.)' : '')));
+}
+
+function previewLibrarySound(slot, id) {
+    var s = findLibrarySound(slot, id);
+    if (!s) return;
+    startPreview('lib:' + slot + ':' + id, librarySoundUrl(s),
+        'Could not play the preview. This browser needs internet access to reach the sound library.');
+}
+
+function useLibrarySound(slot, id) {
+    var s = findLibrarySound(slot, id);
+    if (!s) return;
+    stopPreviewAudio();
+
+    // Lock the picker while the router downloads: a second Use would only
+    // queue behind the first and fail with "busy".
+    var box = document.getElementById('sound-picker-' + slot);
+    var btns = box ? box.querySelectorAll('button.sound-use') : [];
+    var i;
+    for (i = 0; i < btns.length; i++) { btns[i].disabled = true; }
+    var mine = box && box.querySelector('#lib-play-' + slot + '-' + id);
+    var useBtn = mine && mine.parentNode.querySelector('button.sound-use');
+    if (useBtn) useBtn.textContent = 'Saving…';
+
+    function unlock() {
+        for (i = 0; i < btns.length; i++) { btns[i].disabled = false; }
+        if (useBtn) useBtn.textContent = 'Use';
+    }
+
+    fetch('/cgi-bin/hotspot.cgi?action=sound_select', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: 'audio_slot=' + slot + '&sound_id=' + encodeURIComponent(id)
+    }).then(function(r) { return r.json(); }).then(function(d) {
+        if (d && d.ok) {
+            // A library pick replaces the slot, so drop any file chosen but not yet uploaded
+            _audioPending[slot] = null;
+            var inp = document.getElementById('file-' + slot);
+            if (inp) inp.value = '';
+            ((_soundCatalog && _soundCatalog.sounds) || []).forEach(function(x) {
+                if (x.slot === slot) x.active = (x.id === id);
+            });
+            _audioFiles[slot] = d.path;
+            buildAudioSlots(_audioFiles.bg_music, _audioFiles.coin_sound, _audioFiles.insert_bg_music);
+            toastr.success(s.name + ' is now the ' + AUDIO_SLOT_META[slot].label + '.');
+            fetchDiskSpace();
+        } else {
+            unlock();
+            toastr.error(SOUND_ERRORS[d && d.error] || ('Could not install the sound: ' + ((d && d.error) || '?')));
+            fetchDiskSpace();
+        }
+    }).catch(function() {
+        unlock();
+        toastr.error('Network error.');
     });
 }
 
@@ -1362,6 +1622,22 @@ loadConfig();
     window.addEventListener('beforeunload', function (e) {
         if (loaded && dirty()) { e.preventDefault(); e.returnValue = ''; }
     });
+
+/* ── Click the carousel preview to view it full size ── */
+(function () {
+    var box = document.getElementById('lme-lightbox');
+    var big = document.getElementById('lme-lightbox-img');
+    var prev = document.getElementById('prev-carousel-img');
+    function close() { box.classList.remove('open'); box.setAttribute('aria-hidden', 'true'); big.removeAttribute('src'); }
+    prev.addEventListener('click', function () {
+        var src = prev.getAttribute('src');
+        if (!src) return;
+        big.src = src;   // always the image currently shown in the preview
+        box.classList.add('open'); box.setAttribute('aria-hidden', 'false');
+    });
+    box.addEventListener('click', close);
+    document.addEventListener('keydown', function (e) { if (e.key === 'Escape' && box.classList.contains('open')) close(); });
+})();
 
     refresh();
     loadThemes();

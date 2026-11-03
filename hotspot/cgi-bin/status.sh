@@ -28,6 +28,8 @@ HOTSPOT_BR="br1"
 [ -f /lmepisowifi/hotspot/macfix.sh ] && . /lmepisowifi/hotspot/macfix.sh
 # WiFi Rates expiry/validity bucket tracking - see ratevalidity.sh.
 [ -f /lmepisowifi/hotspot/ratevalidity.sh ] && . /lmepisowifi/hotspot/ratevalidity.sh
+# Free WiFi claim eligibility - see freewifi.sh.
+[ -f /lmepisowifi/hotspot/freewifi.sh ] && . /lmepisowifi/hotspot/freewifi.sh
 
 # Admin-configured (see hotspot.cgi's config_set / RELOAD_AFTER_TIME_ADDED_ENABLED).
 # Surfaced on every status poll, logged-in or not, so index.html has it
@@ -93,6 +95,19 @@ AVAIL_COINS=0
 case "$AVAIL_COINS" in ''|*[!0-9]*) AVAIL_COINS=0 ;; esac
 AVAIL_JSON=""
 [ "$AVAIL_COINS" -gt 0 ] && AVAIL_JSON=",\"available_coins\":$AVAIL_COINS"
+
+# Free WiFi (see freewifi.sh / login.sh's free=1 branch). Only emitted while
+# the admin has it switched on, and only ever read by the portal's
+# disconnected/paused views - a device with a live session doesn't need it.
+# free_wait: 0 = the button is available, >0 = seconds until this device can
+# claim again, -1 = it already used its one claim (cooldown set to "once").
+FREE_JSON=""
+if [ "${FREE_WIFI_ENABLED:-0}" = "1" ] && command -v fw_wait >/dev/null 2>&1; then
+    fw_wait "$CLIENT_MAC"
+    _FMIN=$(_fw_num "${FREE_WIFI_MINUTES:-10}" 10)
+    [ "$_FMIN" -ge 1 ] || _FMIN=10
+    FREE_JSON=",\"free_minutes\":$_FMIN,\"free_wait\":${FW_WAIT:-0}"
+fi
 
 # -- CONNECTION DETECTION (Run for everyone regardless of session) --
 WLAN_IFACE=""
@@ -213,8 +228,8 @@ if [ -n "$PAUSED" ]; then
     if [ "${AUTO_RESUME_ENABLED:-0}" = "1" ] && [ "${AUTO_PAUSE_ENABLED:-1}" = "1" ]; then
         [ -f "$AUTO_PAUSED_FILE" ] && $BB grep -qx "$CLIENT_MAC" "$AUTO_PAUSED_FILE" 2>/dev/null && AR_BOOL="true"
     fi
-    $BB echo "{\"logged_in\":false,\"mac\":\"$CLIENT_MAC\",\"ip\":\"$CLIENT_IP\",\"has_paused\":true,\"remaining\":$REMAINING,\"total\":$TOTAL,\"auto_resume\":$AR_BOOL,\"reload_after_time_added\":$RELOAD_BOOL,\"expiring_remaining\":${RV_REMAIN:-0},\"expiring_deadline_secs\":${RV_DEADLINE_SECS:-0},${CONN_JSON}${AVAIL_JSON}}"
+    $BB echo "{\"logged_in\":false,\"mac\":\"$CLIENT_MAC\",\"ip\":\"$CLIENT_IP\",\"has_paused\":true,\"remaining\":$REMAINING,\"total\":$TOTAL,\"auto_resume\":$AR_BOOL,\"reload_after_time_added\":$RELOAD_BOOL,\"expiring_remaining\":${RV_REMAIN:-0},\"expiring_deadline_secs\":${RV_DEADLINE_SECS:-0},${CONN_JSON}${AVAIL_JSON}${FREE_JSON}}"
 else
-    $BB echo "{\"logged_in\":false,\"mac\":\"$CLIENT_MAC\",\"ip\":\"$CLIENT_IP\",\"reload_after_time_added\":$RELOAD_BOOL,${CONN_JSON}${AVAIL_JSON}}"
+    $BB echo "{\"logged_in\":false,\"mac\":\"$CLIENT_MAC\",\"ip\":\"$CLIENT_IP\",\"reload_after_time_added\":$RELOAD_BOOL,${CONN_JSON}${AVAIL_JSON}${FREE_JSON}}"
 fi
 _unlock

@@ -1,0 +1,10 @@
+# Optional display names and descriptions for the portal sound library.
+# Read by sounds_manifest.sh when it writes sounds.txt.
+#
+# Format (one sound per line):
+#   <slot>/<file name without extension>=Display name|Optional description
+#
+# A sound with no line here is shown under its file name ("my_cool_chime" -> "My cool chime").
+# Avoid double quotes and backslashes — the router strips them.
+coin_sound/default_coin=Default coin sound|The chime the portal ships with
+insert_bg_music/default_insert_music=Default insert-coin music|The loop the portal ships with

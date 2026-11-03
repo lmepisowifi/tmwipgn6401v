@@ -417,6 +417,70 @@
         </div>
     </div>
 
+    <!-- ═══ Free WiFi ═══ -->
+    <div class="card mb-3">
+        <div class="card-header d-flex align-items-center justify-content-between gap-2">
+            <span>Free WiFi</span>
+            <div class="d-flex align-items-center gap-2">
+                <span style="font-size:12px;color:var(--text-secondary);" id="fw-toggle-label">Free WiFi: Off</span>
+                <div class="wlan-toggle" id="fw-toggle" onclick="toggleFreeWifi()" title="Toggle the one-tap Free WiFi button on the captive portal">
+                    <div class="wlan-toggle-knob"></div>
+                </div>
+            </div>
+        </div>
+        <div class="card-body">
+            <div class="field-hint mb-3">Shows a <b>Free WiFi</b> button on the captive portal. A device that taps it gets a short free session with no coins or voucher, then has to wait out the cooldown before it can claim again. Limits are per device (MAC); a phone that rotates its MAC and clears its cookies can claim again, same as everything else here.</div>
+            <div class="row g-3">
+                <div class="col-sm-6">
+                    <label class="form-label" for="fw-minutes">Free Session Length <span class="field-hint d-inline">(minutes)</span></label>
+                    <input type="number" class="form-control" id="fw-minutes" placeholder="10" min="1" max="1440">
+                    <div class="field-hint">How much internet one tap gives (1&ndash;1440).</div>
+                </div>
+                <div class="col-sm-6">
+                    <label class="form-label" for="fw-cooldown">Wait Before Claiming Again</label>
+                    <select class="form-select" id="fw-cooldown">
+                        <option value="0">Once per device (never again)</option>
+                        <option value="60">1 hour</option>
+                        <option value="180">3 hours</option>
+                        <option value="360">6 hours</option>
+                        <option value="720">12 hours</option>
+                        <option value="1440">24 hours</option>
+                        <option value="4320">3 days</option>
+                        <option value="10080">7 days</option>
+                    </select>
+                    <div class="field-hint">Counted from the moment of the claim. Can't be shorter than the session itself.</div>
+                </div>
+            </div>
+            <hr class="my-3" style="border-color:var(--border-color);">
+            <!-- Require internet -->
+            <div class="d-flex align-items-start justify-content-between gap-3">
+                <div style="min-width:0;">
+                    <div style="font-weight:500;">Require Internet</div>
+                    <div class="field-hint">Refuse a claim while the router has no WAN access, so a customer doesn't use up their free session (and start their wait) during an outage. Turn off only if the status above stays Offline even though browsing works.</div>
+                </div>
+                <div class="d-flex align-items-center gap-2 flex-shrink-0">
+                    <span id="fwi-badge" class="at-badge on">On</span>
+                    <div id="fwi-toggle" class="wlan-toggle on" onclick="toggleFreeWifiInternet()" title="Require internet to claim Free WiFi">
+                        <div class="wlan-toggle-knob"></div>
+                    </div>
+                </div>
+            </div>
+            <hr class="my-3" style="border-color:var(--border-color);">
+            <div class="d-flex align-items-start justify-content-between gap-3">
+                <div style="min-width:0;">
+                    <div style="font-weight:500;">Claims Recorded</div>
+                    <div class="field-hint"><span id="fw-claims">0</span> device(s) are currently waiting out their cooldown (or used their one claim). Resetting lets every device claim again; sessions already running aren't affected.</div>
+                </div>
+                <button class="btn btn-outline-danger flex-shrink-0" onclick="resetFreeWifiClaims()">Reset Claims</button>
+            </div>
+            <hr class="my-3" style="border-color:var(--border-color);">
+            <div class="d-flex gap-2 flex-wrap">
+                <button class="btn btn-primary" onclick="saveFreeWifi()">Save Free WiFi Settings</button>
+                <button class="btn btn-outline-secondary" onclick="loadConfig()">Discard</button>
+            </div>
+        </div>
+    </div>
+
 </div><!-- /container -->
 
 <script src="/js/bootstrap.bundle.min.js?v=1.0.0"></script>
@@ -523,6 +587,7 @@ function loadConfig(){
             document.getElementById('v-cooldown').value          = d.voucher_cooldown||'';
             setVoucherStrikeUI(d.voucher_strike_enabled===true||d.voucher_strike_enabled==='1'||d.voucher_strike_enabled===1);
             setInetStatusUI(d.internet_up===true||d.internet_up==='1'||d.internet_up===1);
+            setFreeWifiUI(d);
         })
         .catch(function(){toastr.error('Network error loading config');});
 }
@@ -891,6 +956,81 @@ function toggleVoucherInternet(){
 }
 
 /* ── Shared fetch helper ── */
+/* ── Free WiFi ── */
+function setFreeWifiToggleUI(on){
+    var tog=document.getElementById('fw-toggle'); var lbl=document.getElementById('fw-toggle-label');
+    if(on){ tog.classList.add('on'); lbl.textContent='Free WiFi: On'; }
+    else  { tog.classList.remove('on'); lbl.textContent='Free WiFi: Off'; }
+}
+function setFreeWifiInternetUI(on){
+    var tog=document.getElementById('fwi-toggle'); var badge=document.getElementById('fwi-badge');
+    if(on){ tog.classList.add('on'); badge.textContent='On'; badge.className='at-badge on'; }
+    else  { tog.classList.remove('on'); badge.textContent='Off'; badge.className='at-badge off'; }
+}
+function setFreeWifiCooldownUI(mins){
+    var sel=document.getElementById('fw-cooldown'); var v=String(mins==null||mins===''?'1440':mins);
+    var has=false; for(var i=0;i<sel.options.length;i++){ if(sel.options[i].value===v){ has=true; break; } }
+    if(!has){   // a value set outside the presets (older config / manual edit): keep it selectable
+        var o=document.createElement('option'); o.value=v; o.textContent=v+' minutes'; sel.appendChild(o);
+    }
+    sel.value=v;
+}
+function setFreeWifiUI(d){
+    setFreeWifiToggleUI(d.free_wifi_enabled===true||d.free_wifi_enabled==='1'||d.free_wifi_enabled===1);
+    document.getElementById('fw-minutes').value = d.free_wifi_minutes||'10';
+    setFreeWifiCooldownUI(d.free_wifi_cooldown);
+    setFreeWifiInternetUI(!(d.free_wifi_require_internet===false||d.free_wifi_require_internet==='0'||d.free_wifi_require_internet===0));
+    document.getElementById('fw-claims').textContent = d.free_wifi_claims||0;
+}
+function freeWifiErr(e){
+    var m={
+        bad_minutes:'Free session length must be between 1 and 1440 minutes.',
+        bad_cooldown:'Invalid wait time.',
+        cooldown_shorter_than_session:"The wait can't be shorter than the free session itself.",
+        bad_value:'Invalid value.'
+    };
+    return m[e]||('Failed: '+(e||'unknown'));
+}
+function toggleFreeWifi(){
+    var tog=document.getElementById('fw-toggle'); if(tog.classList.contains('busy')) return;
+    tog.classList.add('busy');
+    var newVal=tog.classList.contains('on')?0:1;
+    postForm('free_wifi_set','enabled='+newVal,function(d){
+        tog.classList.remove('busy');
+        if(d.ok){ setFreeWifiToggleUI(d.free_wifi_enabled); toastr.success('Free WiFi '+(d.free_wifi_enabled?'enabled':'disabled')); }
+        else toastr.error(freeWifiErr(d.error));
+    });
+}
+function toggleFreeWifiInternet(){
+    var tog=document.getElementById('fwi-toggle'); if(tog.classList.contains('busy')) return;
+    tog.classList.add('busy');
+    var newVal=tog.classList.contains('on')?0:1;
+    postForm('free_wifi_set','require_internet='+newVal,function(d){
+        tog.classList.remove('busy');
+        if(d.ok){ setFreeWifiInternetUI(d.free_wifi_require_internet); toastr.success('Free WiFi internet requirement '+(d.free_wifi_require_internet?'on':'off')); }
+        else toastr.error(freeWifiErr(d.error));
+    });
+}
+function saveFreeWifi(){
+    var mins=document.getElementById('fw-minutes').value.trim();
+    var cd=document.getElementById('fw-cooldown').value;
+    if(!/^[0-9]+$/.test(mins)||+mins<1||+mins>1440){ toastr.error(freeWifiErr('bad_minutes')); return; }
+    if(+cd!==0&&+cd<+mins){ toastr.error(freeWifiErr('cooldown_shorter_than_session')); return; }
+    showOverlay('Saving Free WiFi settings…');
+    postForm('free_wifi_set','minutes='+encodeURIComponent(mins)+'&cooldown='+encodeURIComponent(cd),function(d){
+        hideOverlay();
+        if(d.ok){ document.getElementById('fw-minutes').value=d.free_wifi_minutes; setFreeWifiCooldownUI(d.free_wifi_cooldown); toastr.success('Free WiFi settings saved'); }
+        else toastr.error(freeWifiErr(d.error));
+    });
+}
+function resetFreeWifiClaims(){
+    if(!confirm('Let every device claim Free WiFi again? Sessions already running are not affected.')) return;
+    postForm('free_wifi_reset','',function(d){
+        if(d.ok){ document.getElementById('fw-claims').textContent='0'; toastr.success('Cleared '+d.cleared+' claim'+(d.cleared===1?'':'s')); }
+        else toastr.error(freeWifiErr(d.error));
+    });
+}
+
 function postForm(action,body,cb){
     fetch('/cgi-bin/hotspot.cgi?action='+action,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:body})
     .then(function(r){return r.json();}).then(cb)

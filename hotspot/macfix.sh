@@ -78,6 +78,10 @@ MACFIX_MAP_FILE="/lmepisowifi/hotspot_data/device_fp.txt"
 # already repeats e.g. USERS_FILE's path across lmehspt.sh/coin_result.sh/
 # status.sh instead of centralizing it.
 MACFIX_BANK_FILE="/lmepisowifi/hotspot_data/coin_bank.txt"
+# Same idea for freewifi.sh's FREE_CLAIM_FILE: without migrating it, a phone
+# that re-randomizes its MAC would look like a brand-new device and could
+# claim Free WiFi again on every reconnect, defeating the cooldown.
+MACFIX_FREE_FILE="/lmepisowifi/hotspot_data/free_claims.txt"
 MACFIX_COOKIE_NAME="lme_fp"
 MACFIX_COOKIE_MAXAGE=2678400   # ~31 days — was 1 year, but MACFIX_MAP_MAX_AGE below prunes the
                                 # fp->MAC row after 30 days anyway, so a cookie that outlives it
@@ -325,11 +329,28 @@ _mf_reconcile_row() {
                 [ -n "$n_amt" ] || n_amt=0
                 printf '%s %d\n' "$new" "$(( o_amt + n_amt ))" >> "${file}.tmp"
                 ;;
+            free)
+                # "MAC LAST_CLAIM_EPOCH CLAIM_COUNT" - on collision keep the
+                # MOST RECENT claim time (the stricter cooldown wins, so
+                # merging two MACs can never shorten anyone's wait) and
+                # sum the counts.
+                local o_ts n_ts o_cnt n_cnt
+                o_ts=$($BB echo "$old_row" | $BB awk '{print $2}')
+                n_ts=$($BB echo "$new_row" | $BB awk '{print $2}')
+                o_cnt=$($BB echo "$old_row" | $BB awk '{print $3}')
+                n_cnt=$($BB echo "$new_row" | $BB awk '{print $3}')
+                case "$o_ts" in ''|*[!0-9]*) o_ts=0 ;; esac
+                case "$n_ts" in ''|*[!0-9]*) n_ts=0 ;; esac
+                case "$o_cnt" in ''|*[!0-9]*) o_cnt=0 ;; esac
+                case "$n_cnt" in ''|*[!0-9]*) n_cnt=0 ;; esac
+                [ "$o_ts" -gt "$n_ts" ] && n_ts=$o_ts
+                printf '%s %d %d\n' "$new" "$n_ts" "$(( o_cnt + n_cnt ))" >> "${file}.tmp"
+                ;;
         esac
     fi
 
     $BB mv "${file}.tmp" "$file"
-    # $file is always SESSION_FILE/USERS_FILE/MACFIX_BANK_FILE - every one of
+    # $file is always SESSION_FILE/USERS_FILE/MACFIX_BANK_FILE/MACFIX_FREE_FILE - every one of
     # them MAC-linked, and every one of them already chmod 600'd by its own
     # writer elsewhere (login.sh/logout.sh/coin.sh/coin_result.sh). Without
     # re-applying it here too, a migration landing right after one of those
@@ -447,6 +468,7 @@ mf_reconcile() {
         fi
         _mf_reconcile_row "$USERS_FILE" "$PREV_MAC" "$CLIENT_MAC" users
         _mf_reconcile_row "$MACFIX_BANK_FILE" "$PREV_MAC" "$CLIENT_MAC" bank
+        _mf_reconcile_row "$MACFIX_FREE_FILE" "$PREV_MAC" "$CLIENT_MAC" free
         command -v rv_reconcile_mac >/dev/null 2>&1 && rv_reconcile_mac "$PREV_MAC" "$CLIENT_MAC"
         _mf_log_migration "applied" "$MF_FP_ID" "$PREV_MAC" "$CLIENT_MAC"
     fi
