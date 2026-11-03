@@ -25,6 +25,10 @@
         .wlan-toggle.busy{ opacity:.4;pointer-events:none; }
         .wlan-toggle-knob{ position:absolute;width:20px;height:20px;border-radius:50%;background:var(--lme-toggle-knob, #fff);top:4px;left:4px;transition:left .25s,background .25s;box-shadow:0 1px 4px rgba(0,0,0,.5); }
         .wlan-toggle.on .wlan-toggle-knob{ left:26px;background:var(--lme-toggle-knob-on, #555); }
+        /* ── Hotspot Service power strip: wraps instead of pushing the switch past the card edge on narrow screens ── */
+        .power-strip{ display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px 16px;background:var(--bg-surface);border:1px solid var(--border-color);border-radius:8px;padding:14px 18px;margin-bottom:20px;max-width:100%;box-sizing:border-box; }
+        .power-strip-text{ flex:1 1 200px;min-width:0; }
+        .power-strip-ctl{ display:flex;align-items:center;justify-content:flex-end;flex-wrap:wrap;gap:12px;margin-left:auto;max-width:100%; }
         /* ── Status ── */
         .status-badge{ display:inline-flex;align-items:center;gap:6px;padding:3px 10px;border-radius:5px;font-size:12px;font-weight:600; }
         .status-badge.running{ background:rgba(76,175,80,.18);color:var(--lme-ok, #81c784);border:1px solid rgba(76,175,80,.3); }
@@ -52,12 +56,12 @@
 <div class="container mt-4" style="max-width:820px;">
 
     <!-- Power strip -->
-    <div style="display:flex;align-items:center;justify-content:space-between;background:var(--bg-surface);border:1px solid var(--border-color);border-radius:8px;padding:14px 18px;margin-bottom:20px;gap:16px;">
-        <div>
+    <div class="power-strip">
+        <div class="power-strip-text">
             <div style="font-size:15px;font-weight:700;margin-bottom:2px;">Hotspot Service</div>
             <div style="font-size:12px;color:var(--text-secondary);" id="power-sub">Loading…</div>
         </div>
-        <div class="d-flex align-items-center gap-3">
+        <div class="power-strip-ctl">
             <span id="inet-status-badge" class="status-badge stopped" title="WAN connectivity"><span class="dot"></span><span id="inet-status-text">…</span></span>
             <span id="hsp-status-badge" class="status-badge stopped"><span class="dot"></span><span id="hsp-status-text">…</span></span>
             <div id="hotspot-power-toggle" class="wlan-toggle" onclick="toggleHotspot()" title="Enable / Disable hotspot">
