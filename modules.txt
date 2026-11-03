@@ -2,9 +2,9 @@
 # A module's version only advances when its files changed.
 id=hotspot
 name=Hotspot / Piso-Wifi
-version=1.5.74
-url=https://github.com/lmepisowifi/tmwipgn6401v/releases/download/v1.5.74/lmepisowifi-hotspot-1.5.74.tar.gz
-sha256=e0cf5f784934f1aa6494ec541a184162f545a2dd83fe28e6b4deaeb40d974d2e
+version=1.5.75
+url=https://github.com/lmepisowifi/tmwipgn6401v/releases/download/v1.5.75/lmepisowifi-hotspot-1.5.75.tar.gz
+sha256=f4423d448ec8fab93dfbe45db4b75d1f63106d6bacb31d5b79852a3a0c453eaa
 description=Captive portal, coin acceptor (NodeMCU), vouchers, WiFi rates, DHCP settings and QoS.
 
 id=tailscale
