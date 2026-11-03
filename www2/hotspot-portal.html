@@ -37,7 +37,7 @@
         .promo-thumb {
             width:64px; height:44px; object-fit:cover; border-radius:5px;
             border:1px solid var(--border-color); background:var(--bg-input);
-            flex-shrink:0; display:block;
+            flex-shrink:0; display:block; cursor:zoom-in;
         }
         .promo-thumb-empty {
             width:64px; height:44px; border-radius:5px;
@@ -59,12 +59,33 @@
         .portal-prev-title { font-size:13px; font-weight:700; color:#f4f4f5; line-height:1.2; }
         .portal-prev-carousel { border-top:1px solid #2e2e33; overflow:hidden; position:relative; display:none; }
         .portal-prev-carousel img { width:100%; display:block; max-height:90px; object-fit:cover; cursor:zoom-in; }
-        /* Click-to-view lightbox for the carousel preview */
-        .lme-lightbox { position:fixed; inset:0; z-index:2000; display:none; align-items:center; justify-content:center;
-            background:rgba(0,0,0,.88); padding:16px; cursor:zoom-out; }
-        .lme-lightbox.open { display:flex; }
-        .lme-lightbox img { max-width:100%; max-height:100%; object-fit:contain; border-radius:6px; box-shadow:0 8px 40px rgba(0,0,0,.6); }
-        .lme-lightbox-x { position:absolute; top:10px; right:14px; color:#fff; font-size:30px; line-height:1; opacity:.8; }
+        /* Click-to-view image modal — same look as the portal's own slide pop-up (hotspot/index.html) */
+        .img-modal-overlay {
+            display:flex; visibility:hidden; opacity:0; pointer-events:none;
+            transition:opacity .35s ease, visibility .35s ease, backdrop-filter .35s ease;
+            position:fixed; inset:0; background:rgba(0,0,0,.7);
+            backdrop-filter:blur(4px); -webkit-backdrop-filter:blur(4px);
+            z-index:2000; align-items:center; justify-content:center; padding:1.25rem;
+        }
+        .img-modal-overlay.open { visibility:visible; opacity:1; pointer-events:all; }
+        .img-modal-content {
+            position:relative; max-width:100%; max-height:100%;
+            display:flex; align-items:center; justify-content:center;
+            transform:scale(.95); transition:transform .3s cubic-bezier(.175,.885,.32,1.275);
+        }
+        .img-modal-overlay.open .img-modal-content { transform:scale(1); }
+        .img-modal-content img {
+            max-width:100%; max-height:90vh; border-radius:8px;
+            box-shadow:0 10px 25px rgba(0,0,0,.5); object-fit:contain;
+        }
+        .img-modal-close {
+            position:absolute; top:-12px; right:-12px;
+            background:var(--bg-surface); border:1px solid var(--border-color);
+            color:var(--text-primary); border-radius:50%; width:32px; height:32px;
+            font-size:20px; line-height:1; display:flex; align-items:center; justify-content:center;
+            cursor:pointer; box-shadow:0 2px 5px rgba(0,0,0,.3); z-index:2001;
+        }
+        .img-modal-close:hover { color:var(--accent-color); }
         .portal-prev-body { padding:14px; }
         .portal-prev-field { height:28px; background:#1d1d22; border:1px solid #2e2e33; border-radius:6px; margin-bottom:7px; }
         .portal-prev-btn { height:32px; background:#fff; border-radius:6px; width:100%; margin-bottom:7px; }
@@ -467,9 +488,11 @@
 <input type="file" class="audio-file-input" id="file-insert_bg_music" accept="audio/mpeg,audio/ogg,audio/wav,.mp3,.ogg,.wav" onchange="onAudioFileChosen('insert_bg_music')">
 
 <script src="/js/jquery-3.7.1.min.js?v=1.0.0"></script>
-<div id="lme-lightbox" class="lme-lightbox" role="dialog" aria-label="Carousel image" aria-hidden="true">
-    <span class="lme-lightbox-x" aria-hidden="true">&times;</span>
-    <img id="lme-lightbox-img" src="" alt="Carousel slide">
+<div class="img-modal-overlay" id="img-modal-overlay" aria-hidden="true">
+    <div class="img-modal-content">
+        <button type="button" class="img-modal-close" id="img-modal-close" aria-label="Close">&times;</button>
+        <img id="img-modal-src" src="" alt="Full size preview">
+    </div>
 </div>
 <script src="/js/bootstrap.bundle.min.js?v=1.0.0"></script>
 <script src="/js/toastr.min.js?v=1.0.0"></script>
@@ -1623,20 +1646,32 @@ loadConfig();
         if (loaded && dirty()) { e.preventDefault(); e.returnValue = ''; }
     });
 
-/* ── Click the carousel preview to view it full size ── */
+/* ── Click a carousel slide (list thumbnail or live preview) to open it in the portal-style image modal ── */
 (function () {
-    var box = document.getElementById('lme-lightbox');
-    var big = document.getElementById('lme-lightbox-img');
-    var prev = document.getElementById('prev-carousel-img');
-    function close() { box.classList.remove('open'); box.setAttribute('aria-hidden', 'true'); big.removeAttribute('src'); }
-    prev.addEventListener('click', function () {
-        var src = prev.getAttribute('src');
+    var box = document.getElementById('img-modal-overlay');
+    var big = document.getElementById('img-modal-src');
+    function openImg(src) {
         if (!src) return;
-        big.src = src;   // always the image currently shown in the preview
+        big.src = src;
         box.classList.add('open'); box.setAttribute('aria-hidden', 'false');
+    }
+    function closeImg() { box.classList.remove('open'); box.setAttribute('aria-hidden', 'true'); }
+    // Delegated, so thumbs rebuilt by buildPromoSlots() and the in-browser
+    // preview swapped in by onPromoFileChosen() (a data: URL) both work.
+    document.getElementById('promo-list').addEventListener('click', function (e) {
+        var t = e.target;
+        if (t && t.classList && t.classList.contains('promo-thumb')) openImg(t.getAttribute('src'));
     });
-    box.addEventListener('click', close);
-    document.addEventListener('keydown', function (e) { if (e.key === 'Escape' && box.classList.contains('open')) close(); });
+    document.getElementById('prev-carousel-img').addEventListener('click', function () {
+        openImg(this.getAttribute('src'));
+    });
+    box.addEventListener('click', function (e) {
+        if (e.target === box || e.target.className === 'img-modal-content') closeImg();
+    });
+    document.getElementById('img-modal-close').addEventListener('click', closeImg);
+    document.addEventListener('keydown', function (e) {
+        if (e.key === 'Escape' && box.classList.contains('open')) closeImg();
+    });
 })();
 
     refresh();
