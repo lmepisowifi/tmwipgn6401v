@@ -4,16 +4,16 @@
 
 id=default_insert_music
 slot=insert_bg_music
-name=Default insert-coin music
+name=Default insert-coin beep
 file=insert_bg_music/default_insert_music.mp3
 size=8826
 sha256=0d8e274cbbaa8d7b5536e95275282dfe9210850f070601fbeace3d3d814b633d
-description=The loop the portal ships with
+description=Default
 
 id=default_coin
 slot=coin_sound
-name=Default coin sound
+name=Default coin inserted sound
 file=coin_sound/default_coin.mp3
 size=18852
 sha256=0a5f9ea12bce7b5a55c95ae56203c0875aec912a730a9610f66e3d3c4ea84ae7
-description=The chime the portal ships with
+description=Default
