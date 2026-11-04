@@ -57,6 +57,8 @@ OTA_MANIFEST_URL=""
 OTA_CACERT="$ROOT/cacert.pem"  # operator-supplied bundle (optional override)
 OTA_INSECURE_TLS="0"           # ota.env: 1 = skip HTTPS certificate verification (NOT recommended)
 MOD_AUTO_UPDATE="1"            # default on; ota.env may set "0" to disable
+# Shipped defaults (defaults.ota.env), then device-local overrides (ota.env).
+[ -f "$ROOT/defaults.ota.env" ] && . "$ROOT/defaults.ota.env"
 [ -f "$ENV_FILE" ] && . "$ENV_FILE"
 # Same shipped-bundle fallback as ota.sh (see the comment there).
 [ -f "$OTA_CACERT" ] || OTA_CACERT="$ROOT/www2/sh/cacert.pem"
@@ -513,9 +515,18 @@ emit_status() { # emit_status <id> [regfile]
         "$(json_esc "$_iv")" "$(json_esc "$_av")" "$(json_esc "$_desc")"
 }
 
+# do_list [local] / do_status <id> [local]
+# Both normally download the module registry (modules.txt) so they can report
+# "available" and "description". With "local" that download is skipped:
+# "installed" and "version" come from on-device state, so the result is
+# instant even with no internet. The web UI's navbar and dashboard only need
+# "installed", so they pass local — otherwise every page load blocked behind
+# a wget that stalls for a minute or more when the device has no uplink.
 do_list() {
     mkdir -p "$DL"; _reg=""
-    fetch "$(modules_url)" "$DL/modules.txt" 2>/dev/null && _reg="$DL/modules.txt"
+    if [ "$1" != "local" ] && fetch "$(modules_url)" "$DL/modules.txt" 2>/dev/null; then
+        _reg="$DL/modules.txt"
+    fi
     printf '{"ok":true,"modules":['
     _sep=""
     for _id in $MODULES; do printf '%s' "$_sep"; emit_status "$_id" "$_reg"; _sep=","; done
@@ -524,7 +535,9 @@ do_list() {
 
 do_status() {
     mkdir -p "$DL"; _reg=""
-    fetch "$(modules_url)" "$DL/modules.txt" 2>/dev/null && _reg="$DL/modules.txt"
+    if [ "$2" != "local" ] && fetch "$(modules_url)" "$DL/modules.txt" 2>/dev/null; then
+        _reg="$DL/modules.txt"
+    fi
     printf '{"ok":true,"module":'; emit_status "$1" "$_reg"; printf '}\n'
 }
 
@@ -573,10 +586,10 @@ case "$1" in
     is-active)   [ "$(state_of "${2:-hotspot}")" = "installed" ] ;;
     install)     do_install   "$2" "$3" ;;
     uninstall)   do_uninstall "$2" ;;
-    list)        do_list ;;
-    status)      do_status "${2:-hotspot}" ;;
+    list)        do_list "$2" ;;
+    status)      do_status "${2:-hotspot}" "$3" ;;
     auto_update) do_auto_update ;;
     get_auto)    do_get_mod_auto ;;
     set_auto)    do_set_mod_auto "$2" ;;
-    *) echo "usage: $0 {reconcile|is-active|install|uninstall|list|status|auto_update|get_auto|set_auto} [id]" >&2; exit 2 ;;
+    *) echo "usage: $0 {reconcile|is-active|install|uninstall|list [local]|status [id] [local]|auto_update|get_auto|set_auto} [id]" >&2; exit 2 ;;
 esac

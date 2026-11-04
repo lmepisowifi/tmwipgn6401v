@@ -83,7 +83,10 @@ WGET="/bin/wget"
 # has not synced yet just delays alerts instead of dropping them.
 _TLS_CA="/lmepisowifi/cacert.pem"
 [ -f "$_TLS_CA" ] || _TLS_CA="/lmepisowifi/www2/sh/cacert.pem"
-if [ -f "$_TLS_CA" ] && ! $BB grep -qE '^OTA_INSECURE_TLS=.?1' /lmepisowifi/ota.env 2>/dev/null; then
+# Effective value = last assignment across defaults.ota.env then ota.env (the
+# device-local file wins), matching how ota.sh sources them.
+_TLS_INS=$($BB grep -h '^OTA_INSECURE_TLS=' /lmepisowifi/defaults.ota.env /lmepisowifi/ota.env 2>/dev/null | $BB tail -n 1)
+if [ -f "$_TLS_CA" ] && ! printf '%s\n' "$_TLS_INS" | $BB grep -qE '^OTA_INSECURE_TLS=.?1'; then
     TLS_OPT="--ca-certificate=$_TLS_CA"
 else
     TLS_OPT="--no-check-certificate"

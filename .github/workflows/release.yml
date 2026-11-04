@@ -77,7 +77,7 @@ jobs:
           tar -czf "$TAR" \
             --exclude='www2/tailscale.html' \
             --exclude='www2/cgi-bin/tailscale.cgi' \
-            startup.sh hotspot www2 lmehspt.sh ota.sh defaults.env module_ctl.sh sch iptables
+            startup.sh hotspot www2 lmehspt.sh ota.sh defaults.env defaults.ota.env module_ctl.sh sch iptables
           MD5=$(md5sum hotspot/firmware/coin_nodemcu.bin | awk '{print $1}')
 
           # --- Per-module versioning -------------------------------------------------
@@ -97,6 +97,51 @@ jobs:
           #   its www2 page + cgi. /config state is device-local (never shipped).
           HS_PATHS=(hotspot lmehspt.sh sch iptables 'www2/hotspot*.html' www2/cgi-bin/hotspot.cgi)
           TS_PATHS=(tailscale www2/tailscale.html www2/cgi-bin/tailscale.cgi)
+
+          # --- Default (module-less) bundle -------------------------------------------
+          # lmepisowifi-default.tar.gz = the base bundle MINUS every file owned by a
+          # module (HS_PATHS + TS_PATHS above, the same single source of truth the
+          # module tarballs and module_ctl.sh use), i.e. exactly what a device looks
+          # like after uninstalling every module. Built on EVERY release, under a
+          # version-less asset name so .../releases/latest/download/lmepisowifi-default.tar.gz
+          # always points at the newest one.
+          #
+          # It is for a device that has NO modded web interface yet, so unlike the
+          # base bundle (swapped in by an ota.sh that is already on the device) it must
+          # be self-sufficient when simply extracted into an empty /lmepisowifi:
+          #   - entries sit at the archive root (no wrapper dir, no leading ./)
+          #   - ota.sh / module_ctl.sh / startup.sh come with it
+          #   - defaults.ota.env supplies the OTA repo + manifest URL, since a fresh
+          #     device has no ota.env (without it `ota.sh check` has nothing to fetch)
+          #   - VERSION is written, so the device doesn't report 0.0.0
+          # No module state is shipped: module_ctl.sh reconcile marks a module with no
+          # files and no saved state "uninstalled", and shipping a state file would make
+          # re-extracting this over a working install uninstall its modules.
+          # NOT meant for `ota.sh apply` (its payload sanity check wants lmehspt.sh +
+          # hotspot/ and rejects this bundle on purpose); modules are then installed
+          # from System > Modules, and normal OTA updates keep working from there.
+          DEFTAR="dist/lmepisowifi-default.tar.gz"
+          DEF_ENTRIES="startup.sh www2 ota.sh defaults.env defaults.ota.env module_ctl.sh VERSION"
+          DEFSTAGE=$(mktemp -d)
+          cp -a startup.sh www2 ota.sh defaults.env defaults.ota.env module_ctl.sh "$DEFSTAGE"/
+          # unquoted on purpose: expands www2/hotspot*.html inside the staging dir
+          ( cd "$DEFSTAGE" && rm -rf ${HS_PATHS[@]} ${TS_PATHS[@]} )
+          printf '%s\n' "$VER" > "$DEFSTAGE/VERSION"
+          tar -C "$DEFSTAGE" --owner=0 --group=0 -czf "$DEFTAR" $DEF_ENTRIES
+          rm -rf "$DEFSTAGE"
+          # Fail the release BEFORE anything is published if the bundle is wrong.
+          # (List into a variable first: `tar -t | grep -q` under pipefail can
+          # SIGPIPE tar and flip the test.)
+          DEF_LIST=$(tar -tzf "$DEFTAR")
+          if grep -qE '^(lmehspt\.sh|hotspot|sch|iptables|tailscale)(/|$)|^www2/(hotspot|tailscale)|^www2/cgi-bin/(hotspot|tailscale)\.cgi' <<<"$DEF_LIST"; then
+            echo "ERROR: default bundle still contains module files:" >&2
+            grep -E '^(lmehspt\.sh|hotspot|sch|iptables|tailscale)(/|$)|^www2/(hotspot|tailscale)|^www2/cgi-bin/(hotspot|tailscale)\.cgi' <<<"$DEF_LIST" >&2
+            exit 1
+          fi
+          for need in startup.sh ota.sh module_ctl.sh defaults.env defaults.ota.env VERSION \
+                      www2/index.html www2/login.html www2/modules.html www2/cgi-bin/modules.cgi www2/sh/startup.sh; do
+            grep -qxF "$need" <<<"$DEF_LIST" || { echo "ERROR: default bundle is missing $need" >&2; exit 1; }
+          done
 
           # reg_field <file> <id> <field>  — read a field from a modules.txt block
           reg_field() {
@@ -153,7 +198,12 @@ jobs:
           # this ever 404s or fails.
           MIRROR_URL="https://cdn.jsdelivr.net/gh/$REPO@main/$TAR"
 
-          ASSETS=("$TAR")
+          ASSETS=("$TAR" "$DEFTAR")
+          DEF_URL="https://github.com/$REPO/releases/download/v$VER/lmepisowifi-default.tar.gz"
+          # jsDelivr mirror (fixed name, overwritten each release; the purge step
+          # below refreshes it). Callers verify default_sha256 and fall back to
+          # default_url on a mismatch, i.e. if the CDN still holds the old file.
+          DEF_MIRROR_URL="https://cdn.jsdelivr.net/gh/$REPO@main/$DEFTAR"
           if [ "$HS_CHANGED" = 1 ]; then
             HS_VER="$VER"
             MODTAR="dist/lmepisowifi-hotspot-$VER.tar.gz"
@@ -172,7 +222,7 @@ jobs:
           # --- Step 1: publish the release + tarball(s) FIRST ---
           # manifest.txt is not committed yet, so no device can see an sha256
           # that references a tarball that is not uploaded yet.
-          NOTES=$(printf 'Release %s\n\nModules:\n- hotspot %s%s\n- tailscale %s%s\n' \
+          NOTES=$(printf 'Release %s\n\nModules:\n- hotspot %s%s\n- tailscale %s%s\n\nlmepisowifi-default.tar.gz: fresh-install bundle with no modules installed.\n' \
             "$VER" \
             "$HS_VER" "$([ "$HS_CHANGED" = 1 ] || echo ' (unchanged)')" \
             "$TS_VER" "$([ "$TS_CHANGED" = 1 ] || echo ' (unchanged)')")
@@ -198,6 +248,7 @@ jobs:
             echo "$served"
           }
           SHA=$(verify_served "base" "$ASSET_URL" "$TAR")
+          DEF_SHA=$(verify_served "default" "$DEF_URL" "$DEFTAR")
           [ "$HS_CHANGED" = 1 ] && HS_SHA=$(verify_served "hotspot module" "$HS_URL" "$MODTAR")
           [ "$TS_CHANGED" = 1 ] && TS_SHA=$(verify_served "tailscale module" "$TS_URL" "$MODTAR_TS")
 
@@ -210,6 +261,9 @@ jobs:
             echo "notes=Release $VER"
             echo "nodemcu_version=$FW"
             echo "nodemcu_md5=$MD5"
+            echo "default_url=$DEF_URL"
+            echo "default_url_mirror=$DEF_MIRROR_URL"
+            echo "default_sha256=$DEF_SHA"
           } > manifest.txt
           {
             echo "# modules.txt — installable www2 modules (written by release CI)"
@@ -233,7 +287,7 @@ jobs:
           # sounds.txt (portal sound library manifest) is regenerated from sounds/ so its
           # sha256 values can never be stale on main; unchanged -> nothing to commit.
           sh sounds_manifest.sh
-          git add -f manifest.txt modules.txt sounds.txt hotspot/firmware/coin_nodemcu.bin "$TAR"
+          git add -f manifest.txt modules.txt sounds.txt hotspot/firmware/coin_nodemcu.bin "$TAR" "$DEFTAR"
           git commit -m "release $VER (nodemcu fw $FW; hotspot $HS_VER, tailscale $TS_VER)" || echo "nothing to commit"
           git push origin HEAD:main
 
@@ -252,3 +306,5 @@ jobs:
           curl -sL "https://purge.jsdelivr.net/gh/${REPO}@main/sounds.txt"
           echo -e "\nPurging dist/ bundle mirror..."
           curl -sL "https://purge.jsdelivr.net/gh/${REPO}@main/dist/lmepisowifi-${VER}.tar.gz"
+          echo -e "\nPurging dist/ default bundle mirror..."
+          curl -sL "https://purge.jsdelivr.net/gh/${REPO}@main/dist/lmepisowifi-default.tar.gz"

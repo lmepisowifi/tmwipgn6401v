@@ -62,15 +62,22 @@ post_id() {
 
 [ -x "$MC" ] || err_json "module_ctl_missing"
 
+# ?local=1 on list/status skips the registry download (module_ctl.sh "local"
+# mode): the answer comes from on-device state only, so it returns instantly
+# even with no internet. The navbar and dashboard only need "installed" and
+# use this; the Modules page omits it to also get "available"/"description".
+LOC=""
+echo "$QS" | $BB grep -qE '(^|&)local=1(&|$)' && LOC="local"
+
 case "$ACT" in
     list)
-        OUT=$("$MC" list 2>/dev/null)
+        OUT=$("$MC" list $LOC 2>/dev/null)
         [ -n "$OUT" ] && ok_json "$OUT" || err_json "list_failed"
         ;;
     status)
         ID=$(echo "$QS" | $BB grep -o 'id=[^&]*' | $BB sed 's/id=//' | $BB tr -cd 'a-z0-9_-')
         [ -z "$ID" ] && ID=hotspot
-        OUT=$("$MC" status "$ID" 2>/dev/null)
+        OUT=$("$MC" status "$ID" $LOC 2>/dev/null)
         [ -n "$OUT" ] && ok_json "$OUT" || err_json "status_failed"
         ;;
     install)

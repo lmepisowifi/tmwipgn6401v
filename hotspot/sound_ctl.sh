@@ -52,6 +52,8 @@ OTA_BRANCH="main"
 OTA_MANIFEST_URL=""
 OTA_CACERT="$ROOT/cacert.pem"   # operator-supplied bundle (optional override)
 OTA_INSECURE_TLS="0"            # ota.env: 1 = skip HTTPS certificate verification (NOT recommended)
+# Shipped defaults (defaults.ota.env), then device-local overrides (ota.env).
+[ -f "$ROOT/defaults.ota.env" ] && . "$ROOT/defaults.ota.env"
 [ -f "$ENV_FILE" ] && . "$ENV_FILE"
 # Same shipped-bundle fallback as ota.sh / module_ctl.sh.
 [ -f "$OTA_CACERT" ] || OTA_CACERT="$ROOT/www2/sh/cacert.pem"

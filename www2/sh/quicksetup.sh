@@ -226,7 +226,7 @@ preflight() {
                   LAN_DHCP_LEASE LAN_DHCP_DNS_OPT DHCPS_DNS1 DHCPS_DNS2; do need_key "$_k"; done
     fi
     if [ "$MODE" != "extender" ]; then
-        for _k in PON_MODE WAN_PHY_PORT PON_MODE_AUTO_CHECK_ENABLE; do need_key "$_k"; done
+        for _k in PON_MODE WAN_PHY_PORT AUTO_PON_MODE; do need_key "$_k"; done
     fi
     for _b in 24 5; do
         band_vars "$_b"
@@ -263,7 +263,7 @@ backup_cfg() {
 # Works out the PON-mode / RJ45-port MIB values exactly the way lme.cgi's
 # system_settings does, writes the ones that differ, and sets AUTO_REBOOT.
 apply_upstream() {
-    CUR_AUTO=$(mget PON_MODE_AUTO_CHECK_ENABLE); [ -z "$CUR_AUTO" ] && CUR_AUTO=1
+    CUR_AUTO=$(mget AUTO_PON_MODE); [ -z "$CUR_AUTO" ] && CUR_AUTO=1
     CUR_PMODE=$(mget PON_MODE);                  [ -z "$CUR_PMODE" ] && CUR_PMODE=1
     CUR_PORT=$(mget WAN_PHY_PORT);               [ -z "$CUR_PORT" ] && CUR_PORT=5
     UP_TYPE=$(jg up_type)
@@ -279,7 +279,7 @@ apply_upstream() {
         fi
     fi
     UP_CHANGED=0
-    if [ "$NEW_AUTO" != "$CUR_AUTO" ]; then mset_or_fail PON_MODE_AUTO_CHECK_ENABLE "$NEW_AUTO"; UP_CHANGED=1; fi
+    if [ "$NEW_AUTO" != "$CUR_AUTO" ]; then mset_or_fail AUTO_PON_MODE "$NEW_AUTO"; UP_CHANGED=1; fi
     if [ "$NEW_PMODE" != "$CUR_PMODE" ]; then mset_or_fail PON_MODE "$NEW_PMODE"; UP_CHANGED=1; fi
     if [ "$NEW_PORT" != "$CUR_PORT" ]; then mset_or_fail WAN_PHY_PORT "$NEW_PORT"; UP_CHANGED=1; fi
     # the LAN port that became the WAN uplink can't also be bound to a bridge WAN

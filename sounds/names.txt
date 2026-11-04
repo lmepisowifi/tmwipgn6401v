@@ -6,5 +6,5 @@
 #
 # A sound with no line here is shown under its file name ("my_cool_chime" -> "My cool chime").
 # Avoid double quotes and backslashes — the router strips them.
-coin_sound/default_coin=Default coin sound|The chime the portal ships with
-insert_bg_music/default_insert_music=Default insert-coin music|The loop the portal ships with
+coin_sound/default_coin=Default coin inserted sound|Default
+insert_bg_music/default_insert_music=Default insert-coin beep|Default

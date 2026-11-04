@@ -571,7 +571,9 @@
         Promise.all([
             fetch('/cgi-bin/lme.cgi?action=get_layout', {cache:'no-store'})
                 .then(function(r){ return r.json(); }).catch(function(){ return null; }),
-            fetch('/cgi-bin/modules.cgi?action=status&id=hotspot', {cache:'no-store'})
+            // local=1: only "installed" is used, so skip the registry download
+            // (it stalls the whole dashboard when the device has no internet).
+            fetch('/cgi-bin/modules.cgi?action=status&id=hotspot&local=1', {cache:'no-store'})
                 .then(function(r){ return r.json(); }).catch(function(){ return null; })
         ]).then(function(res){
             var d = res[0]; var mod = res[1];

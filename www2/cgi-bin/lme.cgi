@@ -517,7 +517,7 @@ if [ "$REQUEST_METHOD" = "GET" ]; then
             | busybox grep "=" \
             | busybox cut -d'=' -f2 \
             | busybox tr -d '\r\n' | busybox sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
-        PON_AUTO=$(mib get PON_MODE_AUTO_CHECK_ENABLE 2>/dev/null \
+        PON_AUTO=$(mib get AUTO_PON_MODE 2>/dev/null \
             | busybox grep "=" \
             | busybox cut -d'=' -f2 \
             | busybox tr -d '\r\n' | busybox sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
@@ -738,7 +738,7 @@ if [ "$REQUEST_METHOD" = "GET" ]; then
             | busybox grep "=" \
             | busybox cut -d'=' -f2 \
             | busybox tr -d '\r\n' | busybox sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
-        G_PON_AUTO=$(mib get PON_MODE_AUTO_CHECK_ENABLE 2>/dev/null \
+        G_PON_AUTO=$(mib get AUTO_PON_MODE 2>/dev/null \
             | busybox grep "=" \
             | busybox cut -d'=' -f2 \
             | busybox tr -d '\r\n' | busybox sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
@@ -785,7 +785,7 @@ if [ "$REQUEST_METHOD" = "GET" ]; then
         OMCI_RUNNING=false
         busybox pidof omci_app >/dev/null 2>&1 && OMCI_RUNNING=true
         G_PON_MODE=$(_omci_mib PON_MODE)
-        G_PON_AUTO=$(_omci_mib PON_MODE_AUTO_CHECK_ENABLE)
+        G_PON_AUTO=$(_omci_mib AUTO_PON_MODE)
         [ -z "$G_PON_MODE" ] && G_PON_MODE=1
         [ -z "$G_PON_AUTO" ] && G_PON_AUTO=1
 
@@ -897,7 +897,7 @@ EOF_OMCI_FIELDS
         ESC_OC_DBG=$(printf '%s' "$OC_DBG" | _omci_jstr)
 
         G_PON_MODE=$(_omci_mib PON_MODE)
-        G_PON_AUTO=$(_omci_mib PON_MODE_AUTO_CHECK_ENABLE)
+        G_PON_AUTO=$(_omci_mib AUTO_PON_MODE)
         [ -z "$G_PON_MODE" ] && G_PON_MODE=1
         [ -z "$G_PON_AUTO" ] && G_PON_AUTO=1
 
@@ -924,7 +924,7 @@ EOF_OMCI_FIELDS
             | busybox grep "=" \
             | busybox cut -d'=' -f2 \
             | busybox tr -d '\r\n' | busybox sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
-        E_PON_AUTO=$(mib get PON_MODE_AUTO_CHECK_ENABLE 2>/dev/null \
+        E_PON_AUTO=$(mib get AUTO_PON_MODE 2>/dev/null \
             | busybox grep "=" \
             | busybox cut -d'=' -f2 \
             | busybox tr -d '\r\n' | busybox sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
@@ -1475,7 +1475,7 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
         esac
 
         # Read current PON settings BEFORE applying so we can detect changes
-        CUR_PON_AUTO=$(mib get PON_MODE_AUTO_CHECK_ENABLE 2>/dev/null \
+        CUR_PON_AUTO=$(mib get AUTO_PON_MODE 2>/dev/null \
             | busybox grep "=" | busybox cut -d'=' -f2 \
             | busybox tr -d '\r\n' | busybox sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
         CUR_PON_MODE=$(mib get PON_MODE 2>/dev/null \
@@ -1506,7 +1506,7 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
 
         [ -n "$FORM_HW_SERIAL" ] && mib set HW_SERIAL_NO "$FORM_HW_SERIAL"
         mib set ELAN_MAC_ADDR "$FORM_MAC"
-        mib set PON_MODE_AUTO_CHECK_ENABLE "$FORM_PON_AUTO"
+        mib set AUTO_PON_MODE "$FORM_PON_AUTO"
         if [ "$FORM_PON_AUTO" = "0" ]; then
             mib set PON_MODE "$FORM_PON_MODE"
         elif [ "$CUR_PON_MODE" = "0" ]; then

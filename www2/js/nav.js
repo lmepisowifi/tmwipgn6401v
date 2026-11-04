@@ -234,18 +234,32 @@ setInterval(function () {
         document.head.appendChild(s);
     }
 
-    // Fetch system_status (for GPON/EPON visibility) and hotspot status (for Hotspot sub-items)
-    // in parallel — render nav only after both resolve so items are correct first paint.
+    // Every request below is answered from the device itself and normally
+    // returns in milliseconds, but the nav waits for all of them — so bound
+    // each one. A hung or slow endpoint then falls back to the same safe
+    // default as any other error instead of holding the whole navbar back.
+    var NAV_FETCH_TIMEOUT_MS = 5000;
+    function navFetchJson(url, fallback) {
+        var ctl = (typeof AbortController !== 'undefined') ? new AbortController() : null;
+        var timer = setTimeout(function () { if (ctl) ctl.abort(); }, NAV_FETCH_TIMEOUT_MS);
+        var opts = { cache: 'no-store' };
+        if (ctl) opts.signal = ctl.signal;
+        return fetch(url, opts)
+            .then(function (r) { return r.json(); })
+            .catch(function () { return fallback; })
+            .then(function (v) { clearTimeout(timer); return v; });
+    }
+
+    // Fetch system_status (for GPON/EPON visibility), hotspot status (for Hotspot sub-items)
+    // and the module list in parallel — render nav only after all resolve so items are
+    // correct first paint.
+    // modules.cgi gets local=1: the nav only needs each module's "installed" flag,
+    // and without it the call downloads the module registry from the internet first,
+    // which stalls for a minute or more when the device has no uplink.
     Promise.all([
-        fetch('/cgi-bin/lme.cgi?action=system_status', { cache: 'no-store' })
-            .then(function(r) { return r.json(); })
-            .catch(function() { return {}; }),
-        fetch('/cgi-bin/hotspot.cgi?action=config_get', { cache: 'no-store' })
-            .then(function(r) { return r.json(); })
-            .catch(function() { return {}; }),
-        fetch('/cgi-bin/modules.cgi?action=list', { cache: 'no-store' })
-            .then(function(r) { return r.json(); })
-            .catch(function() { return null; })
+        navFetchJson('/cgi-bin/lme.cgi?action=system_status', {}),
+        navFetchJson('/cgi-bin/hotspot.cgi?action=config_get', {}),
+        navFetchJson('/cgi-bin/modules.cgi?action=list&local=1', null)
     ]).then(function(results) {
         var sys = results[0]; var hsp = results[1]; var mod = results[2];
         var isGpon = (String(sys.pon_mode) === '1');
