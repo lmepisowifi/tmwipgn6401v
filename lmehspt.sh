@@ -238,6 +238,8 @@ FREE_WIFI_ENABLED="0"
 FREE_WIFI_MINUTES="10"
 FREE_WIFI_COOLDOWN="1440"
 FREE_WIFI_REQUIRE_INTERNET="1"
+FREE_WIFI_EXPIRY_MODE="none"
+FREE_WIFI_EXPIRY_MINUTES="60"
 # Flag file: present = internet reachable as of the last check, absent = not
 # reachable. Written by the watchdog loop's internet-check tick; read by
 # coin.sh and login.sh. A plain existence check keeps those per-request reads
@@ -2382,6 +2384,8 @@ write_coin_config() {
         printf 'FREE_WIFI_MINUTES="%s"\n'   "${FREE_WIFI_MINUTES:-10}"
         printf 'FREE_WIFI_COOLDOWN="%s"\n'  "${FREE_WIFI_COOLDOWN:-1440}"
         printf 'FREE_WIFI_REQUIRE_INTERNET="%s"\n' "${FREE_WIFI_REQUIRE_INTERNET:-1}"
+        printf 'FREE_WIFI_EXPIRY_MODE="%s"\n'    "${FREE_WIFI_EXPIRY_MODE:-none}"
+        printf 'FREE_WIFI_EXPIRY_MINUTES="%s"\n' "${FREE_WIFI_EXPIRY_MINUTES:-60}"
         printf 'INTERNET_UP_FILE="%s"\n'    "${INTERNET_UP_FILE:-/tmp/internet_up}"
         printf 'HOTSPOT_BR="%s"\n'          "$HOTSPOT_BR"
         printf 'SESSION_FILE="%s"\n'        "$SESSION_FILE"

@@ -1925,6 +1925,14 @@ function updateFreeUI(d) {
   if (wait === 0) {
     btn.textContent   = 'Free WiFi (' + fmtFreeLen(mins) + ')';
     btn.style.display = 'block';
+    // Admin set an expiry on free time (status.sh free_valid, minutes): say
+    // so up front, since leftover time is forfeited if it isn't resumed in time.
+    var valid = parseInt(d.free_valid, 10) || 0;
+    if (valid > 0) {
+      hint.textContent   = 'Free time must be used within ' + fmtFreeLen(valid) +
+                           ' of claiming \u2014 anything left after that expires.';
+      hint.style.display = 'block';
+    }
     return true;
   }
   if (wait < 0) {

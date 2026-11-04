@@ -106,7 +106,8 @@ if [ "${FREE_WIFI_ENABLED:-0}" = "1" ] && command -v fw_wait >/dev/null 2>&1; th
     fw_wait "$CLIENT_MAC"
     _FMIN=$(_fw_num "${FREE_WIFI_MINUTES:-10}" 10)
     [ "$_FMIN" -ge 1 ] || _FMIN=10
-    FREE_JSON=",\"free_minutes\":$_FMIN,\"free_wait\":${FW_WAIT:-0}"
+    _FVALID=$(fw_validity_mins)
+    FREE_JSON=",\"free_minutes\":$_FMIN,\"free_wait\":${FW_WAIT:-0},\"free_valid\":${_FVALID:-0}"
 fi
 
 # -- CONNECTION DETECTION (Run for everyone regardless of session) --

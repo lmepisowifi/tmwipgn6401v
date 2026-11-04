@@ -351,6 +351,12 @@ elif [ "$FREE" = "1" ]; then
         exit 0
     fi
     DURATION=$(( _FMIN * 60 ))
+    # Optional expiry on the free time (FREE_WIFI_EXPIRY_MODE, see
+    # freewifi.sh). Remembered here and applied once the session below is
+    # actually written - same ordering coin_result.sh uses for rv_grant.
+    _FREE_GRANTED=1
+    _FREE_SECS=$DURATION
+    _FVAL=$(fw_validity_mins)
 else
     # Master switch: voucher input entirely disabled by the admin. Checked
     # before anything else in this branch (strikes, internet gate, code
@@ -533,6 +539,15 @@ fi
 # balance) — drop the auto-pause marker so a later manual pause doesn't
 # inherit a stale "system paused this" flag from before.
 [ -f "$AUTO_PAUSED_FILE" ] && { $BB grep -vx "$CLIENT_MAC" "$AUTO_PAUSED_FILE" > /tmp/login_ap.tmp 2>/dev/null; $BB mv /tmp/login_ap.tmp "$AUTO_PAUSED_FILE"; }
+
+# Free WiFi with an expiry set: merge this claim's time into the customer's
+# rate-validity bucket (ratevalidity.sh) so it forfeits if left paused past
+# the deadline, and stacks onto any still-valid bucket (the new window is
+# added on top of the existing deadline) exactly like a rate with a "Valid:"
+# does. Nothing to do for "no expiry" - the claim then behaves as before.
+if [ "${_FREE_GRANTED:-0}" = "1" ] && [ "${_FVAL:-0}" -gt 0 ] && command -v rv_grant >/dev/null 2>&1; then
+    rv_grant "$CLIENT_MAC" "$_FREE_SECS" "$(( _FVAL * 60 ))" "$NOW"
+fi
 
 if [ "$NEED_FW_RULES" = "true" ]; then
     iptables -t nat -I HOTSPOT 1 -m mac --mac-source "$CLIENT_MAC" -j RETURN 2>/dev/null

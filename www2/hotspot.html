@@ -455,6 +455,26 @@
                     <div class="field-hint">Counted from the moment of the claim. Can't be shorter than the session itself.</div>
                 </div>
             </div>
+            <div class="row g-3 mt-0">
+                <div class="col-sm-6">
+                    <label class="form-label" for="fw-expiry-mode">Free Time Expiry</label>
+                    <select class="form-select" id="fw-expiry-mode" onchange="updateFreeWifiExpiryUI()">
+                        <option value="none">Never expires</option>
+                        <option value="custom">Set time</option>
+                        <option value="claim">Same as claimed time</option>
+                    </select>
+                    <div class="field-hint" id="fw-expiry-hint"></div>
+                </div>
+                <div class="col-sm-6" id="fw-expiry-custom-wrap" style="display:none;">
+                    <label class="form-label">Expires After <span class="field-hint d-inline">(counted from the claim)</span></label>
+                    <div class="d-flex align-items-center gap-2">
+                        <input type="number" class="form-control" id="fw-exp-d" placeholder="0" min="0" style="max-width:90px;"><span>d</span>
+                        <input type="number" class="form-control" id="fw-exp-h" placeholder="0" min="0" max="23" style="max-width:90px;"><span>h</span>
+                        <input type="number" class="form-control" id="fw-exp-m" placeholder="0" min="0" max="59" style="max-width:90px;"><span>m</span>
+                    </div>
+                    <div class="field-hint">Same idea as a WiFi Rate's <b>Valid</b> field. Up to 365 days.</div>
+                </div>
+            </div>
             <hr class="my-3" style="border-color:var(--border-color);">
             <!-- Require internet -->
             <div class="d-flex align-items-start justify-content-between gap-3">
@@ -979,10 +999,35 @@ function setFreeWifiCooldownUI(mins){
     }
     sel.value=v;
 }
+function setFreeWifiExpiryUI(mode,mins){
+    var m=(mode==='custom'||mode==='claim')?mode:'none';
+    document.getElementById('fw-expiry-mode').value=m;
+    var t=parseInt(mins,10)||60;
+    document.getElementById('fw-exp-d').value=Math.floor(t/1440)||'';
+    document.getElementById('fw-exp-h').value=Math.floor((t%1440)/60)||'';
+    document.getElementById('fw-exp-m').value=(t%60)||'';
+    updateFreeWifiExpiryUI();
+}
+function updateFreeWifiExpiryUI(){
+    var m=document.getElementById('fw-expiry-mode').value;
+    document.getElementById('fw-expiry-custom-wrap').style.display=(m==='custom')?'':'none';
+    var hints={
+        none:'Free time never expires \u2014 a paused free session can be resumed any time.',
+        custom:'Unused free time is forfeited if the device is paused and does not resume within the time set here after claiming. A repeat claim stacks the new window onto an unexpired one, like a rate\u2019s Valid field.',
+        claim:'Unused free time expires after the same length as the free session itself (e.g. a 10 minute session must be used within 10 minutes of claiming).'
+    };
+    document.getElementById('fw-expiry-hint').textContent=hints[m]||'';
+}
+function getFreeWifiExpiryMins(){
+    return (parseInt(document.getElementById('fw-exp-d').value,10)||0)*1440
+         + (parseInt(document.getElementById('fw-exp-h').value,10)||0)*60
+         + (parseInt(document.getElementById('fw-exp-m').value,10)||0);
+}
 function setFreeWifiUI(d){
     setFreeWifiToggleUI(d.free_wifi_enabled===true||d.free_wifi_enabled==='1'||d.free_wifi_enabled===1);
     document.getElementById('fw-minutes').value = d.free_wifi_minutes||'10';
     setFreeWifiCooldownUI(d.free_wifi_cooldown);
+    setFreeWifiExpiryUI(d.free_wifi_expiry_mode,d.free_wifi_expiry_minutes);
     setFreeWifiInternetUI(!(d.free_wifi_require_internet===false||d.free_wifi_require_internet==='0'||d.free_wifi_require_internet===0));
     document.getElementById('fw-claims').textContent = d.free_wifi_claims||0;
 }
@@ -991,6 +1036,8 @@ function freeWifiErr(e){
         bad_minutes:'Free session length must be between 1 and 1440 minutes.',
         bad_cooldown:'Invalid wait time.',
         cooldown_shorter_than_session:"The wait can't be shorter than the free session itself.",
+        bad_expiry_mode:'Invalid expiry option.',
+        bad_expiry_minutes:'Set an expiry between 1 minute and 365 days.',
         bad_value:'Invalid value.'
     };
     return m[e]||('Failed: '+(e||'unknown'));
@@ -1020,10 +1067,17 @@ function saveFreeWifi(){
     var cd=document.getElementById('fw-cooldown').value;
     if(!/^[0-9]+$/.test(mins)||+mins<1||+mins>1440){ toastr.error(freeWifiErr('bad_minutes')); return; }
     if(+cd!==0&&+cd<+mins){ toastr.error(freeWifiErr('cooldown_shorter_than_session')); return; }
+    var xm=document.getElementById('fw-expiry-mode').value;
+    var body='minutes='+encodeURIComponent(mins)+'&cooldown='+encodeURIComponent(cd)+'&expiry_mode='+encodeURIComponent(xm);
+    if(xm==='custom'){
+        var xmin=getFreeWifiExpiryMins();
+        if(xmin<1||xmin>525600){ toastr.error(freeWifiErr('bad_expiry_minutes')); return; }
+        body+='&expiry_minutes='+xmin;
+    }
     showOverlay('Saving Free WiFi settings…');
-    postForm('free_wifi_set','minutes='+encodeURIComponent(mins)+'&cooldown='+encodeURIComponent(cd),function(d){
+    postForm('free_wifi_set',body,function(d){
         hideOverlay();
-        if(d.ok){ document.getElementById('fw-minutes').value=d.free_wifi_minutes; setFreeWifiCooldownUI(d.free_wifi_cooldown); toastr.success('Free WiFi settings saved'); }
+        if(d.ok){ document.getElementById('fw-minutes').value=d.free_wifi_minutes; setFreeWifiCooldownUI(d.free_wifi_cooldown); setFreeWifiExpiryUI(d.free_wifi_expiry_mode,d.free_wifi_expiry_minutes); toastr.success('Free WiFi settings saved'); }
         else toastr.error(freeWifiErr(d.error));
     });
 }

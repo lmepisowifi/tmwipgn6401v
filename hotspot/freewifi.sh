@@ -28,6 +28,12 @@
 # That is also why a claim is refused until the clock looks synced (see
 # fw_clock_ok) — a claim stamped with a 1970 clock would be meaningless.
 #
+# Expiry (optional): the free time can carry a validity window using the very
+# same bucket as a WiFi Rate's ":validity" (ratevalidity.sh, rv_grant) - so it
+# forfeits if the device pauses and doesn't resume in time, and stacks onto an
+# existing unexpired bucket exactly the way rate validity does. fw_validity_mins
+# resolves FREE_WIFI_EXPIRY_MODE (none | custom | claim) to minutes.
+#
 # Requires the sourcing script to already define: BB. fw_record must be
 # called INSIDE the caller's _lock (same as every other hotspot_data write).
 
@@ -49,6 +55,27 @@ _fw_num() {
 _fw_now() { _fw_num "$(date +%s 2>/dev/null)" 0; }
 
 fw_clock_ok() { [ "$(_fw_now)" -ge "$FW_MIN_EPOCH" ]; }
+
+# fw_validity_mins  ->  prints the validity window, in minutes, that a free
+# claim's time carries (0 = no expiry). Modes:
+#   custom - FREE_WIFI_EXPIRY_MINUTES
+#   claim  - the same length as the claimed session (FREE_WIFI_MINUTES)
+#   other  - none (anything unrecognised fails safe to the old behavior)
+fw_validity_mins() {
+    local fmin vmin
+    case "${FREE_WIFI_EXPIRY_MODE:-none}" in
+        claim)
+            fmin=$(_fw_num "${FREE_WIFI_MINUTES:-10}" 10)
+            [ "$fmin" -ge 1 ] || fmin=10
+            echo "$fmin"
+            ;;
+        custom)
+            vmin=$(_fw_num "${FREE_WIFI_EXPIRY_MINUTES:-60}" 60)
+            echo "$vmin"
+            ;;
+        *) echo 0 ;;
+    esac
+}
 
 # fw_wait <mac>  ->  sets FW_WAIT:
 #    0  = this device may claim now

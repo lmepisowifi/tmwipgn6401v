@@ -746,6 +746,10 @@ if echo "$QS" | $BB grep -q "action=config_get"; then
     FWC="${FREE_WIFI_COOLDOWN:-$(read_lmehspt_var FREE_WIFI_COOLDOWN)}"
     FWR="${FREE_WIFI_REQUIRE_INTERNET:-$(read_lmehspt_var FREE_WIFI_REQUIRE_INTERNET)}"
     FWR_BOOL="true"; [ "${FWR:-1}" = "0" ] && FWR_BOOL="false"
+    FWX="${FREE_WIFI_EXPIRY_MODE:-$(read_lmehspt_var FREE_WIFI_EXPIRY_MODE)}"
+    case "$FWX" in none|custom|claim) ;; *) FWX="none" ;; esac
+    FWXM="${FREE_WIFI_EXPIRY_MINUTES:-$(read_lmehspt_var FREE_WIFI_EXPIRY_MINUTES)}"
+    case "$FWXM" in ""|*[!0-9]*) FWXM=60 ;; esac
     FW_CLAIMS=0
     [ -f "$FREE_CLAIM_FILE" ] && FW_CLAIMS=$($BB grep -c '.' "$FREE_CLAIM_FILE" 2>/dev/null)
     case "$FW_CLAIMS" in ''|*[!0-9]*) FW_CLAIMS=0 ;; esac
@@ -801,6 +805,8 @@ if echo "$QS" | $BB grep -q "action=config_get"; then
 \"free_wifi_minutes\":\"$(esc_json "${FWM:-10}")\",
 \"free_wifi_cooldown\":\"$(esc_json "${FWC:-1440}")\",
 \"free_wifi_require_internet\":$FWR_BOOL,
+\"free_wifi_expiry_mode\":\"$FWX\",
+\"free_wifi_expiry_minutes\":\"$FWXM\",
 \"free_wifi_claims\":$FW_CLAIMS,
 \"internet_up\":$INET_UP,
 \"hotspot_running\":$HSP_RUNNING}"
@@ -2404,6 +2410,7 @@ fi
 # ================================================================
 # POST ?action=free_wifi_set
 #   body: any subset of  enabled=1|0  minutes=N  cooldown=N  require_internet=1|0
+#                        expiry_mode=none|custom|claim  expiry_minutes=N
 # Free WiFi (one-tap free session — see hotspot/freewifi.sh, login.sh's
 # free=1 branch, status.sh's free_minutes/free_wait). Same three-way
 # persistence as every other simple setting here (coin_config.env for the
@@ -2411,22 +2418,37 @@ fi
 # Rules: minutes 1..1440; cooldown is 0 ("once per device") or minutes..
 # 525600, and never shorter than the session itself — otherwise a device
 # could pause a free session and claim a second one on top of it.
+# Expiry: expiry_mode none (never), custom (expiry_minutes, 1..525600) or
+# claim (same length as the free session) - applied per claim through the
+# rate-validity bucket, see freewifi.sh's fw_validity_mins / login.sh.
 # ================================================================
 if echo "$QS" | $BB grep -q "action=free_wifi_set"; then
     read -n "${CONTENT_LENGTH:-0}" POST_DATA
     _fwf() { printf '&%s' "$POST_DATA" | $BB sed -n "s/.*&$1=\([^&]*\).*/\1/p"; }
     _FW_EN=$(_fwf enabled);  _FW_MIN=$(_fwf minutes)
     _FW_CD=$(_fwf cooldown); _FW_RI=$(_fwf require_internet)
+    _FW_XM=$(_fwf expiry_mode); _FW_XMIN=$(_fwf expiry_minutes)
 
     case "$_FW_EN" in ""|0|1) ;; *) err_json "bad_value" ;; esac
     case "$_FW_RI" in ""|0|1) ;; *) err_json "bad_value" ;; esac
     case "$_FW_MIN" in *[!0-9]*) err_json "bad_minutes" ;; esac
     case "$_FW_CD"  in *[!0-9]*) err_json "bad_cooldown" ;; esac
+    case "$_FW_XM"  in ""|none|custom|claim) ;; *) err_json "bad_expiry_mode" ;; esac
+    case "$_FW_XMIN" in *[!0-9]*) err_json "bad_expiry_minutes" ;; esac
 
     _FW_CUR_MIN="${FREE_WIFI_MINUTES:-$(read_lmehspt_var FREE_WIFI_MINUTES)}"
     _FW_CUR_CD="${FREE_WIFI_COOLDOWN:-$(read_lmehspt_var FREE_WIFI_COOLDOWN)}"
     case "$_FW_CUR_MIN" in ""|*[!0-9]*) _FW_CUR_MIN=10 ;; esac
     case "$_FW_CUR_CD"  in ""|*[!0-9]*) _FW_CUR_CD=1440 ;; esac
+    _FW_CUR_XM="${FREE_WIFI_EXPIRY_MODE:-$(read_lmehspt_var FREE_WIFI_EXPIRY_MODE)}"
+    _FW_CUR_XMIN="${FREE_WIFI_EXPIRY_MINUTES:-$(read_lmehspt_var FREE_WIFI_EXPIRY_MINUTES)}"
+    case "$_FW_CUR_XM" in none|custom|claim) ;; *) _FW_CUR_XM=none ;; esac
+    case "$_FW_CUR_XMIN" in ""|*[!0-9]*) _FW_CUR_XMIN=60 ;; esac
+    _FW_NEW_XM="${_FW_XM:-$_FW_CUR_XM}"
+    _FW_NEW_XMIN="${_FW_XMIN:-$_FW_CUR_XMIN}"
+    _FW_NEW_XMIN=$(printf '%s' "$_FW_NEW_XMIN" | $BB sed 's/^0*\([0-9]\)/\1/')
+    [ -n "$_FW_NEW_XMIN" ] || _FW_NEW_XMIN=0
+    [ "${#_FW_NEW_XMIN}" -le 7 ] || err_json "bad_expiry_minutes"
     _FW_NEW_MIN="${_FW_MIN:-$_FW_CUR_MIN}"
     _FW_NEW_CD="${_FW_CD:-$_FW_CUR_CD}"
     # Strip leading zeros so "007" can never be read as octal by shell
@@ -2443,6 +2465,11 @@ if echo "$QS" | $BB grep -q "action=free_wifi_set"; then
     [ "$_FW_NEW_CD" -le 525600 ] || err_json "bad_cooldown"
     if [ "$_FW_NEW_CD" -ne 0 ] && [ "$_FW_NEW_CD" -lt "$_FW_NEW_MIN" ]; then
         err_json "cooldown_shorter_than_session"
+    fi
+    # Custom expiry needs a real length (0 would silently mean "no expiry").
+    [ "$_FW_NEW_XMIN" -le 525600 ] || err_json "bad_expiry_minutes"
+    if [ "$_FW_NEW_XM" = "custom" ] && [ "$_FW_NEW_XMIN" -lt 1 ]; then
+        err_json "bad_expiry_minutes"
     fi
 
     if [ -n "$_FW_MIN" ]; then
@@ -2465,12 +2492,22 @@ if echo "$QS" | $BB grep -q "action=free_wifi_set"; then
         set_lmehspt_var   "FREE_WIFI_REQUIRE_INTERNET" "$_FW_RI"
         set_globals_var   "FREE_WIFI_REQUIRE_INTERNET" "$_FW_RI"
     fi
+    if [ -n "$_FW_XM" ]; then
+        save_coin_env_var "FREE_WIFI_EXPIRY_MODE" "$_FW_NEW_XM"
+        set_lmehspt_var   "FREE_WIFI_EXPIRY_MODE" "$_FW_NEW_XM"
+        set_globals_var   "FREE_WIFI_EXPIRY_MODE" "$_FW_NEW_XM"
+    fi
+    if [ -n "$_FW_XMIN" ]; then
+        save_coin_env_var "FREE_WIFI_EXPIRY_MINUTES" "$_FW_NEW_XMIN"
+        set_lmehspt_var   "FREE_WIFI_EXPIRY_MINUTES" "$_FW_NEW_XMIN"
+        set_globals_var   "FREE_WIFI_EXPIRY_MINUTES" "$_FW_NEW_XMIN"
+    fi
 
     _FW_NOW_EN="${_FW_EN:-${FREE_WIFI_ENABLED:-$(read_lmehspt_var FREE_WIFI_ENABLED)}}"
     _FW_NOW_RI="${_FW_RI:-${FREE_WIFI_REQUIRE_INTERNET:-$(read_lmehspt_var FREE_WIFI_REQUIRE_INTERNET)}}"
     _FW_EN_B="false"; [ "${_FW_NOW_EN:-0}" = "1" ] && _FW_EN_B="true"
     _FW_RI_B="true";  [ "${_FW_NOW_RI:-1}" = "0" ] && _FW_RI_B="false"
-    ok_json "{\"ok\":true,\"free_wifi_enabled\":$_FW_EN_B,\"free_wifi_minutes\":\"$_FW_NEW_MIN\",\"free_wifi_cooldown\":\"$_FW_NEW_CD\",\"free_wifi_require_internet\":$_FW_RI_B}"
+    ok_json "{\"ok\":true,\"free_wifi_enabled\":$_FW_EN_B,\"free_wifi_minutes\":\"$_FW_NEW_MIN\",\"free_wifi_cooldown\":\"$_FW_NEW_CD\",\"free_wifi_require_internet\":$_FW_RI_B,\"free_wifi_expiry_mode\":\"$_FW_NEW_XM\",\"free_wifi_expiry_minutes\":\"$_FW_NEW_XMIN\"}"
 fi
 
 # ================================================================
