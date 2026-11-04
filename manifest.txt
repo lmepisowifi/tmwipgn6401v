@@ -1,10 +1,10 @@
-version=1.5.78
-url=https://github.com/lmepisowifi/tmwipgn6401v/releases/download/v1.5.78/lmepisowifi-1.5.78.tar.gz
-url_mirror=https://cdn.jsdelivr.net/gh/lmepisowifi/tmwipgn6401v@main/dist/lmepisowifi-1.5.78.tar.gz
-sha256=a91c841bf9251c5e2ad1351d513624a3e64f6ec8f0b295e387166626a0ae849a
-notes=Release 1.5.78
+version=1.5.79
+url=https://github.com/lmepisowifi/tmwipgn6401v/releases/download/v1.5.79/lmepisowifi-1.5.79.tar.gz
+url_mirror=https://cdn.jsdelivr.net/gh/lmepisowifi/tmwipgn6401v@main/dist/lmepisowifi-1.5.79.tar.gz
+sha256=aa3c7ffe2799f609a312701b1071568c17506f43fe2a650ed84dda07b9e36056
+notes=Release 1.5.79
 nodemcu_version=1.3.4
 nodemcu_md5=29f132d3be09f5bfbcdd12b9d227f8ee
-default_url=https://github.com/lmepisowifi/tmwipgn6401v/releases/download/v1.5.78/lmepisowifi-default.tar.gz
+default_url=https://github.com/lmepisowifi/tmwipgn6401v/releases/download/v1.5.79/lmepisowifi-default.tar.gz
 default_url_mirror=https://cdn.jsdelivr.net/gh/lmepisowifi/tmwipgn6401v@main/dist/lmepisowifi-default.tar.gz
-default_sha256=e87518ad5409d06663389b1283884f7021539b3b0c70e22dccabcd4a19730c1e
+default_sha256=6400e5104367e4130d60f9c42dad4b252c14df2f0ab4b731ede39291f38c19e9
