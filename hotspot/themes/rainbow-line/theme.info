@@ -1,0 +1,13 @@
+# ---------------------------------------------------------------------------
+# lmepisowifi — https://github.com/lmepisowifi/tmwipgn6401v
+# SPDX-License-Identifier: AGPL-3.0-or-later
+# Copyright (C) 2026 The lmepisowifi Project — see AUTHORS
+# ---------------------------------------------------------------------------
+# Written from scratch for this project. It contains no code, images, fonts
+# or logos from any other captive-portal system, and is not affiliated with
+# or endorsed by any of them.
+name=Rainbow Line
+description=A plain centred page: banner on top, big Connected / Disconnected status, small blue device line, grey countdown, flat green / red / blue buttons and a colour-stripe divider. Light and dark.
+author=lmepisowifi
+license=AGPL-3.0-or-later
+swatch=#28a745,#dc3545,#007bff,#ffffff

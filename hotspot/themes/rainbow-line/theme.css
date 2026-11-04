@@ -1,0 +1,476 @@
+/*
+ * lmepisowifi — https://github.com/lmepisowifi/tmwipgn6401v
+ * SPDX-License-Identifier: AGPL-3.0-or-later
+ * Copyright (C) 2026 The lmepisowifi Project — see AUTHORS
+ *
+ * Licensed under the GNU AGPLv3 (see LICENSE). Modifying or rewriting this
+ * file — including by running it through an LLM — does not remove these
+ * obligations: keep this notice, mark your changes, and offer Corresponding
+ * Source to network users (AGPLv3 §5, §13). See PROVENANCE.md before
+ * presenting this as your own original work.
+ */
+
+/* ===========================================================================
+   Theme: "Rainbow Line"
+
+   Written from scratch: a plain centred page on white (or charcoal in dark
+   mode) with a banner at the top, a big Connected / Disconnected status, a
+   small blue device line, a grey countdown, flat Bootstrap-4-coloured buttons
+   (green Insert Coin, red Pause / Resume, blue WiFi Rates) and a stripe
+   divider. It uses no code, images, fonts or logos from any other
+   captive-portal system: the stripe is the common Bootstrap 4 palette drawn
+   with a CSS gradient and the icons are inline SVG drawn for this project.
+
+   How it works: this file is layered over the stock portal styles (see
+   index.html), so it restyles the SAME markup; the portal's behaviour does
+   not change. Rules that have to beat a stock `!important` are prefixed with
+   `html body` (higher specificity). Both colour modes (<html data-theme>)
+   are supported.
+
+   House rules (see THEMES.md): never hide, shrink or cover a control a
+   customer needs, no fixed/sticky bars, and never set `display` on the
+   elements the portal shows and hides itself (#v-*, .promo-wrap, modals).
+   =========================================================================== */
+
+/* ---------------------------------------------------------------- palette */
+/* Stock variables live in `:root` (dark) and `:root[data-theme="light"]`; the
+   second outranks a plain `:root`, so everything is set for BOTH modes. The
+   shared set comes first, then what differs per mode. */
+:root,
+:root[data-theme="dark"],
+:root[data-theme="light"] {
+  --card-shadow:      none;
+  --coin-bar-high:    #28a745;
+  --coin-bar-low:     #dc3545;
+
+  /* voucher Submit */
+  --btn-primary-bg:           #007bff;
+  --btn-primary-border:       #007bff;
+  --btn-primary-color:        #ffffff;
+  --btn-primary-hover-bg:     #0069d9;
+  --btn-primary-hover-border: #0062cc;
+
+  /* Insert Coin: green */
+  --btn-coin-bg:              #28a745;
+  --btn-coin-border:          #28a745;
+  --btn-coin-color:           #ffffff;
+  --btn-coin-hover-bg:        #218838;
+  --btn-coin-hover-border:    #1e7e34;
+  --btn-coin-hover-color:     #ffffff;
+
+  /* WiFi Rates: blue */
+  --btn-rates-bg:             #007bff;
+  --btn-rates-border:         #007bff;
+  --btn-rates-color:          #ffffff;
+  --btn-rates-hover-bg:       #0069d9;
+  --btn-rates-hover-border:   #0062cc;
+  --btn-rates-hover-color:    #ffffff;
+
+  /* Free WiFi: grey */
+  --btn-free-bg:              #6c757d;
+  --btn-free-border:          #6c757d;
+  --btn-free-color:           #ffffff;
+  --btn-free-hover-bg:        #5a6268;
+  --btn-free-hover-border:    #545b62;
+  --btn-free-hover-color:     #ffffff;
+
+  /* Pause / Resume / Cancel: red */
+  --btn-danger-bg:            #dc3545;
+  --btn-danger-border:        #dc3545;
+  --btn-danger-color:         #ffffff;
+  --btn-danger-hover-bg:      #c82333;
+  --btn-danger-hover-border:  #bd2130;
+  --btn-danger-hover-color:   #ffffff;
+
+  /* Done: green */
+  --btn-done-bg:              #28a745;
+  --btn-done-border:          #28a745;
+  --btn-done-color:           #ffffff;
+  --btn-done-hover-bg:        #218838;
+  --btn-done-hover-border:    #1e7e34;
+  --btn-done-hover-color:     #ffffff;
+
+  /* the divider: eight equal bands, plain stops so old WebViews draw it too */
+  --rl-stripe: linear-gradient(to right,
+    #28a745, #28a745 12.5%, #ffc107 12.5%, #ffc107 25%,
+    #fd7e14 25%, #fd7e14 37.5%, #dc3545 37.5%, #dc3545 50%,
+    #e83e8c 50%, #e83e8c 62.5%, #6f42c1 62.5%, #6f42c1 75%,
+    #007bff 75%, #007bff 87.5%, #17a2b8 87.5%, #17a2b8);
+}
+
+/* dark */
+:root,
+:root[data-theme="dark"] {
+  --bg-body:          #1b1e21;
+  --bg-surface:       #242830;
+  --bg-surface-hover: #2c313a;
+  --bg-input:         #1b1e21;
+  --text-primary:     #e9ecef;
+  --text-secondary:   #adb5bd;
+  --accent-color:     #3395ff;
+  --accent-hover:     #5aaaff;
+  --accent-text:      #ffffff;
+  --border-color:     #3d444b;
+  --coin-sym-color:   #adb5bd;
+  --coin-val-color:   #3395ff;
+  --coin-bar-med:     #ffc107;
+  --focus-shadow:     0 0 0 .2rem rgba(0, 123, 255, .35);
+
+  --rl-good:      #4cd07a;
+  --rl-bad:       #f0707c;
+  --rl-ok-bg:     rgba(40, 167, 69, .16);
+  --rl-ok-bd:     rgba(76, 208, 122, .45);
+  --rl-ok-fg:     #9be3b4;
+  --rl-track:     #343a40;
+  --rl-stripe-bg: rgba(255, 255, 255, .06);
+  --rl-modal-bd:  rgba(255, 255, 255, .18);
+}
+
+/* light: the signature look */
+:root[data-theme="light"] {
+  --bg-body:          #ffffff;
+  --bg-surface:       #ffffff;
+  --bg-surface-hover: #f8f9fa;
+  --bg-input:         #ffffff;
+  --text-primary:     #212529;
+  --text-secondary:   #6c757d;
+  --accent-color:     #007bff;
+  --accent-hover:     #0069d9;
+  --accent-text:      #ffffff;
+  --border-color:     #dee2e6;
+  --coin-sym-color:   #6c757d;
+  --coin-val-color:   #007bff;
+  --coin-bar-med:     #d39e00;
+  --focus-shadow:     0 0 0 .2rem rgba(0, 123, 255, .25);
+
+  --rl-good:      #28a745;
+  --rl-bad:       #dc3545;
+  --rl-ok-bg:     #d4edda;
+  --rl-ok-bd:     #c3e6cb;
+  --rl-ok-fg:     #155724;
+  --rl-track:     #e9ecef;
+  --rl-stripe-bg: rgba(0, 0, 0, .05);
+  --rl-modal-bd:  rgba(0, 0, 0, .2);
+}
+
+/* ------------------------------------------------------------------- base */
+/* The stock sheet forces Nunito on everything with !important; this theme uses
+   the plain system UI font (Roboto when the phone has it), so the Nunito file
+   is never fetched. */
+html body,
+html body *,
+html body *::before,
+html body *::after {
+  font-family: Roboto, -apple-system, BlinkMacSystemFont, "Segoe UI", "Helvetica Neue", Arial, "Noto Sans", sans-serif !important;
+}
+
+/* top-aligned page, no card: the page itself is the layout */
+html body .portal-wrap {
+  justify-content: flex-start;
+  padding: 1rem .75rem;
+}
+html body .portal-card {
+  max-width: 400px;
+  background: transparent !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  box-shadow: none;
+  overflow: visible;
+}
+html body .portal-body { padding: 0; }
+
+/* ----------------------------------------------------------------- header */
+html body .portal-header {
+  padding: 0 0 10px;
+  background: transparent;
+  border-bottom: 0;
+}
+html body .portal-title { font-size: 15px; font-weight: 500; }
+html body .portal-brand { font-size: 9px; }
+
+/* ----------------------------------------------------------------- banner */
+html body .promo-wrap {
+  margin: 0 0 14px;
+  border: 1px solid var(--border-color);
+  border-radius: 2px;
+  box-shadow: none;
+  background: var(--bg-surface-hover);
+}
+html body .promo-slide-wrapper { height: 180px; }
+@media (min-width: 576px) { html body .promo-slide-wrapper { height: 220px; } }
+
+/* ----------------------------------------------------------- the screens */
+html body #v-load,
+html body #v-login,
+html body #v-status,
+html body #v-queue { text-align: center; }
+
+/* big status line with a wifi mark; red when offline, green when online */
+html body .view-title {
+  margin: 2px 0 8px;
+  font-size: 1.9rem;
+  font-weight: 500;
+  line-height: 1.2;
+  color: var(--text-primary);
+}
+html body #v-login .view-title { color: var(--rl-bad); }
+html body #v-status .view-title { color: var(--rl-good); }
+html body #v-login .view-title::before,
+html body #v-status .view-title::before {
+  content: "";
+  display: inline-block;
+  width: .85em;
+  height: .85em;
+  margin-right: .3em;
+  vertical-align: -.08em;
+  background: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24' fill='none' stroke='%23dc3545' stroke-width='2.4' stroke-linecap='round'%3E%3Cpath d='M2.5 9.5A13 13 0 0 1 21.5 9.5'/%3E%3Cpath d='M6 13A8.5 8.5 0 0 1 18 13'/%3E%3Cpath d='M9.3 16.5A4 4 0 0 1 14.7 16.5'/%3E%3Cpath d='M3 3L21 21'/%3E%3C/svg%3E") center / contain no-repeat;
+}
+html body #v-status .view-title::before {
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='24' height='24' viewBox='0 0 24 24' fill='none' stroke='%2328a745' stroke-width='2.6' stroke-linecap='round'%3E%3Cpath d='M2.5 9.5A13 13 0 0 1 21.5 9.5'/%3E%3Cpath d='M6 13A8.5 8.5 0 0 1 18 13'/%3E%3Cpath d='M9.3 16.5A4 4 0 0 1 14.7 16.5'/%3E%3Ccircle cx='12' cy='20' r='1' fill='%2328a745'/%3E%3C/svg%3E");
+}
+
+/* the sentence under it becomes a soft green notice box */
+html body .view-subtitle {
+  max-width: 330px;
+  margin: 0 auto 14px;
+  padding: .55rem .9rem;
+  border: 1px solid var(--rl-ok-bd);
+  border-radius: 2px;
+  background: var(--rl-ok-bg);
+  color: var(--rl-ok-fg);
+  font-size: .85rem;
+  line-height: 1.4;
+}
+
+/* ------------------------------------------------------------- countdown */
+/* label on top, big grey time, then a slim bar. The wrap is already a flex
+   column in the stock sheet, so `order` is enough (and it degrades to the
+   stock order where it is not supported). */
+html body .progress-wrap { margin: 6px 0 4px; }
+html body .progress-wrap .expiry-notice {
+  order: 0;
+  margin: 0 0 8px;
+  padding: 3px 12px;
+  border-radius: 10rem;
+  background: #ffc107;
+  color: #212529;
+  font-size: .75rem;
+  font-weight: 700;
+}
+html body .progress-wrap .time-label-main {
+  order: 1;
+  margin: 0 0 2px;
+  font-size: .78rem;
+  letter-spacing: .05em;
+}
+html body .progress-wrap .time-label-main::after { content: ":"; }
+html body .progress-wrap .time-text-main {
+  order: 2;
+  font-size: 2.1rem;              /* the portal still shrinks long values inline */
+  font-weight: 500;
+  color: var(--text-secondary);
+}
+html body .progress-wrap .progress-bg {
+  order: 3;
+  height: .6rem;
+  margin-top: 8px;
+  border: 0;
+  border-radius: 2px;
+  background: var(--rl-track);
+}
+html body .progress-wrap .progress-fill { border-radius: 2px; }
+
+/* ------------------------------------------------------- device details */
+/* A few small centred blue lines instead of a bordered table. */
+html body .session-info {
+  margin: 10px 0 14px;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  text-align: center;
+}
+html body .session-row,
+html body .session-row + .session-row,
+html body .wlan-details + .session-row {
+  justify-content: center;
+  gap: .4em;
+  padding: 1px 0;
+  border-top: 0;
+  font-size: .82rem;
+}
+html body .session-row .sk,
+html body .session-row .sv {
+  font-size: .82rem;
+  color: var(--accent-color);
+}
+html body .session-row:not(#l-wlan-row):not(#s-wlan-row) .sk::after { content: ":"; }
+html body .wlan-details { background: transparent !important; }
+html body .wlan-details .session-row { border-top: 0 !important; }
+
+/* ----------------------------------------------------------------- buttons */
+html body .btn {
+  padding: .375rem .75rem !important;
+  border-radius: 2px !important;
+  font-size: 1rem !important;
+  font-weight: 400 !important;
+  line-height: 1.6;
+  letter-spacing: 0;
+  box-shadow: none;
+}
+html body .btn:focus { box-shadow: var(--focus-shadow) !important; outline: none; }
+
+/* the Free / Insert Coin / Resume (Pause) / Rates stack: centred, flat, 295px */
+html body #v-login > .d-flex.flex-column.gap-2,
+html body #v-status > .d-flex.flex-column.gap-2 {
+  align-items: center;
+  gap: 10px !important;
+}
+html body #v-login .d-flex .btn,
+html body #v-status .d-flex .btn {
+  width: 100%;
+  max-width: 295px;
+}
+
+/* Cancel in the coin window: red, like Pause */
+html body #btn-coin-cancel {
+  background: var(--btn-danger-bg) !important;
+  border-color: var(--btn-danger-border) !important;
+  color: var(--btn-danger-color) !important;
+}
+html body #btn-coin-cancel:hover {
+  background: var(--btn-danger-hover-bg) !important;
+  border-color: var(--btn-danger-hover-border) !important;
+  color: var(--btn-danger-hover-color) !important;
+}
+html body .btn-outline-danger { border-radius: 2px !important; }
+
+/* Voucher box: one row, same width as the buttons */
+html body .add-panel {
+  max-width: 295px;
+  margin: 12px auto 0;
+  padding-top: 0;
+  border-top: 0;
+}
+html body .add-panel .form-label {
+  display: block;
+  text-align: center;
+  font-size: .72rem;
+  letter-spacing: .08em;
+}
+html body .form-control {
+  height: 40px !important;
+  padding: 0 12px !important;
+  border-radius: 2px !important;
+  font-size: 16px !important;     /* 16px also stops iOS zooming into the field */
+}
+html body .input-group .form-control { border-radius: 2px 0 0 2px !important; }
+html body .input-group .btn {
+  border-radius: 0 2px 2px 0 !important;
+  font-size: 1rem !important;
+}
+
+/* --------------------------------------------------------------- dialogs */
+/* Plain dialog over a dim backdrop (no blur: it is costly on weak phones),
+   the stripe sits under the title. */
+html body .rates-modal-overlay,
+html body .coin-modal-overlay,
+html body .rates-modal-overlay.open,
+html body .coin-modal-overlay.open {
+  background: rgba(0, 0, 0, .5);
+  -webkit-backdrop-filter: none;
+          backdrop-filter: none;
+}
+html body .rates-modal,
+html body .coin-modal {
+  max-width: 420px;
+  border: 1px solid var(--rl-modal-bd);
+  border-radius: 4px;
+  box-shadow: 0 5px 15px rgba(0, 0, 0, .5);
+}
+html body .rates-modal-header {
+  position: relative;
+  padding: 14px 18px 16px;
+  border-bottom: 0;
+  background: var(--bg-surface);
+}
+html body .rates-modal-header::after {
+  content: "";
+  position: absolute;
+  left: 0; right: 0; bottom: 0;
+  height: 4px;
+  background-image: var(--rl-stripe);
+}
+html body .rates-modal-title {
+  font-size: 1.2rem;
+  font-weight: 500;
+  letter-spacing: 0;
+  text-transform: none;
+}
+html body .coin-modal .rates-modal-title { color: var(--accent-color); }
+html body .rates-modal-close { font-size: 26px; }
+html body .rates-modal-sub { font-size: .8rem; }
+
+/* WiFi Rates: a dark header band over a striped, ruled list */
+html body #rates-modal-overlay .rates-modal-sub {
+  margin: 0;
+  padding: .45rem .75rem;
+  background: #212429;
+  color: #ffffff;
+  font-weight: 700;
+}
+html body #rates-modal-overlay .rates-list { gap: 0; }
+html body #rates-modal-overlay .rates-row {
+  margin-top: -1px;
+  padding: .55rem .75rem;
+  border-radius: 0;
+  background: transparent;
+}
+html body #rates-modal-overlay .rates-row:nth-child(odd) { background: var(--rl-stripe-bg); }
+html body #rates-modal-overlay .rates-row:hover { background: var(--bg-surface-hover); }
+html body .nodemcu-row { border-radius: 2px; }
+
+/* Insert Coin window */
+html body .coin-display {
+  border: 1px solid var(--border-color);
+  border-radius: 2px;
+  background: var(--bg-surface-hover);
+}
+html body .coin-preview.active { color: var(--rl-good); }
+html body .coin-bar-bg {
+  height: 1.4rem;
+  border: 0;
+  border-radius: 2px;
+  background: var(--rl-track);
+}
+html body .coin-bar-fill {
+  border-radius: 2px;
+  /* striped, on top of the green / amber / red the portal picks by time left
+     (it sets `background:` inline, hence !important on the image) */
+  background-image: linear-gradient(45deg, rgba(255, 255, 255, .22) 25%, transparent 25%, transparent 50%, rgba(255, 255, 255, .22) 50%, rgba(255, 255, 255, .22) 75%, transparent 75%, transparent) !important;
+  background-size: 1rem 1rem !important;
+  -webkit-animation: rl-stripes 1s linear infinite;
+          animation: rl-stripes 1s linear infinite;
+}
+@-webkit-keyframes rl-stripes { from { background-position: 1rem 0; } to { background-position: 0 0; } }
+@keyframes rl-stripes         { from { background-position: 1rem 0; } to { background-position: 0 0; } }
+@media (prefers-reduced-motion: reduce) {
+  html body .coin-bar-fill { -webkit-animation: none; animation: none; }
+}
+
+/* ----------------------------------------------------------------- footer */
+/* the stripe above the footer text; the AGPL "Source" line stays as it is */
+html body #portal-footer-text {
+  padding-top: 6px;
+  font-size: .85rem;
+  opacity: 1;
+}
+html body #portal-footer-text::before {
+  content: "";
+  display: block;
+  max-width: 381px;
+  height: 5px;
+  margin: 0 auto 10px;
+  border-radius: 5px;
+  background-image: var(--rl-stripe);
+}

@@ -17,6 +17,7 @@ Shipped themes:
 |------------------|---------------------------------------------------------------------------------------|
 | `default`        | The built-in lmepisowifi look (no stylesheet; selecting it removes the choice).       |
 | `banner-classic` | Title bar over a full-width banner, striped time bar, a "Session Info" card, big blue Insert Coin and green voucher buttons. Light and dark. |
+| `rainbow-line`   | Plain centred page: banner on top, big red "Disconnected" / green "Connected" status, small blue device line, grey countdown, flat green Insert Coin / red Pause / blue WiFi Rates buttons and a colour-stripe divider. Light and dark. |
 
 > **Renamed.** Releases up to 1.5.70 shipped this theme under a different id (`pisofi`). A device
 > that had it selected keeps the look: the old id is mapped to `banner-classic` automatically.
@@ -136,6 +137,6 @@ Themes are first-party source files like any other: keep the SPDX header and the
 from scratch — **do not copy another system's CSS, JavaScript, images, fonts or logos** into this
 repository, and **do not use its name or branding** in a theme's id, name, description or comments
 (names and logos are trademarks, and a theme must not suggest it comes from, or is endorsed by,
-someone else). The shipped `banner-classic` theme is written from scratch, uses the common
-Bootstrap 4 colour palette, ships no third-party CSS, JavaScript, fonts or artwork, and is not
+someone else). The shipped `banner-classic` and `rainbow-line` themes are written from scratch, use the common
+Bootstrap 4 colour palette, ship no third-party CSS, JavaScript, fonts or artwork, and are not
 affiliated with or endorsed by any other captive-portal system.
