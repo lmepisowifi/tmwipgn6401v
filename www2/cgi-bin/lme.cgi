@@ -1516,9 +1516,13 @@ if [ "$REQUEST_METHOD" = "POST" ]; then
         [ "$NEW_WAN_PHY_PORT" != "$CUR_WAN_PHY_PORT" ] && mib set WAN_PHY_PORT "$NEW_WAN_PHY_PORT"
         mib commit
 
-        # Determine whether a reboot is needed (PON mode, auto-detect or WAN port changed)
+        # Determine whether a reboot is needed.
+        # Only reboot when the effective PON mode or WAN port actually changes,
+        # or when auto-detect is being switched ON (detection only starts at boot).
+        # Switching auto-detect OFF while keeping the same manual mode and port
+        # changes nothing at runtime, so it must not reboot the device.
         PON_CHANGED=0
-        if [ "$FORM_PON_AUTO" != "$CUR_PON_AUTO" ]; then
+        if [ "$FORM_PON_AUTO" = "1" ] && [ "$CUR_PON_AUTO" != "1" ]; then
             PON_CHANGED=1
         elif [ "$FORM_PON_AUTO" = "0" ] && [ "$FORM_PON_MODE" != "$CUR_PON_MODE" ]; then
             PON_CHANGED=1

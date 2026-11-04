@@ -30,10 +30,20 @@
         .badge-busy { background: rgba(13,110,253,.18);  color:var(--lme-info, #8ab6ff); }
         .badge-err  { background: rgba(220,53,69,.18);   color:var(--lme-danger, #f1a1a9); }
         .badge-dim  { background: var(--lme-tint-2, rgba(255,255,255,.08)); color:var(--text-secondary); }
-        .slot-box { border:1px solid var(--border-color,#333); border-radius:8px; padding:12px; margin-bottom:12px; }
+        .slot-box { border:1px solid var(--border-color,#333); border-radius:8px; padding:10px 12px; margin-bottom:8px; }
+        .slot-box:last-child { margin-bottom:0; }
         .slot-box.is-running { border-color: rgba(76,175,80,.55); }
-        .slot-head { display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:6px; margin-bottom:8px; }
-        .slot-actions { display:flex; flex-wrap:wrap; gap:6px; margin-top:10px; }
+        .slot-head { display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:6px; margin-bottom:6px; }
+        .slot-meta { display:flex; flex-wrap:wrap; gap:2px 18px; margin-bottom:8px; }
+        .slot-meta .m { min-width:0; }
+        .slot-meta .ml { display:block; font-size:11px; color:var(--text-secondary); }
+        .slot-meta .mv { display:block; font-size:12.5px; font-weight:600; color:var(--text-primary); word-break:break-all; }
+        .slot-actions { display:flex; flex-wrap:wrap; gap:6px; }
+        .slot-actions .btn { flex:1 1 auto; font-size:12px; padding:3px 8px; white-space:nowrap; }
+        .slot-dl { margin-top:6px; font-size:11.5px; color:var(--text-secondary); }
+        .slot-dl a.disabled { pointer-events:none; opacity:.45; }
+        .slot-help summary { font-size:12px; color:var(--text-secondary); cursor:pointer; }
+        .slot-help .field-hint { margin-top:6px; }
         #fw-log { background: var(--bg-input, #111); border:1px solid var(--border-color,#333);
             border-radius:6px; padding:10px; font-family:monospace; font-size:12px;
             white-space:pre-wrap; max-height:200px; overflow:auto; display:none; margin-top:12px; }
@@ -62,16 +72,19 @@
                         </div>
 
                         <div class="kv"><span class="k">Running firmware</span><span class="v" id="run-ver">—</span></div>
-                        <div id="slots" class="mt-3"></div>
+                        <div id="slots" class="mt-2"></div>
 
-                        <div class="field-hint">
-                            The bootloader keeps two firmware slots. <b>Make default</b> changes which slot boots
-                            normally. <b>Boot once</b> tries a slot a single time with the watchdog armed — if it fails
-                            to come up, the next boot returns to the default slot. <b>Boot once &amp; keep</b> does the
-                            same but promotes the slot to default if it boots cleanly. Changes apply on the next reboot.
-                        </div>
-                        <div class="d-grid mt-3">
-                            <button class="btn btn-outline-warning" onclick="doReboot()">Reboot now</button>
+                        <details class="slot-help mt-2">
+                            <summary>What do these buttons do?</summary>
+                            <div class="field-hint">
+                                The bootloader keeps two firmware slots. <b>Make default</b> changes which slot boots
+                                normally. <b>Boot once</b> tries a slot a single time with the watchdog armed — if it fails
+                                to come up, the next boot returns to the default slot. <b>Boot once &amp; keep</b> does the
+                                same but promotes the slot to default if it boots cleanly. Changes apply on the next reboot.
+                            </div>
+                        </details>
+                        <div class="d-grid mt-2">
+                            <button class="btn btn-sm btn-outline-warning" onclick="doReboot()">Reboot now</button>
                         </div>
                     </div>
                 </div>
@@ -127,6 +140,10 @@
             .then(checkAuth).then(function(r){ return r.json(); });
     }
     function mib(n) { return n > 0 ? (n / 1048576).toFixed(1) + ' MiB' : '—'; }
+    function caps(a, b) {
+        function f(n) { return n > 0 ? (n / 1048576).toFixed(1) : '—'; }
+        return (a > 0 || b > 0) ? f(a) + ' / ' + f(b) + ' MiB' : '—';
+    }
     function el(tag, cls, text) { var e = document.createElement(tag); if (cls) e.className = cls; if (text != null) e.textContent = text; return e; }
     function badge(text, cls) { return el('span', 'status-badge ' + cls, text); }
 
@@ -155,10 +172,12 @@
             if (trial)   { tags.appendChild(document.createTextNode(' ')); tags.appendChild(badge('Boots next', 'badge-new')); }
             if (!s.present) { tags.appendChild(document.createTextNode(' ')); tags.appendChild(badge('Empty', 'badge-dim')); }
             head.appendChild(tags); box.appendChild(head);
-            [['Firmware', s.present ? s.version : '—'], ['uImage capacity', mib(s.kernel_cap)], ['rootfs capacity', mib(s.rootfs_cap)]]
+            var meta = el('div', 'slot-meta');
+            [['Firmware', s.present ? s.version : '—'], ['uImage / rootfs capacity', caps(s.kernel_cap, s.rootfs_cap)]]
                 .forEach(function(p) {
-                    var kv = el('div', 'kv'); kv.appendChild(el('span', 'k', p[0])); kv.appendChild(el('span', 'v', p[1])); box.appendChild(kv);
+                    var m = el('div', 'm'); m.appendChild(el('span', 'ml', p[0])); m.appendChild(el('span', 'mv', p[1])); meta.appendChild(m);
                 });
+            box.appendChild(meta);
             var act = el('div', 'slot-actions');
             function btn(label, cls, fn, enabled) {
                 var b = el('button', 'btn btn-sm ' + cls, label); b.disabled = !enabled || st.busy; b.onclick = fn; act.appendChild(b);
@@ -167,13 +186,17 @@
             btn('Make default', 'btn-primary', function(){ doSetDefault(id); }, s.present && !isDef);
             btn('Boot once', 'btn-outline-primary', function(){ doBootOnce(id, 0); }, canTrial);
             btn('Boot once & keep', 'btn-outline-primary', function(){ doBootOnce(id, 1); }, canTrial);
-            [['kernel', 'uImage'], ['rootfs', 'rootfs']].forEach(function(d) {
-                var a = el('a', 'btn btn-sm btn-outline-secondary', 'Download ' + d[1]);
+            box.appendChild(act);
+            var dl = el('div', 'slot-dl');
+            dl.appendChild(document.createTextNode('Download: '));
+            [['kernel', 'uImage'], ['rootfs', 'rootfs']].forEach(function(d, i) {
+                if (i) dl.appendChild(document.createTextNode(' · '));
+                var a = el('a', s.present ? null : 'disabled', d[1]);
                 a.href = CGI + '?action=dump&slot=' + id + '&part=' + d[0];
-                if (!s.present) a.className += ' disabled';
-                act.appendChild(a);
+                if (!s.present) a.setAttribute('aria-disabled', 'true');
+                dl.appendChild(a);
             });
-            box.appendChild(act); host.appendChild(box);
+            box.appendChild(dl); host.appendChild(box);
         });
     }
 

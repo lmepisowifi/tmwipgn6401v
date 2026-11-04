@@ -279,7 +279,12 @@ apply_upstream() {
         fi
     fi
     UP_CHANGED=0
-    if [ "$NEW_AUTO" != "$CUR_AUTO" ]; then mset_or_fail AUTO_PON_MODE "$NEW_AUTO"; UP_CHANGED=1; fi
+    if [ "$NEW_AUTO" != "$CUR_AUTO" ]; then
+        mset_or_fail AUTO_PON_MODE "$NEW_AUTO"
+        # Only turning auto-detect ON needs a reboot. Turning it OFF alone leaves
+        # the live mode/port untouched (a real mode/port change is caught below).
+        [ "$NEW_AUTO" = "1" ] && UP_CHANGED=1
+    fi
     if [ "$NEW_PMODE" != "$CUR_PMODE" ]; then mset_or_fail PON_MODE "$NEW_PMODE"; UP_CHANGED=1; fi
     if [ "$NEW_PORT" != "$CUR_PORT" ]; then mset_or_fail WAN_PHY_PORT "$NEW_PORT"; UP_CHANGED=1; fi
     # the LAN port that became the WAN uplink can't also be bound to a bridge WAN
